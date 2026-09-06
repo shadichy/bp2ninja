@@ -1,0 +1,9 @@
+bin/
+*.so
+*.ninja
+out/
+.out/
+/bp2ninja
+*.json
+__pycache__/
+plugins/*/

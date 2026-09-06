@@ -1,0 +1,186 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"bp2ninja/pkg/eval"
+	"bp2ninja/pkg/generator"
+	"bp2ninja/pkg/ninja"
+	"bp2ninja/pkg/parser"
+	"bp2ninja/pkg/plugins"
+)
+
+type stringListFlag []string
+
+func (s *stringListFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringListFlag) Set(val string) error {
+	for _, part := range strings.Split(val, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			*s = append(*s, trimmed)
+		}
+	}
+	return nil
+}
+
+func main() {
+	var (
+		bpFile       string
+		outFile      string
+		outDir       string
+		topDir       string
+		sysrootDir   string
+		prebuiltLibs string
+		clangPath    string
+		clangCxxPath string
+		arch         string
+		allowMissing bool
+		pluginPaths  stringListFlag
+		configVars   stringListFlag
+	)
+
+	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file")
+	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
+	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
+	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
+	flag.StringVar(&sysrootDir, "sysroot", "", "Path to Android sysroot / NDK (optional)")
+	flag.StringVar(&prebuiltLibs, "prebuilt-libs", "", "Directory containing prebuilt .so / .a libraries")
+	flag.StringVar(&clangPath, "cc", "clang", "C compiler executable path")
+	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
+	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64)")
+	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
+
+	// Plugin flags: -a, -add-plugin, --add-plugin, -plugin
+	flag.Var(&pluginPaths, "a", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
+	flag.Var(&pluginPaths, "add-plugin", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
+	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
+	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
+
+	flag.Parse()
+
+	// Detect topDir if unset
+	if topDir == "" {
+		if envTop := os.Getenv("ANDROID_BUILD_TOP"); envTop != "" {
+			topDir = envTop
+		} else {
+			topDir = "."
+		}
+	}
+
+	// Parse config variables (e.g. target_board_platform=sm8450)
+	configMap := make(map[string]string)
+	for _, kv := range configVars {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) == 2 {
+			configMap[parts[0]] = parts[1]
+		}
+	}
+
+	// 1. Auto-discover plugins from default directory candidates
+	loadedPlugins := make(map[string]bool)
+
+	loadPluginFile := func(p string, isExplicit bool) error {
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			absPath = p
+		}
+		if loadedPlugins[absPath] {
+			return nil
+		}
+		if err := plugins.GlobalRegistry.LoadPlugin(absPath); err != nil {
+			return err
+		}
+		loadedPlugins[absPath] = true
+		if isExplicit {
+			fmt.Printf("[bp2ninja] Loaded plugin: %s\n", p)
+		} else {
+			fmt.Printf("[bp2ninja] Auto-loaded plugin: %s\n", p)
+		}
+		return nil
+	}
+
+	if envDir := os.Getenv("BP2NINJA_PLUGINS_DIR"); envDir != "" {
+		if matches, err := filepath.Glob(filepath.Join(envDir, "*.so")); err == nil {
+			for _, p := range matches {
+				_ = loadPluginFile(p, false)
+			}
+		}
+	}
+
+	// Load any explicitly requested dynamic plugins (-a / --add-plugin)
+	for _, p := range pluginPaths {
+		if err := loadPluginFile(p, true); err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading plugin %s: %v\n", p, err)
+			os.Exit(1)
+		}
+	}
+
+	// 2. Read and parse Android.bp file
+	bpData, err := os.ReadFile(bpFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", bpFile, err)
+		os.Exit(1)
+	}
+
+	r := strings.NewReader(string(bpData))
+	file, errs := parser.Parse(bpFile, r, parser.NewScope(nil))
+	if len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "Error parsing %s:\n", bpFile)
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "  %v\n", e)
+		}
+		os.Exit(1)
+	}
+
+	// 3. Evaluate AST and flatten defaults
+	evalCtx := eval.NewContext(configMap, arch)
+	if err := evalCtx.EvalFile(file); err != nil {
+		fmt.Fprintf(os.Stderr, "Error evaluating AST: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 4. Set up Generator options
+	opts := generator.DefaultOptions(topDir, outDir)
+	opts.TargetArch = arch
+	opts.ClangPath = clangPath
+	opts.ClangCxxPath = clangCxxPath
+	opts.BpDir = filepath.Dir(bpFile)
+	opts.AllowMissingDeps = allowMissing
+	if sysrootDir != "" {
+		opts.SysrootDir = sysrootDir
+	}
+	if prebuiltLibs != "" {
+		opts.PrebuiltLibDir = prebuiltLibs
+	}
+
+	// 5. Open output file and generate Ninja rules
+	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil && filepath.Dir(outFile) != "." {
+		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	outF, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	defer outF.Close()
+
+	nw := ninja.NewWriter(outF)
+	gen := generator.New(opts, nw, plugins.GlobalRegistry)
+
+	if err := gen.Generate(evalCtx.Modules); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating Ninja: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",
+		bpFile, outFile, len(evalCtx.Modules))
+}

@@ -221,8 +221,8 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh))
 	}
 
-	if g.opts.SysrootDir != "" {
-		incs = append(incs, "-I"+filepath.Join(g.opts.SysrootDir, "usr", "include"))
+	if g.opts.SysrootDir != "" && !strings.Contains(g.opts.ClangPath, "-clang") {
+		incs = append(incs, "-isystem "+filepath.Join(g.opts.SysrootDir, "usr", "include"))
 	}
 	return dedup(incs)
 }

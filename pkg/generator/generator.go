@@ -26,6 +26,8 @@ type Options struct {
 	AndroidJarPath  string
 	TargetArch      string
 	TargetTriple    string
+	APILevel        int
+	NDKDir          string
 	AllowMissingDeps bool
 	BpDir           string
 }
@@ -42,7 +44,8 @@ func DefaultOptions(topDir, outDir string) Options {
 		TopDir:          topDir,
 		OutDir:          outDir,
 		TargetArch:      "arm64",
-		TargetTriple:    "aarch64-linux-android10000",
+		TargetTriple:    "aarch64-linux-android",
+		APILevel:        34,
 		ClangPath:       "clang",
 		ClangCxxPath:    "clang++",
 		ArPath:          "llvm-ar",
@@ -236,11 +239,33 @@ func (g *Generator) emitHeader() error {
 		relTop = "."
 	}
 	g.nw.Variable("top", relTop)
-	g.nw.BlankLine()
+	ccPath := g.opts.ClangPath
+	cxxPath := g.opts.ClangCxxPath
+	arPath := g.opts.ArPath
+	sysrootVal := g.opts.SysrootDir
 
-	g.nw.Variable("cc", g.opts.ClangPath)
-	g.nw.Variable("cxx", g.opts.ClangCxxPath)
-	g.nw.Variable("ar", g.opts.ArPath)
+	if g.opts.NDKDir != "" {
+		ndkVal := g.opts.NDKDir
+		g.nw.Variable("ndk", ndkVal)
+		if strings.HasPrefix(sysrootVal, g.opts.NDKDir) {
+			sysrootVal = "$ndk" + strings.TrimPrefix(sysrootVal, g.opts.NDKDir)
+		}
+		if strings.HasPrefix(ccPath, g.opts.NDKDir) {
+			ccPath = "$ndk" + strings.TrimPrefix(ccPath, g.opts.NDKDir)
+		}
+		if strings.HasPrefix(cxxPath, g.opts.NDKDir) {
+			cxxPath = "$ndk" + strings.TrimPrefix(cxxPath, g.opts.NDKDir)
+		}
+		if strings.HasPrefix(arPath, g.opts.NDKDir) {
+			arPath = "$ndk" + strings.TrimPrefix(arPath, g.opts.NDKDir)
+		}
+	}
+	if sysrootVal != "" {
+		g.nw.Variable("sysroot", sysrootVal)
+	}
+	g.nw.Variable("cc", ccPath)
+	g.nw.Variable("cxx", cxxPath)
+	g.nw.Variable("ar", arPath)
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
 	g.nw.BlankLine()
 	return nil

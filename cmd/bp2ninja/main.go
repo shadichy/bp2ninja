@@ -10,6 +10,7 @@ import (
 	"bp2ninja/pkg/eval"
 	"bp2ninja/pkg/generator"
 	"bp2ninja/pkg/gowork"
+	"bp2ninja/pkg/ndk"
 	"bp2ninja/pkg/ninja"
 	"bp2ninja/pkg/parser"
 	"bp2ninja/pkg/plugins"
@@ -142,6 +143,10 @@ func main() {
 		clangCxxPath        string
 		arch                string
 		allowMissing        bool
+		ndkPath             string
+		ndkVersion          string
+		apiLevel            int
+		ndkInfoFlag         bool
 		pluginPaths         stringListFlag
 		configVars          stringListFlag
 		convertPluginTarget string
@@ -160,8 +165,14 @@ func main() {
 	flag.StringVar(&prebuiltLibs, "prebuilt-libs", "", "Directory containing prebuilt .so / .a libraries")
 	flag.StringVar(&clangPath, "cc", "clang", "C compiler executable path")
 	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
-	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64)")
+	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, riscv64)")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
+
+	// Android NDK flags
+	flag.StringVar(&ndkPath, "ndk", "", "Path to Android NDK or 'auto' to auto-discover (Studio, $ANDROID_NDK, distro packages)")
+	flag.StringVar(&ndkVersion, "ndk-version", "", "Preferred Android NDK version (e.g. 'latest', 'beta', 'r29', '30')")
+	flag.IntVar(&apiLevel, "api", 34, "Android API level for NDK target compiler (defaults to 34)")
+	flag.BoolVar(&ndkInfoFlag, "ndk-info", false, "Display discovered Android NDK installations and exit")
 
 	// Built-in tool flags
 	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
@@ -178,6 +189,34 @@ func main() {
 	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
 
 	flag.Parse()
+
+	// Handle NDK Info query
+	if ndkInfoFlag {
+		all := ndk.DiscoverAll()
+		if len(all) == 0 {
+			fmt.Println("No Android NDK installations discovered.")
+			fmt.Println("Checked:")
+			fmt.Println(" - Environment variables: $ANDROID_NDK, $ANDROID_NDK_HOME, $ANDROID_NDK_ROOT, $NDK_HOME, $NDK_ROOT")
+			fmt.Println(" - Distro packages: /opt/android-ndk, /opt/android-ndk-beta, /usr/lib/android-ndk")
+			fmt.Println(" - Android Studio / SDK: ~/Android/Sdk/ndk, $ANDROID_HOME/ndk, $ANDROID_SDK_ROOT/ndk")
+			fmt.Println(" - PATH: ndk-build")
+			return
+		}
+		fmt.Printf("Discovered %d Android NDK installation(s):\n\n", len(all))
+		for i, n := range all {
+			betaTag := ""
+			if n.IsBeta {
+				betaTag = " [BETA/PREVIEW]"
+			}
+			fmt.Printf("  [%d] NDK %s (r%d)%s\n", i+1, n.Version, n.MajorVer, betaTag)
+			fmt.Printf("      Location: %s\n", n.Path)
+			fmt.Printf("      Source:   %s\n", n.Source)
+			fmt.Printf("      LLVM Bin: %s\n", n.LLVMBinDir)
+			fmt.Printf("      Sysroot:  %s\n", n.SysrootDir)
+			fmt.Println()
+		}
+		return
+	}
 
 	// Handle standalone tool actions if flags passed
 	if convertPluginTarget != "" {
@@ -302,12 +341,58 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 3.5. Resolve Android NDK if requested or configured
+	var activeNDK *ndk.NDKInfo
+	if ndkPath != "" || ndkVersion != "" {
+		resolved, err := ndk.ResolveNDK(ndkPath, ndkVersion)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving Android NDK: %v\n", err)
+			os.Exit(1)
+		}
+		activeNDK = resolved
+	} else if envNdk := os.Getenv("ANDROID_NDK"); envNdk != "" && os.Getenv("USE_NDK") == "1" {
+		if resolved, err := ndk.ResolveNDK(envNdk, ""); err == nil {
+			activeNDK = resolved
+		}
+	}
+
+	arPath := "llvm-ar"
+	targetTriple := ndk.ArchitectureToTriple(arch)
+	if activeNDK != nil {
+		tc, err := activeNDK.GetToolchain(arch, apiLevel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error configuring NDK toolchain: %v\n", err)
+			os.Exit(1)
+		}
+		if clangPath == "clang" {
+			clangPath = tc.CC
+		}
+		if clangCxxPath == "clang++" {
+			clangCxxPath = tc.CXX
+		}
+		if tc.AR != "" {
+			arPath = tc.AR
+		}
+		if sysrootDir == "" {
+			sysrootDir = tc.Sysroot
+		}
+		targetTriple = tc.TargetTriple
+		fmt.Printf("[bp2ninja] Using Android NDK %s (%s, API %d) -> %s\n",
+			activeNDK.Version, arch, apiLevel, clangPath)
+	}
+
 	// 4. Set up Generator options
 	opts := generator.DefaultOptions(topDir, outDir)
 	opts.TargetArch = arch
+	opts.TargetTriple = targetTriple
+	opts.APILevel = apiLevel
 	opts.ClangPath = clangPath
 	opts.ClangCxxPath = clangCxxPath
+	opts.ArPath = arPath
 	opts.AllowMissingDeps = allowMissing
+	if activeNDK != nil {
+		opts.NDKDir = activeNDK.Path
+	}
 	bpDir := filepath.Dir(bpFile)
 	if filepath.IsAbs(bpDir) {
 		if rel, err := filepath.Rel(".", bpDir); err == nil && !strings.HasPrefix(rel, "..") {

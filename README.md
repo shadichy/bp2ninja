@@ -54,6 +54,21 @@ make
 
 The compiled binary will be placed at `bin/bp2ninja`.
 
+### Go Workspace Integration (`go.work`)
+
+For IDE support (VS Code, GoLand, `gopls`) and compiling `android/*` packages outside a monolithic checkout, generate a `go.work` workspace file:
+
+```bash
+# Auto-detect local tree or clone missing repos from googlesource.com
+make gowork
+
+# Or force remote cloning from android.googlesource.com
+python3 scripts/gen_gowork.py --remote
+
+# Clean up workspace files
+make clean-gowork
+```
+
 ---
 
 ## CLI Usage

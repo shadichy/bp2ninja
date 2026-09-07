@@ -7,3 +7,6 @@ out/
 *.json
 __pycache__/
 plugins/*/
+go.work
+go.work.sum
+.deps/

@@ -5,7 +5,7 @@ BINARY := $(BIN_DIR)/bp2ninja
 # Priority: 1. GO variable, 2. Prebuilt Go in nearby tree, 3. System go
 GO ?= $(shell python3 scripts/convert_plugin.py --get-go 2>/dev/null || which go || echo go)
 
-.PHONY: all build plugins clean test
+.PHONY: all build plugins clean test gowork clean-gowork
 
 all: build plugins
 
@@ -18,9 +18,15 @@ plugins:
 	@python3 scripts/convert_plugin.py --all
 	@echo "[OK] Built plugins in plugins/"
 
+gowork:
+	@python3 scripts/gen_gowork.py
+
+clean-gowork:
+	@python3 scripts/gen_gowork.py --clean
+
 test:
 	$(GO) test -v ./...
 
 clean:
-	rm -rf $(BIN_DIR) plugins/*.so plugins/*/ bp2ninja out/
+	rm -rf $(BIN_DIR) plugins/*.so plugins/*/ bp2ninja out/ .deps/ go.work go.work.sum
 

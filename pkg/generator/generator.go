@@ -30,6 +30,10 @@ type Options struct {
 	NDKDir          string
 	AllowMissingDeps bool
 	BpDir           string
+	ExtraCflags     []string
+	ExtraCppflags   []string
+	ExtraLdflags    []string
+	IsHost          bool
 }
 
 // DefaultOptions provides sensible defaults for standalone Android builds.
@@ -48,7 +52,7 @@ func DefaultOptions(topDir, outDir string) Options {
 		APILevel:        34,
 		ClangPath:       "clang",
 		ClangCxxPath:    "clang++",
-		ArPath:          "llvm-ar",
+		ArPath:          "ar",
 		Aapt2Path:       "aapt2",
 		AndroidJarPath:  "",
 		AllowMissingDeps: true,
@@ -64,6 +68,7 @@ type Generator struct {
 	moduleOutputs  map[string][]string
 	filegroups     map[string][]string
 	emittedPhonies map[string]bool
+	topDirModules  map[string]string
 }
 
 // New creates a new Generator.
@@ -79,7 +84,73 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		moduleOutputs:  make(map[string][]string),
 		filegroups:     make(map[string][]string),
 		emittedPhonies: make(map[string]bool),
+		topDirModules:  nil,
 	}
+}
+
+// GetTopDirModules scans g.opts.TopDir for component directories and module names.
+// Skips build artifacts (.git, out) and toolchains (clang, rust, sdk, prebuilts).
+func (g *Generator) GetTopDirModules() map[string]string {
+	if g.topDirModules != nil {
+		return g.topDirModules
+	}
+	g.topDirModules = make(map[string]string)
+	top := g.opts.TopDir
+	if g.opts.IsHost || top == "" || top == "." || top == "/usr" {
+		return g.topDirModules
+	}
+	fi, err := os.Stat(top)
+	if err != nil || !fi.IsDir() {
+		return g.topDirModules
+	}
+
+	skipDirs := map[string]bool{
+		".git": true, ".repo": true, "out": true, "prebuilts": true, "toolchain": true,
+		"clang": true, "rust": true, "sdk": true, "cts": true, "kernel": true,
+		"device": true, "packages": true, "tools": true, "development": true,
+		"platform_testing": true, "developers": true, "test": true, "vendor": true,
+	}
+
+	nameRegex := regexp.MustCompile(`\bname\s*:\s*"([^"]+)"`)
+
+	_ = filepath.Walk(top, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			baseName := info.Name()
+			if skipDirs[baseName] {
+				return filepath.SkipDir
+			}
+			rel, _ := filepath.Rel(top, path)
+			if strings.Count(rel, string(filepath.Separator)) > 4 {
+				return filepath.SkipDir
+			}
+
+			// Map directory base name
+			g.topDirModules[baseName] = path
+			if strings.HasSuffix(baseName, "_headers") {
+				g.topDirModules[strings.TrimSuffix(baseName, "_headers")] = path
+			}
+
+			// If Android.bp or Android.bp.prebuilt exists in candidate directory, map declared module names
+			for _, bpFile := range []string{"Android.bp", "Android.bp.prebuilt"} {
+				bpPath := filepath.Join(path, bpFile)
+				if data, err := os.ReadFile(bpPath); err == nil {
+					for _, match := range nameRegex.FindAllSubmatch(data, -1) {
+						mName := string(match[1])
+						g.topDirModules[mName] = path
+						if strings.HasSuffix(mName, "_headers") {
+							g.topDirModules[strings.TrimSuffix(mName, "_headers")] = path
+						}
+					}
+				}
+			}
+		}
+		return nil
+	})
+
+	return g.topDirModules
 }
 
 func (g *Generator) emitPhonyIfNeeded(target string) {
@@ -142,7 +213,15 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		if mod.Name != "" {
 			g.moduleMap[mod.Name] = mod
 			if mod.Type == "filegroup" {
-				g.filegroups[mod.Name] = mod.GetStringList("srcs")
+				var fgSrcs []string
+				for _, s := range mod.GetStringList("srcs") {
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) && !strings.HasPrefix(s, ":") {
+						fgSrcs = append(fgSrcs, filepath.Clean(filepath.Join(mod.Dir, s)))
+					} else {
+						fgSrcs = append(fgSrcs, s)
+					}
+				}
+				g.filegroups[mod.Name] = fgSrcs
 			}
 		}
 	}
@@ -163,6 +242,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				TopDir:           g.opts.TopDir,
 				OutDir:           g.opts.OutDir,
 				BpDir:            g.opts.BpDir,
+				SubDir:           mod.Dir,
 				AllowMissingDeps: g.opts.AllowMissingDeps,
 				NinjaWriter:      g.nw,
 			}
@@ -189,9 +269,10 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			continue
 		case "cc_binary", "cc_binary_host":
 			targets, err = g.generateCcBinary(mod)
-		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers":
+		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers",
+			"cc_library_host", "cc_library_host_shared", "cc_library_host_static":
 			targets, err = g.generateCcLibrary(mod)
-		case "cc_test", "cc_benchmark":
+		case "cc_test", "cc_benchmark", "cc_test_host", "cc_fuzz":
 			targets, err = g.generateCcTest(mod)
 		case "android_app", "android_app_certificate":
 			targets, err = g.generateAndroidApp(mod)
@@ -210,7 +291,15 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			return fmt.Errorf("failed generating module %s: %w", mod.Name, err)
 		}
 		g.moduleOutputs[mod.Name] = targets
-		allTargets = append(allTargets, targets...)
+		if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
+			allTargets = append(allTargets, targets...)
+		}
+	}
+
+	if len(allTargets) == 0 {
+		for _, outs := range g.moduleOutputs {
+			allTargets = append(allTargets, outs...)
+		}
 	}
 
 	if len(allTargets) > 0 {
@@ -228,13 +317,6 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("ninja_required_version", "1.7.0")
 	g.nw.Variable("builddir", g.opts.OutDir)
 	relTop := g.opts.TopDir
-	if filepath.IsAbs(relTop) {
-		if rel, err := filepath.Rel(".", relTop); err == nil && !strings.HasPrefix(rel, "..") {
-			relTop = rel
-		} else {
-			relTop = "."
-		}
-	}
 	if relTop == "" {
 		relTop = "."
 	}
@@ -413,7 +495,11 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 			label := strings.TrimPrefix(s, ":")
 			if fgSrcs, ok := g.filegroups[label]; ok {
 				for _, fg := range fgSrcs {
-					expanded = append(expanded, g.expandGlob(fg)...)
+					fgPath := fg
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(fg) && !strings.HasPrefix(fg, ":") {
+						fgPath = filepath.Clean(filepath.Join(mod.Dir, fg))
+					}
+					expanded = append(expanded, g.expandGlob(fgPath)...)
 				}
 			} else if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
 				for _, out := range genMod.GetStringList("out") {
@@ -423,7 +509,11 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 				expanded = append(expanded, s)
 			}
 		} else {
-			expanded = append(expanded, g.expandGlob(s)...)
+			srcPath := s
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+				srcPath = filepath.Clean(filepath.Join(mod.Dir, s))
+			}
+			expanded = append(expanded, g.expandGlob(srcPath)...)
 		}
 	}
 
@@ -433,6 +523,9 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 		for _, ex := range excludeList {
 			excludeMap[ex] = true
 			excludeMap[filepath.Clean(ex)] = true
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(ex) {
+				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
+			}
 		}
 		var filtered []string
 		for _, src := range expanded {

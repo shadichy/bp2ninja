@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"bp2ninja/pkg/parser"
@@ -11,6 +12,7 @@ import (
 type EvaluatedModule struct {
 	Type       string
 	Name       string
+	Dir        string // Relative directory of this module from root (e.g. "tests", "tools", or "")
 	Properties map[string]interface{}
 	Raw        *parser.Module
 }
@@ -32,6 +34,7 @@ type Context struct {
 	Modules         []*EvaluatedModule
 	ConfigVariables map[string]string // e.g. "target_board_platform" -> "sm8450"
 	TargetArch      string
+	IsHost          bool
 }
 
 // NewContext creates an evaluation context.
@@ -48,11 +51,17 @@ func NewContext(configVars map[string]string, targetArch string) *Context {
 		Modules:         make([]*EvaluatedModule, 0),
 		ConfigVariables: configVars,
 		TargetArch:      targetArch,
+		IsHost:          false,
 	}
 }
 
-// EvalFile processes an AST file, resolving top-level assignments and modules.
+// EvalFile processes an AST file at the root level.
 func (c *Context) EvalFile(file *parser.File) error {
+	return c.EvalFileInDir(file, "")
+}
+
+// EvalFileInDir processes an AST file located in subDir relative to the root Ninja file.
+func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 	// First pass: collect variable assignments and defaults
 	var deferredModules []*parser.Module
 
@@ -63,7 +72,7 @@ func (c *Context) EvalFile(file *parser.File) error {
 			c.Scope.vars[d.Name] = val
 
 		case *parser.Module:
-			mod := c.evalModule(d)
+			mod := c.evalModule(d, subDir)
 			if strings.HasSuffix(mod.Type, "_defaults") || mod.Type == "defaults" {
 				c.Defaults[mod.Name] = mod
 			} else {
@@ -74,7 +83,7 @@ func (c *Context) EvalFile(file *parser.File) error {
 
 	// Second pass: process normal modules and apply defaults, config vars, arch, multilib, and target
 	for _, rawMod := range deferredModules {
-		mod := c.evalModule(rawMod)
+		mod := c.evalModule(rawMod, subDir)
 		c.applyDefaults(mod)
 		c.applySoongConfigVariables(mod)
 		c.applyArch(mod)
@@ -86,9 +95,37 @@ func (c *Context) EvalFile(file *parser.File) error {
 	return nil
 }
 
-func (c *Context) evalModule(m *parser.Module) *EvaluatedModule {
+// ExtractSubdirs inspects an AST for subdirs = [...], optional_subdirs = [...], build = [...]
+func ExtractSubdirs(file *parser.File) (subdirs []string, buildFiles []string) {
+	for _, def := range file.Defs {
+		if a, ok := def.(*parser.Assignment); ok {
+			switch a.Name {
+			case "subdirs", "optional_subdirs":
+				if list, ok := a.Value.(*parser.List); ok {
+					for _, val := range list.Values {
+						if str, ok := val.(*parser.String); ok {
+							subdirs = append(subdirs, str.Value)
+						}
+					}
+				}
+			case "build":
+				if list, ok := a.Value.(*parser.List); ok {
+					for _, val := range list.Values {
+						if str, ok := val.(*parser.String); ok {
+							buildFiles = append(buildFiles, str.Value)
+						}
+					}
+				}
+			}
+		}
+	}
+	return subdirs, buildFiles
+}
+
+func (c *Context) evalModule(m *parser.Module, subDir string) *EvaluatedModule {
 	mod := &EvaluatedModule{
 		Type:       m.Type,
+		Dir:        subDir,
 		Properties: make(map[string]interface{}),
 		Raw:        m,
 	}
@@ -181,14 +218,52 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 			if k == "name" || k == "defaults" {
 				continue
 			}
+			valToMerge := defVal
+			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs") {
+				valToMerge = adjustPathProperty(defVal, defMod.Dir, mod.Dir)
+			}
 			modVal, exists := mod.Properties[k]
 			if !exists {
-				mod.Properties[k] = defVal
+				mod.Properties[k] = valToMerge
 			} else {
 				// Merge lists or maps
-				mod.Properties[k] = mergeProperties(defVal, modVal)
+				mod.Properties[k] = mergeProperties(valToMerge, modVal)
 			}
 		}
+	}
+}
+
+func adjustPathProperty(val interface{}, fromDir, toDir string) interface{} {
+	switch v := val.(type) {
+	case string:
+		if !filepath.IsAbs(v) && !strings.HasPrefix(v, ":") {
+			full := filepath.Join(fromDir, v)
+			if rel, err := filepath.Rel(toDir, full); err == nil {
+				return rel
+			}
+		}
+		return v
+	case []interface{}:
+		var res []interface{}
+		for _, item := range v {
+			res = append(res, adjustPathProperty(item, fromDir, toDir))
+		}
+		return res
+	case []string:
+		var res []string
+		for _, item := range v {
+			if !filepath.IsAbs(item) && !strings.HasPrefix(item, ":") {
+				full := filepath.Join(fromDir, item)
+				if rel, err := filepath.Rel(toDir, full); err == nil {
+					res = append(res, rel)
+					continue
+				}
+			}
+			res = append(res, item)
+		}
+		return res
+	default:
+		return val
 	}
 }
 
@@ -273,29 +348,32 @@ func (c *Context) applyTarget(mod *EvaluatedModule) {
 	}
 
 	targetKey := "android"
-	if strings.HasSuffix(mod.Type, "_host") || mod.GetBool("host_supported") {
+	if c.IsHost || strings.HasSuffix(mod.Type, "_host") || (mod.GetBool("host_supported") && c.IsHost) {
 		targetKey = "host"
 	}
 
-	if targetProps, found := rawTarget[targetKey].(map[string]interface{}); found {
-		for propName, propVal := range targetProps {
-			if existing, exists := mod.Properties[propName]; exists {
-				mod.Properties[propName] = mergeProperties(existing, propVal)
-			} else {
-				mod.Properties[propName] = propVal
-			}
+	// Apply targets cumulatively
+	var targetKeys []string
+	if targetKey == "host" {
+		targetKeys = []string{"host", "not_windows", "linux", "linux_glibc"}
+		if c.TargetArch != "" {
+			targetKeys = append(targetKeys, "linux_"+c.TargetArch)
 		}
-	} else if targetKey == "host" {
-		for _, altKey := range []string{"linux", "linux_glibc"} {
-			if altProps, altFound := rawTarget[altKey].(map[string]interface{}); altFound {
-				for propName, propVal := range altProps {
-					if existing, exists := mod.Properties[propName]; exists {
-						mod.Properties[propName] = mergeProperties(existing, propVal)
-					} else {
-						mod.Properties[propName] = propVal
-					}
+	} else {
+		targetKeys = []string{"android", "not_windows", "linux"}
+		if c.TargetArch != "" {
+			targetKeys = append(targetKeys, "android_"+c.TargetArch)
+		}
+	}
+
+	for _, key := range targetKeys {
+		if targetProps, found := rawTarget[key].(map[string]interface{}); found {
+			for propName, propVal := range targetProps {
+				if existing, exists := mod.Properties[propName]; exists {
+					mod.Properties[propName] = mergeProperties(existing, propVal)
+				} else {
+					mod.Properties[propName] = propVal
 				}
-				break
 			}
 		}
 	}

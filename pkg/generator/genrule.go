@@ -19,7 +19,11 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 	var srcs []string
 	for _, s := range rawSrcs {
 		for _, ref := range g.resolveReference(s) {
-			for _, m := range g.expandGlob(ref) {
+			refPath := ref
+			if mod.Dir != "" && mod.Dir != "." && !strings.HasPrefix(ref, ":") && !strings.HasPrefix(ref, "//") && !filepath.IsAbs(ref) {
+				refPath = filepath.Clean(filepath.Join(mod.Dir, ref))
+			}
+			for _, m := range g.expandGlob(refPath) {
 				srcs = append(srcs, m)
 				if g.opts.AllowMissingDeps {
 					fullP := filepath.Join(g.opts.BpDir, m)
@@ -30,6 +34,11 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 					}
 				}
 			}
+		}
+	}
+	for i, tf := range toolFiles {
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(tf) && !strings.HasPrefix(tf, ":") {
+			toolFiles[i] = filepath.Clean(filepath.Join(mod.Dir, tf))
 		}
 	}
 
@@ -217,6 +226,10 @@ func (g *Generator) generatePrebuilt(mod *eval.EvaluatedModule) ([]string, error
 		src = resolved[0]
 	}
 
+	if mod.Dir != "" && mod.Dir != "." && !strings.HasPrefix(src, ":") && !filepath.IsAbs(src) {
+		src = filepath.Clean(filepath.Join(mod.Dir, src))
+	}
+
 	if strings.ContainsAny(src, "*?[") {
 		matches := g.expandGlob(src)
 		if len(matches) > 0 {
@@ -269,11 +282,31 @@ func (g *Generator) generateFallback(mod *eval.EvaluatedModule) ([]string, error
 		return nil, err
 	}
 
-	target := filepath.Join(g.libDir(), mod.Name+".a")
+	libBaseName := mod.Name
+	if !strings.HasPrefix(libBaseName, "lib") {
+		libBaseName = "lib" + libBaseName
+	}
+
+	target := filepath.Join(g.libDir(), libBaseName+".a")
 	err = g.nw.Build(ninja.BuildEdge{
 		Outputs: []string{target},
 		Rule:    "archive_static",
 		Inputs:  objs,
 	})
-	return []string{target}, err
+	if err != nil {
+		return nil, err
+	}
+	targets := []string{target}
+	if libBaseName != mod.Name {
+		aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{aliasTarget},
+			Rule:    "copy",
+			Inputs:  []string{target},
+		}); err != nil {
+			return nil, err
+		}
+		targets = append(targets, aliasTarget)
+	}
+	return targets, nil
 }

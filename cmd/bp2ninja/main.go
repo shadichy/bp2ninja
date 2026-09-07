@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"bp2ninja/pkg/eval"
@@ -147,6 +149,9 @@ func main() {
 		ndkVersion          string
 		apiLevel            int
 		ndkInfoFlag         bool
+		extraCflags         string
+		extraCppflags       string
+		extraLdflags        string
 		pluginPaths         stringListFlag
 		configVars          stringListFlag
 		convertPluginTarget string
@@ -155,9 +160,11 @@ func main() {
 		goworkRemote        bool
 		goworkTree          string
 		bp2ninjaDir         string
+		isHost              bool
+		traceSubdirs        bool
 	)
 
-	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file")
+	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
 	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
 	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
 	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
@@ -167,6 +174,15 @@ func main() {
 	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
 	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, riscv64)")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
+	flag.BoolVar(&isHost, "host", false, "Build for host instead of target (uses host compiler and host libraries)")
+	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
+	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
+
+	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS)
+	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS)")
+	flag.StringVar(&extraCppflags, "cppflags", "", "Extra C++ flags (or via $CPPFLAGS / $CXXFLAGS)")
+	flag.StringVar(&extraCppflags, "cxxflags", "", "Alias for -cppflags")
+	flag.StringVar(&extraLdflags, "ldflags", "", "Extra linker flags (or via $LDFLAGS)")
 
 	// Android NDK flags
 	flag.StringVar(&ndkPath, "ndk", "", "Path to Android NDK or 'auto' to auto-discover (Studio, $ANDROID_NDK, distro packages)")
@@ -244,23 +260,12 @@ func main() {
 	// Detect topDir if unset
 	if topDir == "" {
 		if envTop := os.Getenv("ANDROID_BUILD_TOP"); envTop != "" {
-			if rel, err := filepath.Rel(".", envTop); err == nil && !strings.HasPrefix(rel, "..") {
-				topDir = rel
-			} else {
-				topDir = "."
-			}
+			topDir = filepath.Clean(envTop)
 		} else {
 			topDir = "."
 		}
-	} else if filepath.IsAbs(topDir) {
-		if rel, err := filepath.Rel(".", topDir); err == nil && !strings.HasPrefix(rel, "..") {
-			topDir = rel
-		} else {
-			topDir = "."
-		}
-	}
-	if topDir == "" {
-		topDir = "."
+	} else {
+		topDir = filepath.Clean(topDir)
 	}
 
 	// Parse config variables (e.g. target_board_platform=sm8450)
@@ -317,46 +322,238 @@ func main() {
 		}
 	}
 
-	// 2. Read and parse Android.bp file
-	bpData, err := os.ReadFile(bpFile)
+	// 2. Determine root directory and discover Android.bp files
+	st, err := os.Stat(bpFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", bpFile, err)
+		fmt.Fprintf(os.Stderr, "Error accessing %s: %v\n", bpFile, err)
 		os.Exit(1)
 	}
 
-	r := strings.NewReader(string(bpData))
-	file, errs := parser.Parse(bpFile, r, parser.NewScope(nil))
-	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "Error parsing %s:\n", bpFile)
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "  %v\n", e)
+	var rootDir string
+	var primaryBp string
+	if st.IsDir() {
+		rootDir = filepath.Clean(bpFile)
+		primaryBp = filepath.Join(rootDir, "Android.bp")
+	} else {
+		rootDir = filepath.Dir(bpFile)
+		primaryBp = bpFile
+	}
+	if rootDir == "" {
+		rootDir = "."
+	}
+	if filepath.IsAbs(rootDir) {
+		if rel, err := filepath.Rel(".", rootDir); err == nil && !strings.HasPrefix(rel, "..") {
+			rootDir = rel
 		}
-		os.Exit(1)
 	}
 
-	// 3. Evaluate AST and flatten defaults
+	oFlagPassed := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "o" {
+			oFlagPassed = true
+		}
+	})
+	if !oFlagPassed && rootDir != "." {
+		outFile = filepath.Join(rootDir, "build.ninja")
+	}
+
 	evalCtx := eval.NewContext(configMap, arch)
-	if err := evalCtx.EvalFile(file); err != nil {
-		fmt.Fprintf(os.Stderr, "Error evaluating AST: %v\n", err)
-		os.Exit(1)
-	}
+	evalCtx.IsHost = isHost
 
-	// 3.5. Resolve Android NDK if requested or configured
-	var activeNDK *ndk.NDKInfo
-	if ndkPath != "" || ndkVersion != "" {
-		resolved, err := ndk.ResolveNDK(ndkPath, ndkVersion)
+	evaluatedFiles := make(map[string]bool)
+	var explicitSubdirs []string
+	var explicitBuildFiles []string
+
+	// Check if primaryBp exists (e.g. rootDir/Android.bp)
+	if primarySt, err := os.Stat(primaryBp); err == nil && !primarySt.IsDir() {
+		absPrimary, err := filepath.Abs(primaryBp)
+		if err == nil {
+			evaluatedFiles[absPrimary] = true
+		}
+
+		bpData, err := os.ReadFile(primaryBp)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error resolving Android NDK: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", primaryBp, err)
 			os.Exit(1)
 		}
-		activeNDK = resolved
-	} else if envNdk := os.Getenv("ANDROID_NDK"); envNdk != "" && os.Getenv("USE_NDK") == "1" {
-		if resolved, err := ndk.ResolveNDK(envNdk, ""); err == nil {
-			activeNDK = resolved
+
+		r := strings.NewReader(string(bpData))
+		file, errs := parser.Parse(primaryBp, r, parser.NewScope(nil))
+		if len(errs) > 0 {
+			fmt.Fprintf(os.Stderr, "Error parsing %s:\n", primaryBp)
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "  %v\n", e)
+			}
+			os.Exit(1)
+		}
+
+		if err := evalCtx.EvalFileInDir(file, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "Error evaluating AST for %s: %v\n", primaryBp, err)
+			os.Exit(1)
+		}
+
+		sDirs, bFiles := eval.ExtractSubdirs(file)
+		explicitSubdirs = append(explicitSubdirs, sDirs...)
+		explicitBuildFiles = append(explicitBuildFiles, bFiles...)
+	}
+
+	type childFile struct {
+		path   string
+		relDir string
+		depth  int
+	}
+	var childFiles []childFile
+
+	// 1) Explicit build files (e.g. build = ["..."])
+	for _, bf := range explicitBuildFiles {
+		bfPath := filepath.Join(rootDir, bf)
+		if fi, err := os.Stat(bfPath); err == nil && !fi.IsDir() {
+			abs, err := filepath.Abs(bfPath)
+			if err == nil && !evaluatedFiles[abs] {
+				relPath, _ := filepath.Rel(rootDir, bfPath)
+				relDir := filepath.Dir(relPath)
+				if relDir == "." {
+					relDir = ""
+				}
+				depth := 0
+				if relDir != "" {
+					depth = strings.Count(relDir, string(filepath.Separator)) + 1
+				}
+				childFiles = append(childFiles, childFile{
+					path:   bfPath,
+					relDir: relDir,
+					depth:  depth,
+				})
+			}
 		}
 	}
 
-	arPath := "llvm-ar"
+	// 2) Trace subdirectories
+	if traceSubdirs {
+		_ = filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			name := info.Name()
+			if info.IsDir() {
+				if path != rootDir {
+					if strings.HasPrefix(name, ".") || name == "out" || name == "node_modules" {
+						return filepath.SkipDir
+					}
+				}
+				return nil
+			}
+			if name == "Android.bp" {
+				abs, err := filepath.Abs(path)
+				if err == nil && evaluatedFiles[abs] {
+					return nil
+				}
+				relPath, err := filepath.Rel(rootDir, path)
+				if err != nil {
+					return nil
+				}
+				relDir := filepath.Dir(relPath)
+				if relDir == "." {
+					relDir = ""
+				}
+				depth := 0
+				if relDir != "" {
+					depth = strings.Count(relDir, string(filepath.Separator)) + 1
+				}
+				childFiles = append(childFiles, childFile{
+					path:   path,
+					relDir: relDir,
+					depth:  depth,
+				})
+			}
+			return nil
+		})
+	} else {
+		// Process explicit subdirs if traceSubdirs is disabled
+		for _, sDir := range explicitSubdirs {
+			subBp := filepath.Join(rootDir, sDir, "Android.bp")
+			if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
+				abs, err := filepath.Abs(subBp)
+				if err == nil && !evaluatedFiles[abs] {
+					relDir := sDir
+					depth := strings.Count(relDir, string(filepath.Separator)) + 1
+					childFiles = append(childFiles, childFile{
+						path:   subBp,
+						relDir: relDir,
+						depth:  depth,
+					})
+				}
+			}
+		}
+	}
+
+	// Sort child files so parent directories are evaluated before deeper children
+	sort.Slice(childFiles, func(i, j int) bool {
+		if childFiles[i].depth != childFiles[j].depth {
+			return childFiles[i].depth < childFiles[j].depth
+		}
+		return childFiles[i].relDir < childFiles[j].relDir
+	})
+
+	// Evaluate all discovered child files
+	for _, cf := range childFiles {
+		abs, err := filepath.Abs(cf.path)
+		if err == nil {
+			if evaluatedFiles[abs] {
+				continue
+			}
+			evaluatedFiles[abs] = true
+		}
+
+		childData, err := os.ReadFile(cf.path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not read child file %s: %v\n", cf.path, err)
+			continue
+		}
+
+		r := strings.NewReader(string(childData))
+		childAst, errs := parser.Parse(cf.path, r, parser.NewScope(nil))
+		if len(errs) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: Parsing errors in %s:\n", cf.path)
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "  %v\n", e)
+			}
+			continue
+		}
+
+		if err := evalCtx.EvalFileInDir(childAst, cf.relDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Evaluating %s: %v\n", cf.path, err)
+			continue
+		}
+		fmt.Printf("[bp2ninja] Evaluated child Android.bp: %s\n", cf.path)
+	}
+
+	if len(evalCtx.Modules) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: No modules found in %s\n", bpFile)
+		os.Exit(1)
+	}
+
+	// 3.5. Resolve Android NDK if requested or configured (target only)
+	var activeNDK *ndk.NDKInfo
+	if !isHost {
+		if ndkPath != "" || ndkVersion != "" {
+			resolved, err := ndk.ResolveNDK(ndkPath, ndkVersion)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving Android NDK: %v\n", err)
+				os.Exit(1)
+			}
+			activeNDK = resolved
+		} else if envNdk := os.Getenv("ANDROID_NDK"); envNdk != "" && os.Getenv("USE_NDK") == "1" {
+			if resolved, err := ndk.ResolveNDK(envNdk, ""); err == nil {
+				activeNDK = resolved
+			}
+		}
+	}
+
+	arPath := "ar"
+	if _, err := exec.LookPath("llvm-ar"); err == nil {
+		arPath = "llvm-ar"
+	}
 	targetTriple := ndk.ArchitectureToTriple(arch)
 	if activeNDK != nil {
 		tc, err := activeNDK.GetToolchain(arch, apiLevel)
@@ -383,6 +580,7 @@ func main() {
 
 	// 4. Set up Generator options
 	opts := generator.DefaultOptions(topDir, outDir)
+	opts.IsHost = isHost
 	opts.TargetArch = arch
 	opts.TargetTriple = targetTriple
 	opts.APILevel = apiLevel
@@ -393,19 +591,44 @@ func main() {
 	if activeNDK != nil {
 		opts.NDKDir = activeNDK.Path
 	}
-	bpDir := filepath.Dir(bpFile)
-	if filepath.IsAbs(bpDir) {
-		if rel, err := filepath.Rel(".", bpDir); err == nil && !strings.HasPrefix(rel, "..") {
-			bpDir = rel
-		}
-	}
-	opts.BpDir = bpDir
+	opts.BpDir = rootDir
 	if sysrootDir != "" {
 		opts.SysrootDir = sysrootDir
 	}
 	if prebuiltLibs != "" {
 		opts.PrebuiltLibDir = prebuiltLibs
 	}
+
+	// Merge environment variables and CLI extra flags (per-project configuration)
+	var combinedCflags []string
+	if envCflags := os.Getenv("CFLAGS"); envCflags != "" {
+		combinedCflags = append(combinedCflags, strings.Fields(envCflags)...)
+	}
+	if extraCflags != "" {
+		combinedCflags = append(combinedCflags, strings.Fields(extraCflags)...)
+	}
+	opts.ExtraCflags = combinedCflags
+
+	var combinedCppflags []string
+	if envCppflags := os.Getenv("CPPFLAGS"); envCppflags != "" {
+		combinedCppflags = append(combinedCppflags, strings.Fields(envCppflags)...)
+	}
+	if envCxxflags := os.Getenv("CXXFLAGS"); envCxxflags != "" {
+		combinedCppflags = append(combinedCppflags, strings.Fields(envCxxflags)...)
+	}
+	if extraCppflags != "" {
+		combinedCppflags = append(combinedCppflags, strings.Fields(extraCppflags)...)
+	}
+	opts.ExtraCppflags = combinedCppflags
+
+	var combinedLdflags []string
+	if envLdflags := os.Getenv("LDFLAGS"); envLdflags != "" {
+		combinedLdflags = append(combinedLdflags, strings.Fields(envLdflags)...)
+	}
+	if extraLdflags != "" {
+		combinedLdflags = append(combinedLdflags, strings.Fields(extraLdflags)...)
+	}
+	opts.ExtraLdflags = combinedLdflags
 
 	// 5. Open output file and generate Ninja rules
 	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil && filepath.Dir(outFile) != "." {

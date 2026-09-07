@@ -17,6 +17,7 @@ type PluginContext struct {
 	TopDir           string
 	OutDir           string
 	BpDir            string
+	SubDir           string
 	AllowMissingDeps bool
 	NinjaWriter      *ninja.Writer
 }
@@ -34,8 +35,13 @@ func (c *PluginContext) EmitPhonyIfNeeded(target string) {
 }
 
 func (c *PluginContext) ResolvePath(p string) string {
-	if !filepath.IsAbs(p) && c.BpDir != "" {
-		return filepath.Join(c.BpDir, p)
+	if !filepath.IsAbs(p) {
+		if c.SubDir != "" && c.SubDir != "." {
+			p = filepath.Join(c.SubDir, p)
+		}
+		if c.BpDir != "" {
+			return filepath.Join(c.BpDir, p)
+		}
 	}
 	return p
 }

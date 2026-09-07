@@ -14,14 +14,25 @@ import re
 import sys
 import shutil
 import argparse
+import tempfile
 import subprocess
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BP2NINJA_DIR = SCRIPT_DIR.parent
-DEFAULT_OUT_DIR = BP2NINJA_DIR / "plugins"
 
-def find_aosp_root(arg_tree=None):
+def find_bp2ninja_dir(arg_dir=None):
+    if arg_dir and Path(arg_dir).is_dir():
+        return Path(arg_dir).resolve()
+    if os.environ.get("BP2NINJA_DIR") and Path(os.environ["BP2NINJA_DIR"]).is_dir():
+        return Path(os.environ["BP2NINJA_DIR"]).resolve()
+    if (SCRIPT_DIR.parent / "pkg").is_dir():
+        return SCRIPT_DIR.parent.resolve()
+    for cand in [Path("/usr/share/bp2ninja"), Path("/usr/local/share/bp2ninja")]:
+        if (cand / "pkg").is_dir():
+            return cand.resolve()
+    return SCRIPT_DIR.parent.resolve()
+
+def find_aosp_root(arg_tree=None, required=False):
     if arg_tree and Path(arg_tree).is_dir():
         return Path(arg_tree).resolve()
     if os.environ.get("ANDROID_BUILD_TOP") and Path(os.environ["ANDROID_BUILD_TOP"]).is_dir():
@@ -40,15 +51,18 @@ def find_aosp_root(arg_tree=None):
                 pass
             curr = curr.parent
 
-    raise RuntimeError("Cannot locate Android source tree root. Please set ANDROID_BUILD_TOP or pass --tree.")
+    if required:
+        raise RuntimeError("Cannot locate Android source tree root. Please set ANDROID_BUILD_TOP or pass --tree.")
+    return None
 
 def find_go_compiler(aosp_tree=None):
     candidates = []
     if aosp_tree:
         candidates.append(Path(aosp_tree) / "prebuilts/go/linux-x86/bin/go")
     try:
-        discovered_aosp = find_aosp_root()
-        candidates.append(discovered_aosp / "prebuilts/go/linux-x86/bin/go")
+        discovered_aosp = find_aosp_root(required=False)
+        if discovered_aosp:
+            candidates.append(discovered_aosp / "prebuilts/go/linux-x86/bin/go")
     except Exception:
         pass
     for c in candidates:
@@ -187,7 +201,8 @@ func (h *{name}Handler) HandleModule(ctx *plugins.PluginContext) ([]string, erro
 var Handler plugins.ModuleHandler = &{name}Handler{{}}
 """
 
-def convert_plugin(target_path, out_so_path=None, aosp_tree=None):
+def convert_plugin(target_path, out_so_path=None, aosp_tree=None, bp2ninja_dir=None):
+    bp2ninja_dir = find_bp2ninja_dir(bp2ninja_dir)
     go = find_go_compiler(aosp_tree)
     info = analyze_go_sources(target_path)
     if not info or not info["registered_types"]:
@@ -197,41 +212,45 @@ def convert_plugin(target_path, out_so_path=None, aosp_tree=None):
     print(f"[+] Found {len(info['registered_types'])} module types in {target_path}: {info['registered_types']}")
 
     if out_so_path:
-        out_so_path = Path(out_so_path)
-        out_name = out_so_path.stem
+        out_so_path = Path(out_so_path).resolve()
     else:
         out_name = info["name"]
-        out_so_path = DEFAULT_OUT_DIR / f"{out_name}.so"
+        out_so_path = (bp2ninja_dir / "plugins" / f"{out_name}.so").resolve()
 
     out_so_path.parent.mkdir(parents=True, exist_ok=True)
 
-    plugin_sub_dir = DEFAULT_OUT_DIR / out_name
-    plugin_sub_dir.mkdir(parents=True, exist_ok=True)
-    adapter_src = plugin_sub_dir / "plugin.go"
-    code = generate_adapter_code(info)
-    adapter_src.write_text(code, encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="bp2ninja_build_") as tmpdir:
+        tmp = Path(tmpdir)
+        if (bp2ninja_dir / "go.mod").is_file():
+            os.symlink(bp2ninja_dir / "go.mod", tmp / "go.mod")
+        if (bp2ninja_dir / "pkg").is_dir():
+            os.symlink(bp2ninja_dir / "pkg", tmp / "pkg")
 
-    print(f"    Generated adapter: {adapter_src}")
-    print(f"    Compiling plugin to: {out_so_path}...")
+        adapter_src = tmp / "plugin.go"
+        code = generate_adapter_code(info)
+        adapter_src.write_text(code, encoding="utf-8")
 
-    env = os.environ.copy()
-    cmd = [go, "build", "-trimpath", "-buildmode=plugin", "-o", str(out_so_path), str(adapter_src)]
-    res = subprocess.run(cmd, cwd=str(BP2NINJA_DIR), env=env, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"[-] Build error for {out_so_path}:")
-        print(res.stderr)
-        return False
+        print(f"    Compiling plugin to: {out_so_path}...")
+        env = os.environ.copy()
+        cmd = [go, "build", "-trimpath", "-buildmode=plugin", "-o", str(out_so_path), str(adapter_src)]
+        res = subprocess.run(cmd, cwd=tmpdir, env=env, capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"[-] Build error for {out_so_path}:")
+            print(res.stderr)
+            return False
 
     size_mb = out_so_path.stat().st_size / (1024 * 1024)
     print(f"[OK] Successfully built plugin: {out_so_path} ({size_mb:.1f} MB)")
     return True
 
-def convert_all_plugins(aosp_tree):
+def convert_all_plugins(aosp_tree, bp2ninja_dir=None):
     """
     Dynamically discovers and converts all custom Soong plugins in the tree.
     Zero pre-baked lists: scans for bootstrap_go_package outside core Soong.
     """
     aosp = Path(aosp_tree)
+    bp2ninja_dir = find_bp2ninja_dir(bp2ninja_dir)
+    default_out_dir = bp2ninja_dir / "plugins"
     print(f"[*] Discovering and converting all custom in-tree plugins across {aosp}...")
     converted = 0
     for root, dirs, files in os.walk(aosp):
@@ -259,8 +278,8 @@ def convert_all_plugins(aosp_tree):
                     for m in re.finditer(r"bootstrap_go_package\s*\{([^}]+)\}", content):
                         nm = re.search(r"name:\s*\"([^\"]+)\"", m.group(1))
                         pkg_name = nm.group(1) if nm else Path(root).name
-                        out_so = DEFAULT_OUT_DIR / f"{pkg_name}.so"
-                        if convert_plugin(root, out_so_path=out_so, aosp_tree=aosp):
+                        out_so = default_out_dir / f"{pkg_name}.so"
+                        if convert_plugin(root, out_so_path=out_so, aosp_tree=aosp, bp2ninja_dir=bp2ninja_dir):
                             converted += 1
 
     print(f"\n[convert_plugin] Converted {converted} custom plugins successfully.")
@@ -268,26 +287,31 @@ def convert_all_plugins(aosp_tree):
 def main():
     parser = argparse.ArgumentParser(description="Convert in-tree Soong plugins to bp2ninja plugins (.so)")
     parser.add_argument("target", nargs="?", help="Path to in-tree plugin directory or .go file")
+    parser.add_argument("-s", "--src", dest="src_opt", help="Source directory or file (alias for target)")
     parser.add_argument("-o", "--output", help="Output .so path")
     parser.add_argument("--tree", default=None, help="Android source tree root (auto-detected if omitted)")
+    parser.add_argument("--bp2ninja-dir", default=None, help="bp2ninja package/repo root directory")
+    parser.add_argument("--all", action="store_true", help="Convert all plugins found in AOSP tree")
     parser.add_argument("--get-go", action="store_true", help="Print path to detected Go compiler and exit")
 
     args = parser.parse_args()
 
     if args.get_go:
         try:
-            aosp_tree = find_aosp_root(args.tree)
+            aosp_tree = find_aosp_root(args.tree, required=False)
         except Exception:
             aosp_tree = None
         print(find_go_compiler(aosp_tree))
         return
 
-    aosp_tree = find_aosp_root(args.tree)
+    target = args.src_opt or args.target
 
-    if args.all or not args.target:
-        convert_all_plugins(aosp_tree)
+    if args.all or not target:
+        aosp_tree = find_aosp_root(args.tree, required=True)
+        convert_all_plugins(aosp_tree, bp2ninja_dir=args.bp2ninja_dir)
     else:
-        if not convert_plugin(args.target, args.output, aosp_tree):
+        aosp_tree = find_aosp_root(args.tree, required=False)
+        if not convert_plugin(target, args.output, aosp_tree=aosp_tree, bp2ninja_dir=args.bp2ninja_dir):
             sys.exit(1)
 
 if __name__ == "__main__":

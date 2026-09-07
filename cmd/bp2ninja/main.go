@@ -106,8 +106,14 @@ func main() {
 		return nil
 	}
 
+	var searchDirs []string
 	if envDir := os.Getenv("BP2NINJA_PLUGINS_DIR"); envDir != "" {
-		if matches, err := filepath.Glob(filepath.Join(envDir, "*.so")); err == nil {
+		searchDirs = append(searchDirs, envDir)
+	}
+	searchDirs = append(searchDirs, "/usr/lib/bp2ninja/plugins", "/usr/local/lib/bp2ninja/plugins")
+
+	for _, sDir := range searchDirs {
+		if matches, err := filepath.Glob(filepath.Join(sDir, "*.so")); err == nil {
 			for _, p := range matches {
 				_ = loadPluginFile(p, false)
 			}

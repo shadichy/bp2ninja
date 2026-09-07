@@ -224,7 +224,18 @@ func (g *Generator) emitHeader() error {
 	g.nw.BlankLine()
 	g.nw.Variable("ninja_required_version", "1.7.0")
 	g.nw.Variable("builddir", g.opts.OutDir)
-	g.nw.Variable("top", g.opts.TopDir)
+	relTop := g.opts.TopDir
+	if filepath.IsAbs(relTop) {
+		if rel, err := filepath.Rel(".", relTop); err == nil && !strings.HasPrefix(rel, "..") {
+			relTop = rel
+		} else {
+			relTop = "."
+		}
+	}
+	if relTop == "" {
+		relTop = "."
+	}
+	g.nw.Variable("top", relTop)
 	g.nw.BlankLine()
 
 	g.nw.Variable("cc", g.opts.ClangPath)

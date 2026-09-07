@@ -10,3 +10,4 @@ plugins/*/
 go.work
 go.work.sum
 .deps/
+/scripts/

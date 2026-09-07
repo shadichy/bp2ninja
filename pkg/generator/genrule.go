@@ -224,12 +224,13 @@ func (g *Generator) generatePrebuilt(mod *eval.EvaluatedModule) ([]string, error
 		}
 	}
 
-	inputPath := src
-	if !filepath.IsAbs(src) && g.opts.BpDir != "" {
-		inputPath = filepath.Join(g.opts.BpDir, src)
-	}
 	g.emitPhonyIfNeeded(src)
-	g.emitPhonyIfNeeded(inputPath)
+	if !filepath.IsAbs(src) && g.opts.BpDir != "" && g.opts.BpDir != "." && !filepath.IsAbs(g.opts.BpDir) {
+		inputPath := filepath.Clean(filepath.Join(g.opts.BpDir, src))
+		if inputPath != src {
+			g.emitPhonyIfNeeded(inputPath)
+		}
+	}
 
 	filename := mod.GetString("filename")
 	if filename == "" {

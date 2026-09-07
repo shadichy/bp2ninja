@@ -205,10 +205,23 @@ func main() {
 	// Detect topDir if unset
 	if topDir == "" {
 		if envTop := os.Getenv("ANDROID_BUILD_TOP"); envTop != "" {
-			topDir = envTop
+			if rel, err := filepath.Rel(".", envTop); err == nil && !strings.HasPrefix(rel, "..") {
+				topDir = rel
+			} else {
+				topDir = "."
+			}
 		} else {
 			topDir = "."
 		}
+	} else if filepath.IsAbs(topDir) {
+		if rel, err := filepath.Rel(".", topDir); err == nil && !strings.HasPrefix(rel, "..") {
+			topDir = rel
+		} else {
+			topDir = "."
+		}
+	}
+	if topDir == "" {
+		topDir = "."
 	}
 
 	// Parse config variables (e.g. target_board_platform=sm8450)
@@ -294,8 +307,14 @@ func main() {
 	opts.TargetArch = arch
 	opts.ClangPath = clangPath
 	opts.ClangCxxPath = clangCxxPath
-	opts.BpDir = filepath.Dir(bpFile)
 	opts.AllowMissingDeps = allowMissing
+	bpDir := filepath.Dir(bpFile)
+	if filepath.IsAbs(bpDir) {
+		if rel, err := filepath.Rel(".", bpDir); err == nil && !strings.HasPrefix(rel, "..") {
+			bpDir = rel
+		}
+	}
+	opts.BpDir = bpDir
 	if sysrootDir != "" {
 		opts.SysrootDir = sysrootDir
 	}

@@ -86,13 +86,13 @@ func (g *Generator) autoDeriveDirCollector(mod *eval.EvaluatedModule, srcDir str
 		Description: "COPY $out",
 	})
 
-	absSrc := filepath.Join(g.opts.BpDir, srcDir)
-	entries, err := os.ReadDir(absSrc)
+	dirToRead := filepath.Join(g.opts.BpDir, srcDir)
+	entries, err := os.ReadDir(dirToRead)
 	var outputs []string
 	if err == nil {
 		for _, e := range entries {
 			if !e.IsDir() {
-				srcFile := filepath.Join(absSrc, e.Name())
+				srcFile := filepath.Clean(filepath.Join(srcDir, e.Name()))
 				outFile := filepath.Join(targetBase, e.Name())
 				outputs = append(outputs, outFile)
 

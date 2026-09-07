@@ -156,7 +156,7 @@ pkgdesc="{p['desc']}"
 arch=('x86_64' 'aarch64')
 license=('Apache-2.0')
 depends=('bp2ninja')
-makedepends=('go' 'python')
+makedepends=('go')
 provides=("{p['name']}" "bp2ninja-plugin-{p['name']}")
 conflicts=("{p['name']}")
 source=(
@@ -168,7 +168,7 @@ sha256sums=(
 
 build() {{
     cd "$srcdir"
-    bp2ninja-convert-plugin . -o "${{_plugin_name}}.so"
+    bp2ninja convert-plugin . -o "${{_plugin_name}}.so"
 }}
 
 package() {{

@@ -9,6 +9,7 @@ import (
 
 	"bp2ninja/pkg/eval"
 	"bp2ninja/pkg/generator"
+	"bp2ninja/pkg/gowork"
 	"bp2ninja/pkg/ninja"
 	"bp2ninja/pkg/parser"
 	"bp2ninja/pkg/plugins"
@@ -30,20 +31,125 @@ func (s *stringListFlag) Set(val string) error {
 	return nil
 }
 
+func handleConvertPlugin(args []string) {
+	var target string
+	var outSo string
+	var bp2ninjaDir string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-o" || arg == "--output" || arg == "-output" {
+			if i+1 < len(args) {
+				outSo = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-o=") || strings.HasPrefix(arg, "--output=") {
+			parts := strings.SplitN(arg, "=", 2)
+			outSo = parts[1]
+		} else if arg == "--bp2ninja-dir" || arg == "-bp2ninja-dir" {
+			if i+1 < len(args) {
+				bp2ninjaDir = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "--bp2ninja-dir=") {
+			parts := strings.SplitN(arg, "=", 2)
+			bp2ninjaDir = parts[1]
+		} else if !strings.HasPrefix(arg, "-") && target == "" {
+			target = arg
+		}
+	}
+	if target == "" {
+		target = "."
+	}
+
+	if err := plugins.ConvertPlugin(target, outSo, bp2ninjaDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error converting plugin: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func handleGoWork(args []string) {
+	var treeDir string
+	var workDir = "."
+	var remote bool
+	var clean bool
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--remote" || arg == "-remote":
+			remote = true
+		case arg == "--clean" || arg == "-clean":
+			clean = true
+		case arg == "--tree" || arg == "-tree":
+			if i+1 < len(args) {
+				treeDir = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--tree="):
+			parts := strings.SplitN(arg, "=", 2)
+			treeDir = parts[1]
+		case arg == "--dir" || arg == "-dir":
+			if i+1 < len(args) {
+				workDir = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(arg, "--dir="):
+			parts := strings.SplitN(arg, "=", 2)
+			workDir = parts[1]
+		}
+	}
+
+	if clean {
+		if err := gowork.CleanGoWork(workDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error cleaning go.work: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if err := gowork.GenerateGoWork(treeDir, workDir, remote); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating go.work: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "convert-plugin":
+			handleConvertPlugin(os.Args[2:])
+			return
+		case "gowork":
+			handleGoWork(os.Args[2:])
+			return
+		case "clean-gowork":
+			_ = gowork.CleanGoWork(".")
+			return
+		}
+	}
+
 	var (
-		bpFile       string
-		outFile      string
-		outDir       string
-		topDir       string
-		sysrootDir   string
-		prebuiltLibs string
-		clangPath    string
-		clangCxxPath string
-		arch         string
-		allowMissing bool
-		pluginPaths  stringListFlag
-		configVars   stringListFlag
+		bpFile              string
+		outFile             string
+		outDir              string
+		topDir              string
+		sysrootDir          string
+		prebuiltLibs        string
+		clangPath           string
+		clangCxxPath        string
+		arch                string
+		allowMissing        bool
+		pluginPaths         stringListFlag
+		configVars          stringListFlag
+		convertPluginTarget string
+		genGoWork           bool
+		cleanGoWork         bool
+		goworkRemote        bool
+		goworkTree          string
+		bp2ninjaDir         string
 	)
 
 	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file")
@@ -57,6 +163,14 @@ func main() {
 	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64)")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
 
+	// Built-in tool flags
+	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
+	flag.StringVar(&bp2ninjaDir, "bp2ninja-dir", "", "Path to bp2ninja package root (used with -convert-plugin)")
+	flag.BoolVar(&genGoWork, "gen-gowork", false, "Generate go.work resolving android/* packages")
+	flag.BoolVar(&cleanGoWork, "clean-gowork", false, "Remove go.work and go.work.sum")
+	flag.BoolVar(&goworkRemote, "remote", false, "Clone missing packages remotely in go.work generation")
+	flag.StringVar(&goworkTree, "tree", "", "Android source tree root for go.work generation")
+
 	// Plugin flags: -a, -add-plugin, --add-plugin, -plugin
 	flag.Var(&pluginPaths, "a", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
 	flag.Var(&pluginPaths, "add-plugin", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
@@ -64,6 +178,29 @@ func main() {
 	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
 
 	flag.Parse()
+
+	// Handle standalone tool actions if flags passed
+	if convertPluginTarget != "" {
+		if err := plugins.ConvertPlugin(convertPluginTarget, outFile, bp2ninjaDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error converting plugin: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cleanGoWork {
+		if err := gowork.CleanGoWork("."); err != nil {
+			fmt.Fprintf(os.Stderr, "Error cleaning go.work: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if genGoWork {
+		if err := gowork.GenerateGoWork(goworkTree, ".", goworkRemote); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating go.work: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Detect topDir if unset
 	if topDir == "" {

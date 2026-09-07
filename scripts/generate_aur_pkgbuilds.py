@@ -3,12 +3,15 @@
 generate_aur_pkgbuilds.py: Automated AUR PKGBUILD generator for bp2ninja and custom plugins.
 """
 
+import argparse
+import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 BP2NINJA_DIR = Path(__file__).resolve().parent.parent
-AUR_DIR = BP2NINJA_DIR.parent.parent / "aur"
-AUR_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_AUR_DIR = BP2NINJA_DIR.parent.parent / "aur_backup"
 
 PACKAGES = [
     {
@@ -138,10 +141,78 @@ PACKAGES = [
     },
 ]
 
-def main():
-    print(f"Generating PKGBUILDs in: {AUR_DIR}")
+def generate_bp2ninja(target_dir: Path):
+    folder = target_dir / "bp2ninja"
+    folder.mkdir(parents=True, exist_ok=True)
+    pkgver = "0.1.0"
+    tar_name = f"bp2ninja-{pkgver}.tar.gz"
+    tar_path = folder / tar_name
+
+    # Create tar.gz archive from git HEAD
+    cmd = [
+        "git", "-C", str(BP2NINJA_DIR), "archive",
+        "--format=tar.gz", f"--prefix=bp2ninja-{pkgver}/", "HEAD",
+        "-o", str(tar_path)
+    ]
+    subprocess.run(cmd, check=True)
+
+    # Compute sha256
+    with open(tar_path, "rb") as f:
+        sha256 = hashlib.sha256(f.read()).hexdigest()
+
+    content = f"""# Maintainer: Android Generic / Bliss OS Team
+pkgname=bp2ninja
+pkgver={pkgver}
+pkgrel=1
+pkgdesc="Universal Blueprint (Android.bp) to Ninja generator"
+arch=('x86_64' 'aarch64')
+license=('Apache-2.0')
+depends=('glibc')
+makedepends=('go')
+optdepends=(
+    'ninja: to execute generated build.ninja files'
+    'android-ndk: for cross-compiling Android components against Bionic libc'
+    'android-ndk-beta: for testing preview Android NDK toolchain releases'
+)
+source=("{tar_name}")
+sha256sums=('{sha256}')
+
+build() {{
+    [ -d "${{srcdir}}/${{pkgname}}-${{pkgver}}" ] && cd "${{srcdir}}/${{pkgname}}-${{pkgver}}" || cd "${{srcdir}}/${{pkgname}}"
+    export CGO_ENABLED=1
+    go build -trimpath -ldflags="-s -w" -o bin/bp2ninja ./cmd/bp2ninja
+}}
+
+check() {{
+    [ -d "${{srcdir}}/${{pkgname}}-${{pkgver}}" ] && cd "${{srcdir}}/${{pkgname}}-${{pkgver}}" || cd "${{srcdir}}/${{pkgname}}"
+    go test -v ./...
+}}
+
+package() {{
+    [ -d "${{srcdir}}/${{pkgname}}-${{pkgver}}" ] && cd "${{srcdir}}/${{pkgname}}-${{pkgver}}" || cd "${{srcdir}}/${{pkgname}}"
+
+    # Install main binary
+    install -Dm755 bin/bp2ninja "${{pkgdir}}/usr/bin/bp2ninja"
+
+    # Install Go module packages and go.mod so plugins can link against them
+    install -Dm644 go.mod "${{pkgdir}}/usr/share/bp2ninja/go.mod"
+    install -d "${{pkgdir}}/usr/share/bp2ninja/pkg"
+    cp -a pkg/* "${{pkgdir}}/usr/share/bp2ninja/pkg/"
+
+    # Create system plugins directory
+    install -d "${{pkgdir}}/usr/lib/bp2ninja/plugins"
+
+    # Install documentation
+    [ -f README.md ] && install -Dm644 README.md "${{pkgdir}}/usr/share/doc/${{pkgname}}/README.md" || true
+}}
+"""
+    (folder / "PKGBUILD").write_text(content, encoding="utf-8")
+    print(f"  [+] {folder.name}/PKGBUILD (sha256: {sha256[:16]}...)")
+
+
+def generate_plugins(target_dir: Path):
     for p in PACKAGES:
-        folder = AUR_DIR / f"bp2ninja-plugin-{p['name']}"
+        folder = target_dir / f"bp2ninja-plugin-{p['name']}"
         folder.mkdir(parents=True, exist_ok=True)
         
         src_lines = "\n    ".join(f'"{s}"' for s in p['sources'])
@@ -179,7 +250,25 @@ package() {{
         pkgbuild_path.write_text(content, encoding="utf-8")
         print(f"  [+] {folder.name}/PKGBUILD")
 
-    print(f"\n[OK] Generated {len(PACKAGES)} plugin PKGBUILDs successfully.")
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate AUR PKGBUILDs for bp2ninja and plugins")
+    parser.add_argument("--out-dir", "-o", default=str(DEFAULT_AUR_DIR),
+                        help="Target output directory (default: ../../aur_backup)")
+    args = parser.parse_args()
+
+    target_dir = Path(args.out_dir).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Generating PKGBUILDs in: {target_dir}")
+
+    print("\n[*] 1. Generating bp2ninja base package:")
+    generate_bp2ninja(target_dir)
+
+    print(f"\n[*] 2. Generating {len(PACKAGES)} plugin packages:")
+    generate_plugins(target_dir)
+
+    print(f"\n[OK] Successfully generated bp2ninja and {len(PACKAGES)} plugins in {target_dir}")
+
 
 if __name__ == "__main__":
     main()

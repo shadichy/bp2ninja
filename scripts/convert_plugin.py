@@ -137,7 +137,13 @@ def generate_adapter_code(info):
     Generates a generic, scalable bp2ninja ModuleHandler adapter purely from
     the parsed module types, rules, and property ASTs.
     """
-    name = re.sub(r'[^a-zA-Z0-9]', '_', info["name"]).title().replace('_', '')
+    base_name = info["name"]
+    if not base_name or base_name in {".", "src", "build"}:
+        if info["registered_types"]:
+            base_name = info["registered_types"][0]
+        else:
+            base_name = "Custom"
+    name = re.sub(r'[^a-zA-Z0-9]', '_', base_name).title().replace('_', '') + "Module"
     types_list_go = ", ".join(f'"{t}"' for t in info["registered_types"])
 
     cmd_str = ""

@@ -26,10 +26,13 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 		vars["libs"] = strings.Join(libs, " ")
 	}
 
+	implicits := g.collectLinkImplicits(mod)
+
 	err = g.nw.Build(ninja.BuildEdge{
 		Outputs:   []string{target},
 		Rule:      "link_binary",
 		Inputs:    objs,
+		Implicits: implicits,
 		Variables: vars,
 	})
 	return []string{target}, err
@@ -58,25 +61,24 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		return []string{phonyTarget}, err
 	}
 
+	sharedMod := mod.WithVariant("shared")
+	staticMod := mod.WithVariant("static")
+
+	buildShared := (mod.Type == "cc_library" || mod.Type == "cc_library_shared" ||
+		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_shared") && sharedMod.IsEnabled()
+	buildStatic := (mod.Type == "cc_library" || mod.Type == "cc_library_static" ||
+		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_static") && staticMod.IsEnabled()
+
+	if !buildShared && !buildStatic {
+		return nil, nil
+	}
+
 	objs, err := g.compileCcSources(mod)
 	if err != nil || len(objs) == 0 {
 		return nil, err
 	}
 
 	var targets []string
-	buildShared := mod.Type == "cc_library" || mod.Type == "cc_library_shared" ||
-		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_shared"
-	buildStatic := mod.Type == "cc_library" || mod.Type == "cc_library_static" ||
-		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_static"
-
-	ldflags, libs := g.resolveLinkerArgs(mod)
-	vars := map[string]string{}
-	if len(ldflags) > 0 {
-		vars["ldflags"] = strings.Join(ldflags, " ")
-	}
-	if len(libs) > 0 {
-		vars["libs"] = strings.Join(libs, " ")
-	}
 
 	libBaseName := mod.Name
 	if !strings.HasPrefix(libBaseName, "lib") {
@@ -84,11 +86,23 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 	}
 
 	if buildShared {
+		ldflags, libs := g.resolveLinkerArgs(sharedMod)
+		vars := map[string]string{}
+		if len(ldflags) > 0 {
+			vars["ldflags"] = strings.Join(ldflags, " ")
+		}
+		if len(libs) > 0 {
+			vars["libs"] = strings.Join(libs, " ")
+		}
+
+		implicits := g.collectLinkImplicits(sharedMod)
+
 		sharedTarget := filepath.Join(g.libDir(), libBaseName+".so")
 		if err := g.nw.Build(ninja.BuildEdge{
 			Outputs:   []string{sharedTarget},
 			Rule:      "link_shared",
 			Inputs:    objs,
+			Implicits: implicits,
 			Variables: vars,
 		}); err != nil {
 			return nil, err
@@ -109,11 +123,14 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 	}
 
 	if buildStatic {
+		implicits := g.collectLinkImplicits(staticMod)
+
 		staticTarget := filepath.Join(g.libDir(), libBaseName+".a")
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs: []string{staticTarget},
-			Rule:    "archive_static",
-			Inputs:  objs,
+			Outputs:   []string{staticTarget},
+			Rule:      "archive_static",
+			Inputs:    objs,
+			Implicits: implicits,
 		}); err != nil {
 			return nil, err
 		}
@@ -151,10 +168,13 @@ func (g *Generator) generateCcTest(mod *eval.EvaluatedModule) ([]string, error) 
 	}
 	vars["libs"] = strings.Join(libs, " ")
 
+	implicits := g.collectLinkImplicits(mod)
+
 	err = g.nw.Build(ninja.BuildEdge{
 		Outputs:   []string{target},
 		Rule:      "link_binary",
 		Inputs:    objs,
+		Implicits: implicits,
 		Variables: vars,
 	})
 	return []string{target}, err
@@ -262,8 +282,17 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		incs = append(incs, "-I"+incPath)
 	}
 
-	// Pull include dirs from referenced header_libs in moduleMap
-	for _, hl := range mod.GetStringList("header_libs") {
+	// Pull include dirs from referenced header_libs in moduleMap (including transitive export_header_lib_headers)
+	visitedHl := make(map[string]bool)
+	var queueHl []string
+	queueHl = append(queueHl, mod.GetAllStringList("header_libs")...)
+	for len(queueHl) > 0 {
+		hl := queueHl[0]
+		queueHl = queueHl[1:]
+		if visitedHl[hl] {
+			continue
+		}
+		visitedHl[hl] = true
 		if hlMod, ok := g.moduleMap[hl]; ok {
 			for _, dir := range hlMod.GetStringList("export_include_dirs") {
 				incPath := dir
@@ -279,11 +308,14 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 				incs = append(incs, "-I"+incPath)
 			}
+			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
 		}
 	}
 
 	// Pull include dirs from referenced shared_libs and static_libs in moduleMap
-	for _, lib := range append(mod.GetStringList("shared_libs"), mod.GetStringList("static_libs")...) {
+	allLibs := append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...)
+	allLibs = append(allLibs, mod.GetAllStringList("whole_static_libs")...)
+	for _, lib := range allLibs {
 		if libMod, ok := g.moduleMap[lib]; ok {
 			for _, dir := range libMod.GetStringList("export_include_dirs") {
 				incPath := dir
@@ -292,6 +324,31 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 				incs = append(incs, "-I"+incPath)
 			}
+			for _, hl := range libMod.GetStringList("export_header_lib_headers") {
+				if !visitedHl[hl] {
+					queueHl = append(queueHl, hl)
+				}
+			}
+		}
+	}
+
+	// Process any transitive header_libs enqueued from shared/static libs
+	for len(queueHl) > 0 {
+		hl := queueHl[0]
+		queueHl = queueHl[1:]
+		if visitedHl[hl] {
+			continue
+		}
+		visitedHl[hl] = true
+		if hlMod, ok := g.moduleMap[hl]; ok {
+			for _, dir := range hlMod.GetStringList("export_include_dirs") {
+				incPath := dir
+				if hlMod.Dir != "" && hlMod.Dir != "." && !filepath.IsAbs(dir) {
+					incPath = filepath.Clean(filepath.Join(hlMod.Dir, dir))
+				}
+				incs = append(incs, "-I"+incPath)
+			}
+			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
 		}
 	}
 
@@ -313,17 +370,17 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	// Auto-detect include dirs for referenced external dependencies from TopDir (ANDROID_BUILD_TOP)
 	topModules := g.GetTopDirModules()
 	var neededDeps []string
-	for _, hl := range mod.GetStringList("header_libs") {
+	for _, hl := range mod.GetAllStringList("header_libs") {
 		if _, ok := g.moduleMap[hl]; !ok {
 			neededDeps = append(neededDeps, hl, strings.TrimSuffix(hl, "_headers"))
 		}
 	}
-	for _, sl := range mod.GetStringList("shared_libs") {
+	for _, sl := range mod.GetAllStringList("shared_libs") {
 		if _, ok := g.moduleMap[sl]; !ok {
 			neededDeps = append(neededDeps, sl, strings.TrimPrefix(sl, "lib"))
 		}
 	}
-	for _, stl := range append(mod.GetStringList("static_libs"), mod.GetStringList("whole_static_libs")...) {
+	for _, stl := range append(mod.GetAllStringList("static_libs"), mod.GetAllStringList("whole_static_libs")...) {
 		if _, ok := g.moduleMap[stl]; !ok {
 			neededDeps = append(neededDeps, stl, strings.TrimPrefix(stl, "lib"))
 		}
@@ -348,16 +405,122 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	return dedup(incs)
 }
 
+var compoundFlags = map[string]bool{
+	"-isystem":           true,
+	"-idirafter":         true,
+	"-iquote":            true,
+	"-include":           true,
+	"-iprefix":           true,
+	"-iwithprefix":       true,
+	"-iwithprefixbefore": true,
+	"-imacros":           true,
+	"-MF":                true,
+	"-MQ":                true,
+	"-MT":                true,
+	"-target":            true,
+	"--target":           true,
+	"--sysroot":          true,
+	"-sysroot":           true,
+	"-Xclang":            true,
+	"-Xlinker":           true,
+	"-Wl,-rpath":         true,
+	"-install_name":      true,
+}
+
 func dedup(items []string) []string {
 	seen := make(map[string]bool)
 	var res []string
-	for _, item := range items {
-		if !seen[item] {
-			seen[item] = true
-			res = append(res, item)
+	for i := 0; i < len(items); i++ {
+		item := items[i]
+		if compoundFlags[item] && i+1 < len(items) {
+			pair := item + " " + items[i+1]
+			if !seen[pair] {
+				seen[pair] = true
+				res = append(res, item, items[i+1])
+			}
+			i++
+		} else {
+			if !seen[item] {
+				seen[item] = true
+				res = append(res, item)
+			}
 		}
 	}
 	return res
+}
+
+func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []string {
+	if outs, ok := g.moduleOutputs[lib]; ok && len(outs) > 0 {
+		if preferExt == ".so" || preferExt == ".a" {
+			var matched []string
+			for _, out := range outs {
+				if strings.HasSuffix(out, preferExt) {
+					matched = append(matched, out)
+				}
+			}
+			if len(matched) > 0 {
+				return matched
+			}
+		}
+		return outs
+	}
+
+	// Predict target output from moduleMap if dependency module is not yet emitted
+	if libMod, ok := g.moduleMap[lib]; ok {
+		baseName := libMod.Name
+		if !strings.HasPrefix(baseName, "lib") {
+			baseName = "lib" + baseName
+		}
+		switch libMod.Type {
+		case "cc_library", "cc_library_host":
+			if preferExt == ".a" {
+				return []string{filepath.Join(g.libDir(), baseName+".a")}
+			}
+			return []string{filepath.Join(g.libDir(), baseName+".so")}
+		case "cc_library_shared", "cc_library_host_shared":
+			return []string{filepath.Join(g.libDir(), baseName+".so")}
+		case "cc_library_static", "cc_library_host_static":
+			return []string{filepath.Join(g.libDir(), baseName+".a")}
+		case "cc_library_headers":
+			return []string{filepath.Join(g.opts.OutDir, "headers", libMod.Name)}
+		case "genrule":
+			var genOuts []string
+			for _, out := range libMod.GetStringList("out") {
+				genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", libMod.Name, out))
+			}
+			return genOuts
+		}
+	}
+	return nil
+}
+
+// collectLinkImplicits returns ninja implicit deps for in-tree library modules.
+// shared_libs match .so outputs, static_libs & whole_static_libs match .a outputs.
+func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
+	var implicits []string
+
+	// Shared library dependencies -> match .so
+	for _, lib := range mod.GetStringList("shared_libs") {
+		if outs := g.getModuleTargetOutputs(lib, ".so"); len(outs) > 0 {
+			implicits = append(implicits, outs...)
+		}
+	}
+
+	// Static & whole_static dependencies -> match .a
+	for _, lib := range append(mod.GetStringList("static_libs"), mod.GetStringList("whole_static_libs")...) {
+		if outs := g.getModuleTargetOutputs(lib, ".a"); len(outs) > 0 {
+			implicits = append(implicits, outs...)
+		}
+	}
+
+	// Header libraries -> phony / gen targets
+	for _, hl := range mod.GetStringList("header_libs") {
+		if outs := g.getModuleTargetOutputs(hl, ""); len(outs) > 0 {
+			implicits = append(implicits, outs...)
+		}
+	}
+
+	return dedup(implicits)
 }
 
 // resolveLinkerArgs implements the dependency-check bypass:
@@ -393,17 +556,26 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 	// Shared library dependencies mapped directly without source verification
 	for _, lib := range mod.GetStringList("shared_libs") {
 		clean := strings.TrimPrefix(lib, "lib")
+		if clean == "sqlite" {
+			clean = "sqlite3"
+		}
 		libs = append(libs, "-l"+clean)
 	}
 
 	// Static library dependencies
 	for _, lib := range mod.GetStringList("static_libs") {
 		clean := strings.TrimPrefix(lib, "lib")
+		if clean == "sqlite" {
+			clean = "sqlite3"
+		}
 		libs = append(libs, "-l"+clean)
 	}
 
 	for _, lib := range mod.GetStringList("whole_static_libs") {
 		clean := strings.TrimPrefix(lib, "lib")
+		if clean == "sqlite" {
+			clean = "sqlite3"
+		}
 		libs = append(libs, "-Wl,--whole-archive", "-l"+clean, "-Wl,--no-whole-archive")
 	}
 

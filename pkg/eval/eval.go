@@ -89,6 +89,7 @@ func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 		c.applyArch(mod)
 		c.applyMultilib(mod)
 		c.applyTarget(mod)
+		c.applyVariantBlock(mod)
 		c.Modules = append(c.Modules, mod)
 	}
 
@@ -360,7 +361,7 @@ func (c *Context) applyTarget(mod *EvaluatedModule) {
 			targetKeys = append(targetKeys, "linux_"+c.TargetArch)
 		}
 	} else {
-		targetKeys = []string{"android", "not_windows", "linux"}
+		targetKeys = []string{"android", "bionic"}
 		if c.TargetArch != "" {
 			targetKeys = append(targetKeys, "android_"+c.TargetArch)
 		}
@@ -375,6 +376,22 @@ func (c *Context) applyTarget(mod *EvaluatedModule) {
 					mod.Properties[propName] = propVal
 				}
 			}
+		}
+	}
+}
+
+// applyVariantBlock resolves static: {} or shared: {} sub-blocks for single-variant modules.
+func (c *Context) applyVariantBlock(mod *EvaluatedModule) {
+	switch mod.Type {
+	case "cc_library_static", "cc_library_host_static":
+		mod.ApplyVariant("static")
+	case "cc_library_shared", "cc_library_host_shared":
+		mod.ApplyVariant("shared")
+	case "cc_binary", "cc_binary_host", "cc_test", "cc_test_host", "cc_benchmark", "cc_fuzz":
+		if mod.GetBool("static_executable") {
+			mod.ApplyVariant("static")
+		} else {
+			mod.ApplyVariant("shared")
 		}
 	}
 }
@@ -462,4 +479,74 @@ func (m *EvaluatedModule) GetMap(prop string) map[string]interface{} {
 		}
 	}
 	return nil
+}
+
+// ApplyVariant merges properties from the given variant ("static" or "shared")
+// into m.Properties, and removes both "static" and "shared" keys.
+func (m *EvaluatedModule) ApplyVariant(variant string) {
+	if m == nil {
+		return
+	}
+	if variantProps, ok := m.Properties[variant].(map[string]interface{}); ok {
+		for propName, propVal := range variantProps {
+			if existing, exists := m.Properties[propName]; exists {
+				m.Properties[propName] = mergeProperties(existing, propVal)
+			} else {
+				m.Properties[propName] = propVal
+			}
+		}
+	}
+	delete(m.Properties, "static")
+	delete(m.Properties, "shared")
+}
+
+// WithVariant returns a shallow copy of m with variant-specific properties merged in.
+func (m *EvaluatedModule) WithVariant(variant string) *EvaluatedModule {
+	if m == nil {
+		return nil
+	}
+	clone := &EvaluatedModule{
+		Type:       m.Type,
+		Name:       m.Name,
+		Dir:        m.Dir,
+		Properties: make(map[string]interface{}, len(m.Properties)),
+		Raw:        m.Raw,
+	}
+	for k, v := range m.Properties {
+		clone.Properties[k] = v
+	}
+	clone.ApplyVariant(variant)
+	return clone
+}
+
+// GetAllStringList retrieves a string list property, checking both module-level properties
+// and any nested static/shared variant blocks (useful for include directory resolution).
+func (m *EvaluatedModule) GetAllStringList(prop string) []string {
+	res := m.GetStringList(prop)
+	if staticMap, ok := m.Properties["static"].(map[string]interface{}); ok {
+		res = append(res, toStringList(staticMap[prop])...)
+	}
+	if sharedMap, ok := m.Properties["shared"].(map[string]interface{}); ok {
+		res = append(res, toStringList(sharedMap[prop])...)
+	}
+	return res
+}
+
+func toStringList(val interface{}) []string {
+	var res []string
+	if val == nil {
+		return res
+	}
+	if list, ok := val.([]interface{}); ok {
+		for _, item := range list {
+			if s, ok := item.(string); ok {
+				res = append(res, s)
+			}
+		}
+	} else if s, ok := val.(string); ok {
+		res = append(res, s)
+	} else if list, ok := val.([]string); ok {
+		res = append(res, list...)
+	}
+	return res
 }

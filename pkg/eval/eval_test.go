@@ -121,3 +121,168 @@ cc_binary {
 		t.Errorf("Expected export_include_dirs ['../include'], got %v", expIncs)
 	}
 }
+
+func TestApplyTargetAndroidNoHostKeys(t *testing.T) {
+	bp := `
+cc_library {
+    name: "libtarget_test",
+    target: {
+        android: {
+            cflags: ["-DDEVICE_FLAG"],
+            srcs: ["device.c"],
+        },
+        bionic: {
+            cflags: ["-DBIONIC_FLAG"],
+        },
+        not_windows: {
+            cflags: ["-DHOST_NOT_WINDOWS"],
+            srcs: ["host_not_win.c"],
+        },
+        linux: {
+            cflags: ["-DHOST_LINUX"],
+        },
+    },
+}
+`
+	ctxDevice := NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctxDevice.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	if len(ctxDevice.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctxDevice.Modules))
+	}
+	mod := ctxDevice.Modules[0]
+	cflags := mod.GetStringList("cflags")
+	srcs := mod.GetStringList("srcs")
+
+	// Must contain android and bionic flags
+	hasFlag := func(list []string, flag string) bool {
+		for _, f := range list {
+			if f == flag {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasFlag(cflags, "-DDEVICE_FLAG") {
+		t.Errorf("Expected -DDEVICE_FLAG in cflags: %v", cflags)
+	}
+	if !hasFlag(cflags, "-DBIONIC_FLAG") {
+		t.Errorf("Expected -DBIONIC_FLAG in cflags: %v", cflags)
+	}
+	if hasFlag(cflags, "-DHOST_NOT_WINDOWS") {
+		t.Errorf("Did NOT expect host flag -DHOST_NOT_WINDOWS in device cflags: %v", cflags)
+	}
+	if hasFlag(cflags, "-DHOST_LINUX") {
+		t.Errorf("Did NOT expect host flag -DHOST_LINUX in device cflags: %v", cflags)
+	}
+
+	if !hasFlag(srcs, "device.c") {
+		t.Errorf("Expected device.c in srcs: %v", srcs)
+	}
+	if hasFlag(srcs, "host_not_win.c") {
+		t.Errorf("Did NOT expect host_not_win.c in device srcs: %v", srcs)
+	}
+}
+
+func TestVariantMatching(t *testing.T) {
+	bp := `
+cc_defaults {
+    name: "variant_defaults",
+    static: {
+        whole_static_libs: ["static_dep"],
+        cflags: ["-DSTATIC_ONLY"],
+    },
+    shared: {
+        shared_libs: ["shared_dep"],
+        cflags: ["-DSHARED_ONLY"],
+    },
+}
+
+cc_library_static {
+    name: "libonly_static",
+    defaults: ["variant_defaults"],
+}
+
+cc_library_shared {
+    name: "libonly_shared",
+    defaults: ["variant_defaults"],
+}
+
+cc_library {
+    name: "libdual",
+    defaults: ["variant_defaults"],
+}
+`
+	ctx := NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	modMap := make(map[string]*EvaluatedModule)
+	for _, m := range ctx.Modules {
+		modMap[m.Name] = m
+	}
+
+	// 1. cc_library_static should only have static properties
+	staticMod := modMap["libonly_static"]
+	if staticMod == nil {
+		t.Fatalf("libonly_static not found")
+	}
+	if staticMod.GetStringList("whole_static_libs")[0] != "static_dep" {
+		t.Errorf("Expected whole_static_libs ['static_dep'], got %v", staticMod.GetStringList("whole_static_libs"))
+	}
+	if len(staticMod.GetStringList("shared_libs")) != 0 {
+		t.Errorf("Expected empty shared_libs on static library, got %v", staticMod.GetStringList("shared_libs"))
+	}
+	if staticMod.GetStringList("cflags")[0] != "-DSTATIC_ONLY" {
+		t.Errorf("Expected cflags ['-DSTATIC_ONLY'], got %v", staticMod.GetStringList("cflags"))
+	}
+
+	// 2. cc_library_shared should only have shared properties
+	sharedMod := modMap["libonly_shared"]
+	if sharedMod == nil {
+		t.Fatalf("libonly_shared not found")
+	}
+	if sharedMod.GetStringList("shared_libs")[0] != "shared_dep" {
+		t.Errorf("Expected shared_libs ['shared_dep'], got %v", sharedMod.GetStringList("shared_libs"))
+	}
+	if len(sharedMod.GetStringList("whole_static_libs")) != 0 {
+		t.Errorf("Expected empty whole_static_libs on shared library, got %v", sharedMod.GetStringList("whole_static_libs"))
+	}
+	if sharedMod.GetStringList("cflags")[0] != "-DSHARED_ONLY" {
+		t.Errorf("Expected cflags ['-DSHARED_ONLY'], got %v", sharedMod.GetStringList("cflags"))
+	}
+
+	// 3. cc_library should retain sub-blocks and resolve independently via WithVariant
+	dualMod := modMap["libdual"]
+	if dualMod == nil {
+		t.Fatalf("libdual not found")
+	}
+	dualStatic := dualMod.WithVariant("static")
+	if len(dualStatic.GetStringList("whole_static_libs")) == 0 || dualStatic.GetStringList("whole_static_libs")[0] != "static_dep" {
+		t.Errorf("Expected dualStatic to have whole_static_libs ['static_dep'], got %v", dualStatic.GetStringList("whole_static_libs"))
+	}
+	if len(dualStatic.GetStringList("shared_libs")) != 0 {
+		t.Errorf("Expected dualStatic to have empty shared_libs, got %v", dualStatic.GetStringList("shared_libs"))
+	}
+
+	dualShared := dualMod.WithVariant("shared")
+	if len(dualShared.GetStringList("shared_libs")) == 0 || dualShared.GetStringList("shared_libs")[0] != "shared_dep" {
+		t.Errorf("Expected dualShared to have shared_libs ['shared_dep'], got %v", dualShared.GetStringList("shared_libs"))
+	}
+	if len(dualShared.GetStringList("whole_static_libs")) != 0 {
+		t.Errorf("Expected dualShared to have empty whole_static_libs, got %v", dualShared.GetStringList("whole_static_libs"))
+	}
+}
+

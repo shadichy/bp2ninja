@@ -206,6 +206,10 @@ func main() {
 
 	flag.Parse()
 
+	if flag.NArg() > 0 {
+		bpFile = flag.Arg(0)
+	}
+
 	// Handle NDK Info query
 	if ndkInfoFlag {
 		all := ndk.DiscoverAll()

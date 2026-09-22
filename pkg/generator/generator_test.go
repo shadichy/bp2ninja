@@ -210,3 +210,130 @@ func TestLinkImplicitsAndDualVariant(t *testing.T) {
 	}
 }
 
+func TestCppStdAndCStd(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libstd_test",
+		Properties: map[string]interface{}{
+			"name":    "libstd_test",
+			"cpp_std": "gnu++20",
+			"c_std":   "gnu11",
+			"srcs":    []interface{}{"foo.cpp", "bar.c"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	if !strings.Contains(ninjaContent, "-std=gnu++20") {
+		t.Errorf("Expected -std=gnu++20 in cppflags for foo.cpp, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "-std=gnu11") {
+		t.Errorf("Expected -std=gnu11 in conlyflags for bar.c, got:\n%s", ninjaContent)
+	}
+}
+
+func TestModuleRootIncludeDir(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libprocessgroup_test",
+		Dir:  "system/core/libprocessgroup",
+		Properties: map[string]interface{}{
+			"name": "libprocessgroup_test",
+			"srcs": []interface{}{"cgroup_map.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	if !strings.Contains(ninjaContent, "-Isystem/core/libprocessgroup") {
+		t.Errorf("Expected -Isystem/core/libprocessgroup in includes, got:\n%s", ninjaContent)
+	}
+}
+
+func TestDifferentiatedVariantSources(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	// Simulating bionic libc where static and shared define separate sources and flags
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libc_test",
+		Properties: map[string]interface{}{
+			"name": "libc_test",
+			"static": map[string]interface{}{
+				"srcs":   []interface{}{"static_only.c"},
+				"cflags": []interface{}{"-DLIBC_STATIC"},
+			},
+			"shared": map[string]interface{}{
+				"srcs":   []interface{}{"shared_only.c"},
+				"cflags": []interface{}{"-DLIBC_SHARED"},
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// Static compile rule: out/obj/libc_test.static/static_only.o with -DLIBC_STATIC
+	if !strings.Contains(ninjaContent, "out/obj/libc_test.static/static_only.o") {
+		t.Errorf("Expected out/obj/libc_test.static/static_only.o in ninja output")
+	}
+	if !strings.Contains(ninjaContent, "-DLIBC_STATIC") {
+		t.Errorf("Expected -DLIBC_STATIC in static compile flags")
+	}
+
+	// Shared compile rule: out/obj/libc_test.shared/shared_only.o with -DLIBC_SHARED
+	if !strings.Contains(ninjaContent, "out/obj/libc_test.shared/shared_only.o") {
+		t.Errorf("Expected out/obj/libc_test.shared/shared_only.o in ninja output")
+	}
+	if !strings.Contains(ninjaContent, "-DLIBC_SHARED") {
+		t.Errorf("Expected -DLIBC_SHARED in shared compile flags")
+	}
+
+	libDir := gen.libDir()
+	lines := strings.Split(ninjaContent, "\n")
+	for _, line := range lines {
+		// libc_test.a should only contain static_only.o
+		if strings.HasPrefix(line, "build "+filepath.Join(libDir, "libc_test.a")+":") {
+			if !strings.Contains(line, "static_only.o") {
+				t.Errorf("libc_test.a should archive static_only.o: %s", line)
+			}
+			if strings.Contains(line, "shared_only.o") {
+				t.Errorf("libc_test.a should NOT archive shared_only.o: %s", line)
+			}
+		}
+		// libc_test.so should only contain shared_only.o
+		if strings.HasPrefix(line, "build "+filepath.Join(libDir, "libc_test.so")+":") {
+			if !strings.Contains(line, "shared_only.o") {
+				t.Errorf("libc_test.so should link shared_only.o: %s", line)
+			}
+			if strings.Contains(line, "static_only.o") {
+				t.Errorf("libc_test.so should NOT link static_only.o: %s", line)
+			}
+		}
+	}
+}
+

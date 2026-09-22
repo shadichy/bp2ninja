@@ -486,9 +486,6 @@ func (g *Generator) resolveTool(name string) string {
 func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 	rawSrcs := mod.GetStringList("srcs")
 	if len(rawSrcs) == 0 {
-		rawSrcs = mod.GetAllStringList("srcs")
-	}
-	if len(rawSrcs) == 0 {
 		return nil
 	}
 

@@ -73,9 +73,47 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		return nil, nil
 	}
 
-	objs, err := g.compileCcSources(mod)
-	if err != nil || len(objs) == 0 {
-		return nil, err
+	sharedSrcs := g.ResolveSrcs(sharedMod)
+	staticSrcs := g.ResolveSrcs(staticMod)
+
+	sameSrcs := slicesEqual(sharedSrcs, staticSrcs)
+	sameCflags := slicesEqual(sharedMod.GetStringList("cflags"), staticMod.GetStringList("cflags"))
+
+	var sharedObjs []string
+	var staticObjs []string
+
+	if buildShared && buildStatic && sameSrcs && sameCflags {
+		// Sources and cflags are identical: compile once to out/obj/<mod.Name>/
+		objs, err := g.compileCcSourcesWithSuffix(sharedMod, "")
+		if err != nil {
+			return nil, err
+		}
+		sharedObjs = objs
+		staticObjs = objs
+	} else {
+		// Differentiated sources or flags (e.g. bionic libc) or single-variant:
+		if buildShared {
+			suffix := ""
+			if buildStatic && (!sameSrcs || !sameCflags) {
+				suffix = ".shared"
+			}
+			objs, err := g.compileCcSourcesWithSuffix(sharedMod, suffix)
+			if err != nil {
+				return nil, err
+			}
+			sharedObjs = objs
+		}
+		if buildStatic {
+			suffix := ""
+			if buildShared && (!sameSrcs || !sameCflags) {
+				suffix = ".static"
+			}
+			objs, err := g.compileCcSourcesWithSuffix(staticMod, suffix)
+			if err != nil {
+				return nil, err
+			}
+			staticObjs = objs
+		}
 	}
 
 	var targets []string
@@ -85,7 +123,7 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		libBaseName = "lib" + libBaseName
 	}
 
-	if buildShared {
+	if buildShared && len(sharedObjs) > 0 {
 		ldflags, libs := g.resolveLinkerArgs(sharedMod)
 		vars := map[string]string{}
 		if len(ldflags) > 0 {
@@ -101,7 +139,7 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		if err := g.nw.Build(ninja.BuildEdge{
 			Outputs:   []string{sharedTarget},
 			Rule:      "link_shared",
-			Inputs:    objs,
+			Inputs:    sharedObjs,
 			Implicits: implicits,
 			Variables: vars,
 		}); err != nil {
@@ -122,14 +160,14 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		}
 	}
 
-	if buildStatic {
+	if buildStatic && len(staticObjs) > 0 {
 		implicits := g.collectLinkImplicits(staticMod)
 
 		staticTarget := filepath.Join(g.libDir(), libBaseName+".a")
 		if err := g.nw.Build(ninja.BuildEdge{
 			Outputs:   []string{staticTarget},
 			Rule:      "archive_static",
-			Inputs:    objs,
+			Inputs:    staticObjs,
 			Implicits: implicits,
 		}); err != nil {
 			return nil, err
@@ -180,7 +218,23 @@ func (g *Generator) generateCcTest(mod *eval.EvaluatedModule) ([]string, error) 
 	return []string{target}, err
 }
 
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (g *Generator) compileCcSources(mod *eval.EvaluatedModule) ([]string, error) {
+	return g.compileCcSourcesWithSuffix(mod, "")
+}
+
+func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix string) ([]string, error) {
 	srcs := g.ResolveSrcs(mod)
 	if len(srcs) == 0 {
 		return nil, nil
@@ -191,8 +245,22 @@ func (g *Generator) compileCcSources(mod *eval.EvaluatedModule) ([]string, error
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
 	cflags = append(cflags, "-fPIC")
+
+	// Apply C / C++ standard properties (c_std, cpp_std)
+	if cStd := mod.GetString("c_std"); cStd != "" {
+		conlyflags = append(conlyflags, "-std="+cStd)
+	}
+	if cppStd := mod.GetString("cpp_std"); cppStd != "" {
+		if cppStd == "experimental" {
+			cppflags = append(cppflags, "-std=gnu++20")
+		} else {
+			cppflags = append(cppflags, "-std="+cppStd)
+		}
+	}
+
 	cflags = dedup(cflags)
 	cppflags = dedup(cppflags)
+	conlyflags = dedup(conlyflags)
 
 	// Order-only dependencies for generated headers
 	var orderOnlyDeps []string
@@ -208,7 +276,7 @@ func (g *Generator) compileCcSources(mod *eval.EvaluatedModule) ([]string, error
 	}
 	orderOnlyDeps = dedup(orderOnlyDeps)
 
-	objDir := g.objDir(mod.Name)
+	objDir := g.objDir(mod.Name + suffix)
 	var objs []string
 
 	for _, src := range srcs {
@@ -259,6 +327,13 @@ func (g *Generator) compileCcSources(mod *eval.EvaluatedModule) ([]string, error
 
 func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	var incs []string
+
+	// Always include the module root directory itself (Soong default for #include <local_header.h>)
+	modDir := "."
+	if mod.Dir != "" && mod.Dir != "." {
+		modDir = mod.Dir
+	}
+	incs = append(incs, "-I"+modDir)
 
 	for _, dir := range mod.GetStringList("local_include_dirs") {
 		incPath := dir

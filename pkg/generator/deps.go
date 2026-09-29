@@ -45,16 +45,24 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	raw = append(raw, mod.GetAllStringList("jni_libs")...)
 	raw = append(raw, mod.GetAllStringList("runtime_libs")...)
 
+	raw = append(raw, mod.GetAllStringList("data_libs")...)
+	raw = append(raw, mod.GetAllStringList("data_bins")...)
+
 	// Codegen & headers
 	raw = append(raw, mod.GetAllStringList("generated_headers")...)
 	raw = append(raw, mod.GetAllStringList("export_generated_headers")...)
 	raw = append(raw, mod.GetAllStringList("generated_sources")...)
 
 	// Tools
-	raw = append(raw, mod.GetStringList("tools")...)
-	for _, tf := range mod.GetStringList("tool_files") {
+	raw = append(raw, mod.GetAllStringList("tools")...)
+	for _, tf := range mod.GetAllStringList("tool_files") {
 		if strings.HasPrefix(tf, ":") {
 			raw = append(raw, strings.TrimPrefix(tf, ":"))
+		} else if strings.HasPrefix(tf, "//") {
+			parts := strings.Split(tf, ":")
+			if len(parts) == 2 {
+				raw = append(raw, parts[1])
+			}
 		}
 	}
 
@@ -275,17 +283,67 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 		}
 
 		// Fall back to original declaration order for cyclic modules:
-		// Delete any internal edge v -> u where v >= u.
+		// 1. Sort the cyclic nodes by original declaration order (index ascending).
+		// 2. Clear all internal edges between nodes of this SCC.
+		// 3. Chain the nodes linearly in original declaration order: v0 -> v1 -> ... -> vk.
+		// 4. Redirect external prerequisites (u -> v where u not in SCC) to v0.
+		// 5. Redirect external dependents (v -> w where w not in SCC) from vk.
+		sort.Ints(cg.nodes)
+		v0 := cg.nodes[0]
+		vk := cg.nodes[len(cg.nodes)-1]
+
 		sccSet := make(map[int]bool, len(cg.nodes))
 		for _, u := range cg.nodes {
 			sccSet[u] = true
 		}
-		for _, v := range cg.nodes {
-			for u := range adj[v] {
-				if sccSet[u] && v >= u {
-					delete(adj[v], u)
-					delete(revAdj[u], v)
+
+		// Clear internal edges between nodes in this SCC
+		for _, u := range cg.nodes {
+			for v := range adj[u] {
+				if sccSet[v] {
+					delete(adj[u], v)
+					delete(revAdj[v], u)
 				}
+			}
+		}
+
+		// Add linear chain v0 -> v1 -> ... -> vk
+		for i := 0; i < len(cg.nodes)-1; i++ {
+			u := cg.nodes[i]
+			v := cg.nodes[i+1]
+			adj[u][v] = true
+			revAdj[v][u] = true
+		}
+
+		// Redirect external incoming edges (prerequisites of any node in SCC) to v0
+		for _, v := range cg.nodes {
+			var extPreds []int
+			for u := range revAdj[v] {
+				if !sccSet[u] {
+					extPreds = append(extPreds, u)
+				}
+			}
+			for _, u := range extPreds {
+				delete(adj[u], v)
+				delete(revAdj[v], u)
+				adj[u][v0] = true
+				revAdj[v0][u] = true
+			}
+		}
+
+		// Redirect external outgoing edges (dependents of any node in SCC) to proceed from vk
+		for _, v := range cg.nodes {
+			var extSuccs []int
+			for w := range adj[v] {
+				if !sccSet[w] {
+					extSuccs = append(extSuccs, w)
+				}
+			}
+			for _, w := range extSuccs {
+				delete(adj[v], w)
+				delete(revAdj[w], v)
+				adj[vk][w] = true
+				revAdj[w][vk] = true
 			}
 		}
 	}

@@ -123,67 +123,87 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		libBaseName = "lib" + libBaseName
 	}
 
-	if buildShared && len(sharedObjs) > 0 {
-		ldflags, libs := g.resolveLinkerArgs(sharedMod)
-		vars := map[string]string{}
-		if len(ldflags) > 0 {
-			vars["ldflags"] = strings.Join(ldflags, " ")
-		}
-		if len(libs) > 0 {
-			vars["libs"] = strings.Join(libs, " ")
-		}
-
-		implicits := g.collectLinkImplicits(sharedMod)
-
+	if buildShared {
 		sharedTarget := filepath.Join(g.libDir(), libBaseName+".so")
-		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{sharedTarget},
-			Rule:      "link_shared",
-			Inputs:    sharedObjs,
-			Implicits: implicits,
-			Variables: vars,
-		}); err != nil {
-			return nil, err
-		}
-		targets = append(targets, sharedTarget)
+		if len(sharedObjs) > 0 {
+			ldflags, libs := g.resolveLinkerArgs(sharedMod)
+			vars := map[string]string{}
+			if len(ldflags) > 0 {
+				vars["ldflags"] = strings.Join(ldflags, " ")
+			}
+			if len(libs) > 0 {
+				vars["libs"] = strings.Join(libs, " ")
+			}
 
-		if libBaseName != mod.Name {
-			aliasTarget := filepath.Join(g.libDir(), mod.Name+".so")
+			implicits := g.collectLinkImplicits(sharedMod)
+
 			if err := g.nw.Build(ninja.BuildEdge{
-				Outputs: []string{aliasTarget},
-				Rule:    "copy",
-				Inputs:  []string{sharedTarget},
+				Outputs:   []string{sharedTarget},
+				Rule:      "link_shared",
+				Inputs:    sharedObjs,
+				Implicits: implicits,
+				Variables: vars,
 			}); err != nil {
 				return nil, err
 			}
-			targets = append(targets, aliasTarget)
+			targets = append(targets, sharedTarget)
+
+			if libBaseName != mod.Name {
+				aliasTarget := filepath.Join(g.libDir(), mod.Name+".so")
+				if err := g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{aliasTarget},
+					Rule:    "copy",
+					Inputs:  []string{sharedTarget},
+				}); err != nil {
+					return nil, err
+				}
+				targets = append(targets, aliasTarget)
+			}
+		} else if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(sharedTarget)
+			targets = append(targets, sharedTarget)
+			if libBaseName != mod.Name {
+				aliasTarget := filepath.Join(g.libDir(), mod.Name+".so")
+				g.emitPhonyIfNeeded(aliasTarget)
+				targets = append(targets, aliasTarget)
+			}
 		}
 	}
 
-	if buildStatic && len(staticObjs) > 0 {
-		implicits := g.collectLinkImplicits(staticMod)
-
+	if buildStatic {
 		staticTarget := filepath.Join(g.libDir(), libBaseName+".a")
-		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{staticTarget},
-			Rule:      "archive_static",
-			Inputs:    staticObjs,
-			Implicits: implicits,
-		}); err != nil {
-			return nil, err
-		}
-		targets = append(targets, staticTarget)
+		if len(staticObjs) > 0 {
+			implicits := g.collectLinkImplicits(staticMod)
 
-		if libBaseName != mod.Name {
-			aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
 			if err := g.nw.Build(ninja.BuildEdge{
-				Outputs: []string{aliasTarget},
-				Rule:    "copy",
-				Inputs:  []string{staticTarget},
+				Outputs:   []string{staticTarget},
+				Rule:      "archive_static",
+				Inputs:    staticObjs,
+				Implicits: implicits,
 			}); err != nil {
 				return nil, err
 			}
-			targets = append(targets, aliasTarget)
+			targets = append(targets, staticTarget)
+
+			if libBaseName != mod.Name {
+				aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
+				if err := g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{aliasTarget},
+					Rule:    "copy",
+					Inputs:  []string{staticTarget},
+				}); err != nil {
+					return nil, err
+				}
+				targets = append(targets, aliasTarget)
+			}
+		} else if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(staticTarget)
+			targets = append(targets, staticTarget)
+			if libBaseName != mod.Name {
+				aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
+				g.emitPhonyIfNeeded(aliasTarget)
+				targets = append(targets, aliasTarget)
+			}
 		}
 	}
 

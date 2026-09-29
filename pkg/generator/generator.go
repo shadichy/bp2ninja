@@ -503,11 +503,7 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 			label := strings.TrimPrefix(s, ":")
 			if fgSrcs, ok := g.filegroups[label]; ok {
 				for _, fg := range fgSrcs {
-					fgPath := fg
-					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(fg) && !strings.HasPrefix(fg, ":") {
-						fgPath = filepath.Clean(filepath.Join(mod.Dir, fg))
-					}
-					expanded = append(expanded, g.expandGlob(fgPath)...)
+					expanded = append(expanded, g.expandGlob(fg)...)
 				}
 			} else if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
 				for _, out := range genMod.GetStringList("out") {

@@ -541,3 +541,191 @@ func TestMissingDependenciesWarning(t *testing.T) {
 	}
 }
 
+func TestCircularDependencyWithExternalPrerequisiteAndDependent(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	// cycleB is declared first, cycleA declared second, leaf declared third, user declared fourth
+	// cycleB <-> cycleA mutually depend on each other.
+	// cycleA also depends on leaf.
+	// user depends on cycleB.
+	// Requirement: leaf MUST precede cycleB and cycleA. cycleB and cycleA must follow declaration order. user must follow the cycle.
+	cycleB := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "cycleB",
+		Properties: map[string]interface{}{
+			"name":        "cycleB",
+			"srcs":        []interface{}{"b.cpp"},
+			"static_libs": []interface{}{"cycleA"},
+		},
+	}
+	cycleA := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "cycleA",
+		Properties: map[string]interface{}{
+			"name":        "cycleA",
+			"srcs":        []interface{}{"a.cpp"},
+			"static_libs": []interface{}{"cycleB", "leaf"},
+		},
+	}
+	leaf := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "leaf",
+		Properties: map[string]interface{}{
+			"name": "leaf",
+			"srcs": []interface{}{"leaf.cpp"},
+		},
+	}
+	user := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "user_app",
+		Properties: map[string]interface{}{
+			"name":        "user_app",
+			"srcs":        []interface{}{"app.cpp"},
+			"static_libs": []interface{}{"cycleB"},
+		},
+	}
+
+	sorted := gen.SortModules([]*eval.EvaluatedModule{cycleB, cycleA, leaf, user})
+	if len(sorted) != 4 {
+		t.Fatalf("Expected 4 modules, got %d", len(sorted))
+	}
+
+	names := []string{sorted[0].Name, sorted[1].Name, sorted[2].Name, sorted[3].Name}
+	// leaf must be first
+	if names[0] != "leaf" {
+		t.Errorf("Expected 'leaf' to precede cycle, got %s (full order: %v)", names[0], names)
+	}
+	// cycleB before cycleA (declaration order)
+	if names[1] != "cycleB" || names[2] != "cycleA" {
+		t.Errorf("Expected cycle to follow declaration order [cycleB, cycleA], got [%s, %s]", names[1], names[2])
+	}
+	// user_app must be last
+	if names[3] != "user_app" {
+		t.Errorf("Expected 'user_app' to succeed cycle, got %s", names[3])
+	}
+}
+
+func TestDeepCycleFourModules(t *testing.T) {
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, ninja.NewWriter(&bytes.Buffer{}), nil)
+
+	// Cycle: mod0 -> mod1 -> mod2 -> mod3 -> mod0
+	mod0 := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "mod0",
+		Properties: map[string]interface{}{
+			"name":        "mod0",
+			"srcs":        []interface{}{"0.cpp"},
+			"static_libs": []interface{}{"mod3"},
+		},
+	}
+	mod1 := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "mod1",
+		Properties: map[string]interface{}{
+			"name":        "mod1",
+			"srcs":        []interface{}{"1.cpp"},
+			"static_libs": []interface{}{"mod0"},
+		},
+	}
+	mod2 := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "mod2",
+		Properties: map[string]interface{}{
+			"name":        "mod2",
+			"srcs":        []interface{}{"2.cpp"},
+			"static_libs": []interface{}{"mod1"},
+		},
+	}
+	mod3 := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "mod3",
+		Properties: map[string]interface{}{
+			"name":        "mod3",
+			"srcs":        []interface{}{"3.cpp"},
+			"static_libs": []interface{}{"mod2"},
+		},
+	}
+
+	sorted := gen.SortModules([]*eval.EvaluatedModule{mod0, mod1, mod2, mod3})
+	if len(sorted) != 4 {
+		t.Fatalf("Expected 4 modules, got %d", len(sorted))
+	}
+	for i, expected := range []string{"mod0", "mod1", "mod2", "mod3"} {
+		if sorted[i].Name != expected {
+			t.Errorf("At index %d: expected %s, got %s", i, expected, sorted[i].Name)
+		}
+	}
+}
+
+func TestFilegroupSourcePathInSubdir(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	fg := &eval.EvaluatedModule{
+		Type: "filegroup",
+		Name: "my_fg",
+		Dir:  "sub/dir",
+		Properties: map[string]interface{}{
+			"name": "my_fg",
+			"srcs": []interface{}{"helper.cpp"},
+		},
+	}
+
+	ccMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libconsumer",
+		Dir:  "other/dir",
+		Properties: map[string]interface{}{
+			"name": "libconsumer",
+			"srcs": []interface{}{":my_fg", "main.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{fg, ccMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	// helper.cpp should be compiled from sub/dir/helper.cpp, NEVER other/dir/sub/dir/helper.cpp
+	if strings.Contains(content, "other/dir/sub/dir/helper.cpp") {
+		t.Errorf("Found duplicate prepended path in ninja output: %s", content)
+	}
+	if !strings.Contains(content, "sub/dir/helper.cpp") {
+		t.Errorf("Expected sub/dir/helper.cpp in ninja output, got: %s", content)
+	}
+}
+
+func TestCcLibraryPhonyWhenZeroObjsAndAllowMissingDeps(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	// Library with only a proto source (0 C/C++ objects)
+	protoLib := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libproto_only",
+		Properties: map[string]interface{}{
+			"name": "libproto_only",
+			"srcs": []interface{}{"message.proto"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{protoLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/lib64/libproto_only.a: phony") {
+		t.Errorf("Expected phony rule for out/lib64/libproto_only.a, got:\n%s", content)
+	}
+}
+
+

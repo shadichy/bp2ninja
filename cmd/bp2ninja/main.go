@@ -204,10 +204,26 @@ func main() {
 	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
 	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
 
-	flag.Parse()
+	var positional []string
+	args := os.Args[1:]
+	for len(args) > 0 {
+		if err := flag.CommandLine.Parse(args); err != nil {
+			break
+		}
+		rem := flag.CommandLine.Args()
+		if len(rem) == 0 {
+			break
+		}
+		if rem[0] == "--" {
+			positional = append(positional, rem[1:]...)
+			break
+		}
+		positional = append(positional, rem[0])
+		args = rem[1:]
+	}
 
-	if flag.NArg() > 0 {
-		bpFile = flag.Arg(0)
+	if len(positional) > 0 {
+		bpFile = positional[0]
 	}
 
 	// Handle NDK Info query
@@ -329,18 +345,32 @@ func main() {
 	// 2. Determine root directory and discover Android.bp files
 	st, err := os.Stat(bpFile)
 	if err != nil {
+		if bpFile == "Android.bp" {
+			if curSt, curErr := os.Stat("."); curErr == nil && curSt.IsDir() {
+				bpFile = "."
+				st = curSt
+				err = nil
+			}
+		}
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error accessing %s: %v\n", bpFile, err)
 		os.Exit(1)
 	}
 
 	var rootDir string
+	var hasRootBp bool
 	var primaryBp string
 	if st.IsDir() {
 		rootDir = filepath.Clean(bpFile)
 		primaryBp = filepath.Join(rootDir, "Android.bp")
+		if pst, err := os.Stat(primaryBp); err == nil && !pst.IsDir() {
+			hasRootBp = true
+		}
 	} else {
 		rootDir = filepath.Dir(bpFile)
 		primaryBp = bpFile
+		hasRootBp = true
 	}
 	if rootDir == "" {
 		rootDir = "."
@@ -357,8 +387,10 @@ func main() {
 			oFlagPassed = true
 		}
 	})
-	if !oFlagPassed && rootDir != "." {
-		outFile = filepath.Join(rootDir, "build.ninja")
+	if !oFlagPassed {
+		if !hasRootBp || rootDir != "." {
+			outFile = filepath.Join(rootDir, "build.ninja")
+		}
 	}
 
 	evalCtx := eval.NewContext(configMap, arch)
@@ -369,7 +401,7 @@ func main() {
 	var explicitBuildFiles []string
 
 	// Check if primaryBp exists (e.g. rootDir/Android.bp)
-	if primarySt, err := os.Stat(primaryBp); err == nil && !primarySt.IsDir() {
+	if hasRootBp {
 		absPrimary, err := filepath.Abs(primaryBp)
 		if err == nil {
 			evaluatedFiles[absPrimary] = true
@@ -433,45 +465,23 @@ func main() {
 	}
 
 	// 2) Trace subdirectories
-	if traceSubdirs {
-		_ = filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
-			}
-			name := info.Name()
-			if info.IsDir() {
-				if path != rootDir {
-					if strings.HasPrefix(name, ".") || name == "out" || name == "node_modules" {
-						return filepath.SkipDir
-					}
-				}
-				return nil
-			}
-			if name == "Android.bp" {
-				abs, err := filepath.Abs(path)
+	// If the folder does not have Android.bp, ALWAYS recursively find Android.bp in subfolders.
+	// If it does have Android.bp, recursively find if traceSubdirs is true.
+	if !hasRootBp || traceSubdirs {
+		discovered, err := generator.DiscoverBpFiles(rootDir)
+		if err == nil {
+			for _, d := range discovered {
+				abs, err := filepath.Abs(d.Path)
 				if err == nil && evaluatedFiles[abs] {
-					return nil
-				}
-				relPath, err := filepath.Rel(rootDir, path)
-				if err != nil {
-					return nil
-				}
-				relDir := filepath.Dir(relPath)
-				if relDir == "." {
-					relDir = ""
-				}
-				depth := 0
-				if relDir != "" {
-					depth = strings.Count(relDir, string(filepath.Separator)) + 1
+					continue
 				}
 				childFiles = append(childFiles, childFile{
-					path:   path,
-					relDir: relDir,
-					depth:  depth,
+					path:   d.Path,
+					relDir: d.RelDir,
+					depth:  d.Depth,
 				})
 			}
-			return nil
-		})
+		}
 	} else {
 		// Process explicit subdirs if traceSubdirs is disabled
 		for _, sDir := range explicitSubdirs {

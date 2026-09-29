@@ -69,6 +69,11 @@ type Generator struct {
 	filegroups     map[string][]string
 	emittedPhonies map[string]bool
 	topDirModules  map[string]string
+
+	// MissingDeps records external dependencies not found in the parsed blueprint set.
+	MissingDeps []string
+	// CircularDeps records circular dependency chains detected during topological sort.
+	CircularDeps [][]string
 }
 
 // New creates a new Generator.
@@ -207,6 +212,9 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	if err := g.emitStandardRules(); err != nil {
 		return err
 	}
+
+	// Sort modules by internal dependencies and report missing/circular dependencies
+	modules = g.SortModules(modules)
 
 	// Index all modules and filegroups by name
 	for _, mod := range modules {

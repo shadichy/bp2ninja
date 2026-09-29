@@ -2,6 +2,7 @@ package generator
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -333,6 +334,209 @@ func TestDifferentiatedVariantSources(t *testing.T) {
 			if strings.Contains(line, "static_only.o") {
 				t.Errorf("libc_test.so should NOT link static_only.o: %s", line)
 			}
+		}
+	}
+}
+
+func TestDiscoverBpFilesWithoutRootBp(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create subdirectories with Android.bp, but no Android.bp at root
+	subA := filepath.Join(tempDir, "subA")
+	subB := filepath.Join(tempDir, "subB")
+	subC := filepath.Join(tempDir, "subA", "subC")
+	ignoredDir := filepath.Join(tempDir, ".hidden")
+	outDir := filepath.Join(tempDir, "out")
+
+	for _, d := range []string{subA, subB, subC, ignoredDir, outDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("Failed to create dir %s: %v", d, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "Android.bp"), []byte("// test"), 0644); err != nil {
+			t.Fatalf("Failed to write bp file in %s: %v", d, err)
+		}
+	}
+
+	discovered, err := DiscoverBpFiles(tempDir)
+	if err != nil {
+		t.Fatalf("DiscoverBpFiles failed: %v", err)
+	}
+
+	if len(discovered) != 3 {
+		t.Fatalf("Expected 3 discovered files, got %d: %+v", len(discovered), discovered)
+	}
+
+	expected := []struct {
+		relDir string
+		depth  int
+	}{
+		{"subA", 1},
+		{"subB", 1},
+		{"subA/subC", 2},
+	}
+
+	for i, exp := range expected {
+		if discovered[i].RelDir != filepath.FromSlash(exp.relDir) {
+			t.Errorf("At index %d: expected RelDir %q, got %q", i, exp.relDir, discovered[i].RelDir)
+		}
+		if discovered[i].Depth != exp.depth {
+			t.Errorf("At index %d: expected Depth %d, got %d", i, exp.depth, discovered[i].Depth)
+		}
+	}
+}
+
+func TestDependencyOrderedModuleEmission(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	// Declare binary first, library second, leaf static library third
+	appMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "my_app",
+		Properties: map[string]interface{}{
+			"name":        "my_app",
+			"srcs":        []interface{}{"main.cpp"},
+			"shared_libs": []interface{}{"libmid"},
+		},
+	}
+	midMod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libmid",
+		Properties: map[string]interface{}{
+			"name":        "libmid",
+			"srcs":        []interface{}{"mid.cpp"},
+			"static_libs": []interface{}{"libleaf"},
+		},
+	}
+	leafMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libleaf",
+		Properties: map[string]interface{}{
+			"name": "libleaf",
+			"srcs": []interface{}{"leaf.cpp"},
+		},
+	}
+
+	modules := []*eval.EvaluatedModule{appMod, midMod, leafMod}
+	if err := gen.Generate(modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// Check relative positions of build edges in ninja file
+	leafIdx := strings.Index(ninjaContent, "build out/lib64/libleaf.a: archive_static")
+	if leafIdx == -1 {
+		leafIdx = strings.Index(ninjaContent, "libleaf.a")
+	}
+	midIdx := strings.Index(ninjaContent, "build out/lib64/libmid.so: link_shared")
+	if midIdx == -1 {
+		midIdx = strings.Index(ninjaContent, "libmid.so")
+	}
+	appIdx := strings.Index(ninjaContent, "build out/bin/my_app: link_binary")
+	if appIdx == -1 {
+		appIdx = strings.Index(ninjaContent, "my_app")
+	}
+
+	if leafIdx == -1 || midIdx == -1 || appIdx == -1 {
+		t.Fatalf("Missing targets in ninja content: leaf=%d, mid=%d, app=%d", leafIdx, midIdx, appIdx)
+	}
+
+	if !(leafIdx < midIdx && midIdx < appIdx) {
+		t.Errorf("Expected emission order libleaf < libmid < my_app, but got indices: leaf=%d, mid=%d, app=%d",
+			leafIdx, midIdx, appIdx)
+	}
+}
+
+func TestCircularDependencyFallback(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	// Mutual dependency between cycleA and cycleB; user_app depends on cycleA
+	cycleA := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "cycleA",
+		Properties: map[string]interface{}{
+			"name":        "cycleA",
+			"srcs":        []interface{}{"a.cpp"},
+			"static_libs": []interface{}{"cycleB"},
+		},
+	}
+	cycleB := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "cycleB",
+		Properties: map[string]interface{}{
+			"name":        "cycleB",
+			"srcs":        []interface{}{"b.cpp"},
+			"static_libs": []interface{}{"cycleA"},
+		},
+	}
+	userMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "user_app",
+		Properties: map[string]interface{}{
+			"name":        "user_app",
+			"srcs":        []interface{}{"app.cpp"},
+			"static_libs": []interface{}{"cycleA"},
+		},
+	}
+
+	// 1. Order [cycleA, cycleB, userMod]: should fall back to cycleA, cycleB, then user_app
+	sorted1 := gen.SortModules([]*eval.EvaluatedModule{cycleA, cycleB, userMod})
+	if len(gen.CircularDeps) == 0 {
+		t.Errorf("Expected circular dependencies recorded in CircularDeps")
+	}
+	if len(sorted1) != 3 {
+		t.Fatalf("Expected 3 modules, got %d", len(sorted1))
+	}
+	if sorted1[0].Name != "cycleA" || sorted1[1].Name != "cycleB" || sorted1[2].Name != "user_app" {
+		t.Errorf("Expected fallback order [cycleA, cycleB, user_app], got [%s, %s, %s]",
+			sorted1[0].Name, sorted1[1].Name, sorted1[2].Name)
+	}
+
+	// 2. Order [cycleB, cycleA, userMod]: should fall back to cycleB, cycleA, then user_app
+	gen2 := New(opts, nw, nil)
+	sorted2 := gen2.SortModules([]*eval.EvaluatedModule{cycleB, cycleA, userMod})
+	if len(sorted2) != 3 {
+		t.Fatalf("Expected 3 modules, got %d", len(sorted2))
+	}
+	if sorted2[0].Name != "cycleB" || sorted2[1].Name != "cycleA" || sorted2[2].Name != "user_app" {
+		t.Errorf("Expected fallback order [cycleB, cycleA, user_app], got [%s, %s, %s]",
+			sorted2[0].Name, sorted2[1].Name, sorted2[2].Name)
+	}
+}
+
+func TestMissingDependenciesWarning(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "test_bin",
+		Properties: map[string]interface{}{
+			"name":        "test_bin",
+			"srcs":        []interface{}{"main.cpp"},
+			"shared_libs": []interface{}{"libbase", "libc", "liblog"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	expectedMissing := []string{"libbase", "libc", "liblog"}
+	if len(gen.MissingDeps) != len(expectedMissing) {
+		t.Fatalf("Expected %d missing deps, got %d: %v", len(expectedMissing), len(gen.MissingDeps), gen.MissingDeps)
+	}
+	for i, m := range expectedMissing {
+		if gen.MissingDeps[i] != m {
+			t.Errorf("At index %d: expected %q, got %q", i, m, gen.MissingDeps[i])
 		}
 	}
 }

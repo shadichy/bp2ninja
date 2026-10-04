@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -393,6 +394,29 @@ func main() {
 		}
 	}
 
+	if isHost {
+		if envCC := os.Getenv("CC"); envCC != "" && clangPath == "clang" {
+			clangPath = envCC
+		}
+		if envCXX := os.Getenv("CXX"); envCXX != "" && clangCxxPath == "clang++" {
+			clangCxxPath = envCXX
+		}
+		archPassed := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "arch" {
+				archPassed = true
+			}
+		})
+		if !archPassed {
+			switch runtime.GOARCH {
+			case "amd64":
+				arch = "x86_64"
+			case "arm64":
+				arch = "arm64"
+			}
+		}
+	}
+
 	evalCtx := eval.NewContext(configMap, arch)
 	evalCtx.IsHost = isHost
 
@@ -606,7 +630,7 @@ func main() {
 		opts.NDKDir = activeNDK.Path
 	}
 	opts.BpDir = rootDir
-	if sysrootDir != "" {
+	if sysrootDir != "" && !isHost {
 		opts.SysrootDir = sysrootDir
 	}
 	if prebuiltLibs != "" {

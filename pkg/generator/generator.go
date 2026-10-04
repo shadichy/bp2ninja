@@ -24,6 +24,9 @@ type Options struct {
 	ArPath           string
 	Aapt2Path        string
 	AndroidJarPath   string
+	KotlincPath      string
+	JavacPath        string
+	JarPath          string
 	TargetArch       string
 	TargetTriple     string
 	APILevel         int
@@ -55,6 +58,9 @@ func DefaultOptions(topDir, outDir string) Options {
 		ArPath:           "ar",
 		Aapt2Path:        "aapt2",
 		AndroidJarPath:   "",
+		KotlincPath:      "kotlinc",
+		JavacPath:        "javac",
+		JarPath:          "jar",
 		AllowMissingDeps: true,
 	}
 }
@@ -284,8 +290,12 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateCcTest(mod)
 		case "android_app", "android_app_certificate":
 			targets, err = g.generateAndroidApp(mod)
-		case "java_library", "java_library_host", "android_library":
+		case "java_library", "java_library_host", "android_library", "java_library_static":
 			targets, err = g.generateJavaLibrary(mod)
+		case "java_import", "android_library_import":
+			targets, err = g.generateJavaImport(mod)
+		case "java_binary", "java_binary_host":
+			targets, err = g.generateJavaBinary(mod)
 		case "genrule":
 			targets, err = g.generateGenrule(mod)
 		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host":
@@ -357,6 +367,9 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("cxx", cxxPath)
 	g.nw.Variable("ar", arPath)
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
+	g.nw.Variable("kotlinc", g.opts.KotlincPath)
+	g.nw.Variable("javac", g.opts.JavacPath)
+	g.nw.Variable("jar", g.opts.JarPath)
 	g.nw.BlankLine()
 	return nil
 }
@@ -365,7 +378,7 @@ func (g *Generator) emitStandardRules() error {
 	// CC Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "cc_compile",
-		Command:     "$cc -MD -MF $out.d $cflags $includes -c $in -o $out",
+		Command:     "$cc -MD -MF $out.d $cflags $${CFLAGS} $${CCFLAGS} $includes -c $in -o $out",
 		DepFile:     "$out.d",
 		Deps:        "gcc",
 		Description: "CC $out",
@@ -376,7 +389,7 @@ func (g *Generator) emitStandardRules() error {
 	// CXX Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "cxx_compile",
-		Command:     "$cxx -MD -MF $out.d $cflags $includes -c $in -o $out",
+		Command:     "$cxx -MD -MF $out.d $cflags $${CXXFLAGS} $${CPPFLAGS} $includes -c $in -o $out",
 		DepFile:     "$out.d",
 		Deps:        "gcc",
 		Description: "CXX $out",
@@ -387,7 +400,7 @@ func (g *Generator) emitStandardRules() error {
 	// Link Shared Library
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "link_shared",
-		Command:     "$cxx -shared -o $out $in $ldflags $libs",
+		Command:     "$cxx -shared -o $out $in $ldflags $${LDFLAGS} $libs",
 		Description: "LINK_SHARED $out",
 	}); err != nil {
 		return err
@@ -405,8 +418,35 @@ func (g *Generator) emitStandardRules() error {
 	// Link Executable Binary
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "link_binary",
-		Command:     "$cxx -o $out $in $ldflags $libs",
+		Command:     "$cxx -o $out $in $ldflags $${LDFLAGS} $libs",
 		Description: "LINK_BINARY $out",
+	}); err != nil {
+		return err
+	}
+
+	// Java Compile
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "javac_compile",
+		Command:     "bash -c \"$cmd\"",
+		Description: "JAVAC $out",
+	}); err != nil {
+		return err
+	}
+
+	// Kotlin Compile
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "kotlinc_compile",
+		Command:     "bash -c \"$cmd\"",
+		Description: "KOTLINC $out",
+	}); err != nil {
+		return err
+	}
+
+	// Kotlin + Java Compile
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "kotlin_java_compile",
+		Command:     "bash -c \"$cmd\"",
+		Description: "KOTLINC/JAVAC $out",
 	}); err != nil {
 		return err
 	}

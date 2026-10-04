@@ -286,3 +286,95 @@ cc_library {
 	}
 }
 
+func TestHostTargetAndFiltering(t *testing.T) {
+	bp := `
+cc_library_host {
+    name: "libhost_only",
+    srcs: ["host.c"],
+    target: {
+        host: {
+            cflags: ["-DHOST_FLAG"],
+        },
+        linux_glibc: {
+            cflags: ["-DGLIBC_FLAG"],
+        },
+    },
+}
+
+cc_library {
+    name: "libhost_supported",
+    host_supported: true,
+    srcs: ["shared.c"],
+    host: {
+        cflags: ["-DTOP_HOST_FLAG"],
+    },
+    target: {
+        linux: {
+            cflags: ["-DLINUX_FLAG"],
+        },
+    },
+}
+
+cc_library {
+    name: "libdevice_only",
+    srcs: ["device_only.c"],
+}
+`
+	ctxHost := NewContext(nil, "x86_64")
+	ctxHost.IsHost = true
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctxHost.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	modMap := make(map[string]*EvaluatedModule)
+	for _, m := range ctxHost.Modules {
+		modMap[m.Name] = m
+	}
+
+	// 1. libhost_only must be enabled with host and linux_glibc flags
+	hostMod := modMap["libhost_only"]
+	if hostMod == nil || !hostMod.IsEnabled() {
+		t.Fatalf("Expected libhost_only to be enabled")
+	}
+	hasFlag := func(list []string, flag string) bool {
+		for _, f := range list {
+			if f == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasFlag(hostMod.GetStringList("cflags"), "-DHOST_FLAG") {
+		t.Errorf("Expected -DHOST_FLAG in host cflags, got: %v", hostMod.GetStringList("cflags"))
+	}
+	if !hasFlag(hostMod.GetStringList("cflags"), "-DGLIBC_FLAG") {
+		t.Errorf("Expected -DGLIBC_FLAG in host cflags, got: %v", hostMod.GetStringList("cflags"))
+	}
+
+	// 2. libhost_supported must be enabled with top-level host and target.linux flags
+	hostSuppMod := modMap["libhost_supported"]
+	if hostSuppMod == nil || !hostSuppMod.IsEnabled() {
+		t.Fatalf("Expected libhost_supported to be enabled")
+	}
+	if !hasFlag(hostSuppMod.GetStringList("cflags"), "-DTOP_HOST_FLAG") {
+		t.Errorf("Expected -DTOP_HOST_FLAG in cflags, got: %v", hostSuppMod.GetStringList("cflags"))
+	}
+	if !hasFlag(hostSuppMod.GetStringList("cflags"), "-DLINUX_FLAG") {
+		t.Errorf("Expected -DLINUX_FLAG in cflags, got: %v", hostSuppMod.GetStringList("cflags"))
+	}
+
+	// 3. libdevice_only must be disabled in host mode
+	devMod := modMap["libdevice_only"]
+	if devMod == nil {
+		t.Fatalf("libdevice_only not found")
+	}
+	if devMod.IsEnabled() {
+		t.Errorf("Expected libdevice_only to be disabled in host mode")
+	}
+}
+
+

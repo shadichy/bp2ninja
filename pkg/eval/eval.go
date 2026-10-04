@@ -90,6 +90,9 @@ func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 		c.applyMultilib(mod)
 		c.applyTarget(mod)
 		c.applyVariantBlock(mod)
+		if c.IsHost && !isDeclarativeMetaModule(mod.Type) && !mod.IsHostSupported() {
+			mod.Properties["enabled"] = false
+		}
 		c.Modules = append(c.Modules, mod)
 	}
 
@@ -343,22 +346,45 @@ func (c *Context) applyMultilib(mod *EvaluatedModule) {
 
 // applyTarget expands OS/target-specific properties (android vs host/linux).
 func (c *Context) applyTarget(mod *EvaluatedModule) {
+	targetKey := "android"
+	if c.IsHost || strings.HasSuffix(mod.Type, "_host") || (!mod.IsDeviceSupported() && mod.IsHostSupported()) {
+		targetKey = "host"
+	}
+
+	// Expand top-level host or android block if present
+	if targetKey == "host" {
+		if hostProps, ok := mod.Properties["host"].(map[string]interface{}); ok {
+			for propName, propVal := range hostProps {
+				if existing, exists := mod.Properties[propName]; exists {
+					mod.Properties[propName] = mergeProperties(existing, propVal)
+				} else {
+					mod.Properties[propName] = propVal
+				}
+			}
+		}
+	} else {
+		if androidProps, ok := mod.Properties["android"].(map[string]interface{}); ok {
+			for propName, propVal := range androidProps {
+				if existing, exists := mod.Properties[propName]; exists {
+					mod.Properties[propName] = mergeProperties(existing, propVal)
+				} else {
+					mod.Properties[propName] = propVal
+				}
+			}
+		}
+	}
+
 	rawTarget, ok := mod.Properties["target"].(map[string]interface{})
 	if !ok {
 		return
 	}
 
-	targetKey := "android"
-	if c.IsHost || strings.HasSuffix(mod.Type, "_host") || (mod.GetBool("host_supported") && c.IsHost) {
-		targetKey = "host"
-	}
-
 	// Apply targets cumulatively
 	var targetKeys []string
 	if targetKey == "host" {
-		targetKeys = []string{"host", "not_windows", "linux", "linux_glibc"}
+		targetKeys = []string{"host", "not_windows", "linux", "linux_glibc", "glibc"}
 		if c.TargetArch != "" {
-			targetKeys = append(targetKeys, "linux_"+c.TargetArch)
+			targetKeys = append(targetKeys, "linux_"+c.TargetArch, "linux_glibc_"+c.TargetArch)
 		}
 	} else {
 		targetKeys = []string{"android", "bionic"}
@@ -451,6 +477,46 @@ func (m *EvaluatedModule) IsEnabled() bool {
 		}
 	}
 	return true
+}
+
+func (m *EvaluatedModule) IsHostSupported() bool {
+	if m == nil {
+		return false
+	}
+	if strings.HasSuffix(m.Type, "_host") {
+		return true
+	}
+	if m.GetBool("host_supported") || m.GetBool("host_available") {
+		return true
+	}
+	return false
+}
+
+func (m *EvaluatedModule) IsDeviceSupported() bool {
+	if m == nil {
+		return false
+	}
+	if strings.HasSuffix(m.Type, "_host") {
+		return false
+	}
+	if val, ok := m.Properties["device_supported"]; ok {
+		if b, ok := val.(bool); ok {
+			return b
+		}
+	}
+	return true
+}
+
+func isDeclarativeMetaModule(modType string) bool {
+	switch modType {
+	case "package", "license", "license_kind", "package_metadata",
+		"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
+		"soong_config_bool_variable", "soong_config_module_type_import",
+		"filegroup", "phony", "ndk_headers", "ndk_library", "vintf_fragment",
+		"cc_defaults", "java_defaults":
+		return true
+	}
+	return false
 }
 
 func (m *EvaluatedModule) GetStringList(prop string) []string {

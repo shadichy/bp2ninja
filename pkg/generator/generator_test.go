@@ -728,4 +728,156 @@ func TestCcLibraryPhonyWhenZeroObjsAndAllowMissingDeps(t *testing.T) {
 	}
 }
 
+func TestEnvironmentFlagOverridesInRules(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "my_bin",
+		Properties: map[string]interface{}{
+			"name": "my_bin",
+			"srcs": []interface{}{"main.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "${CFLAGS}") || !strings.Contains(content, "${CCFLAGS}") {
+		t.Errorf("Expected ${CFLAGS} and ${CCFLAGS} in cc_compile rule, got:\n%s", content)
+	}
+	if !strings.Contains(content, "${CXXFLAGS}") || !strings.Contains(content, "${CPPFLAGS}") {
+		t.Errorf("Expected ${CXXFLAGS} and ${CPPFLAGS} in cxx_compile rule, got:\n%s", content)
+	}
+	if !strings.Contains(content, "${LDFLAGS}") {
+		t.Errorf("Expected ${LDFLAGS} in link rules, got:\n%s", content)
+	}
+}
+
+func TestKotlinPureCompilation(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "android_library",
+		Name: "android_onboarding.common",
+		Properties: map[string]interface{}{
+			"name": "android_onboarding.common",
+			"srcs": []interface{}{"Common.kt", "Utils.kt"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/lib64/android_onboarding.common.jar: kotlinc_compile") {
+		t.Errorf("Expected kotlinc_compile rule for pure-Kotlin module, got:\n%s", content)
+	}
+	if !strings.Contains(content, "$kotlinc -d out/classes/android_onboarding.common") {
+		t.Errorf("Expected $kotlinc in command, got:\n%s", content)
+	}
+	if strings.Contains(content, "$javac") {
+		t.Errorf("Did not expect $javac in pure-Kotlin module command, got:\n%s", content)
+	}
+}
+
+func TestKotlinJavaMixedCompilation(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "mixed_lib",
+		Properties: map[string]interface{}{
+			"name":        "mixed_lib",
+			"srcs":        []interface{}{"Foo.kt", "Bar.java"},
+			"static_libs": []interface{}{"dep_lib"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/lib64/mixed_lib.jar: kotlin_java_compile") {
+		t.Errorf("Expected kotlin_java_compile rule for mixed module, got:\n%s", content)
+	}
+	if !strings.Contains(content, "$kotlinc") || !strings.Contains(content, "$javac") {
+		t.Errorf("Expected both $kotlinc and $javac in mixed compilation command, got:\n%s", content)
+	}
+	if !strings.Contains(content, "out/lib64/dep_lib.jar") {
+		t.Errorf("Expected dep_lib.jar in classpath/implicits, got:\n%s", content)
+	}
+}
+
+func TestJavaPureCompilationWithClasspath(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "pure_java",
+		Properties: map[string]interface{}{
+			"name": "pure_java",
+			"srcs": []interface{}{"Hello.java"},
+			"libs": []interface{}{"some_api"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/lib64/pure_java.jar: javac_compile") {
+		t.Errorf("Expected javac_compile rule for pure Java module, got:\n%s", content)
+	}
+	if strings.Contains(content, "$kotlinc") {
+		t.Errorf("Did not expect $kotlinc in pure Java module command, got:\n%s", content)
+	}
+	if !strings.Contains(content, "out/lib64/some_api.jar") {
+		t.Errorf("Expected some_api.jar in classpath/implicits, got:\n%s", content)
+	}
+}
+
+func TestJavaImport(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_import",
+		Name: "prebuilt_dagger",
+		Properties: map[string]interface{}{
+			"name": "prebuilt_dagger",
+			"jars": []interface{}{"libs/dagger-2.40.jar"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/lib64/prebuilt_dagger.jar: copy libs/dagger-2.40.jar") {
+		t.Errorf("Expected copy rule for java_import, got:\n%s", content)
+	}
+}
+
+
 

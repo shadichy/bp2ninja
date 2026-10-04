@@ -15,25 +15,25 @@ import (
 
 // Options specifies configuration for Ninja generation.
 type Options struct {
-	TopDir          string
-	OutDir          string
-	SysrootDir      string
-	PrebuiltLibDir  string
-	ClangPath       string
-	ClangCxxPath    string
-	ArPath          string
-	Aapt2Path       string
-	AndroidJarPath  string
-	TargetArch      string
-	TargetTriple    string
-	APILevel        int
-	NDKDir          string
+	TopDir           string
+	OutDir           string
+	SysrootDir       string
+	PrebuiltLibDir   string
+	ClangPath        string
+	ClangCxxPath     string
+	ArPath           string
+	Aapt2Path        string
+	AndroidJarPath   string
+	TargetArch       string
+	TargetTriple     string
+	APILevel         int
+	NDKDir           string
 	AllowMissingDeps bool
-	BpDir           string
-	ExtraCflags     []string
-	ExtraCppflags   []string
-	ExtraLdflags    []string
-	IsHost          bool
+	BpDir            string
+	ExtraCflags      []string
+	ExtraCppflags    []string
+	ExtraLdflags     []string
+	IsHost           bool
 }
 
 // DefaultOptions provides sensible defaults for standalone Android builds.
@@ -45,16 +45,16 @@ func DefaultOptions(topDir, outDir string) Options {
 		outDir = "out"
 	}
 	return Options{
-		TopDir:          topDir,
-		OutDir:          outDir,
-		TargetArch:      "arm64",
-		TargetTriple:    "aarch64-linux-android",
-		APILevel:        34,
-		ClangPath:       "clang",
-		ClangCxxPath:    "clang++",
-		ArPath:          "ar",
-		Aapt2Path:       "aapt2",
-		AndroidJarPath:  "",
+		TopDir:           topDir,
+		OutDir:           outDir,
+		TargetArch:       "arm64",
+		TargetTriple:     "aarch64-linux-android",
+		APILevel:         34,
+		ClangPath:        "clang",
+		ClangCxxPath:     "clang++",
+		ArPath:           "ar",
+		Aapt2Path:        "aapt2",
+		AndroidJarPath:   "",
 		AllowMissingDeps: true,
 	}
 }
@@ -389,6 +389,15 @@ func (g *Generator) emitStandardRules() error {
 		Name:        "link_shared",
 		Command:     "$cxx -shared -o $out $in $ldflags $libs",
 		Description: "LINK_SHARED $out",
+	}); err != nil {
+		return err
+	}
+
+	// NASM Assembly (x86 SIMD .asm sources; needs nasm on PATH)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "asm_nasm",
+		Command:     "nasm -f elf64 -DELF $asflags -o $out $in",
+		Description: "NASM $out",
 	}); err != nil {
 		return err
 	}

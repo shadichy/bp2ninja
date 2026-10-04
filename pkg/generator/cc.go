@@ -9,6 +9,21 @@ import (
 	"bp2ninja/pkg/ninja"
 )
 
+// shellJoin joins argv for interpolation into a ninja rule Command (run via
+// /bin/sh): quote elements containing shell metacharacters. Ninja `$`
+// escaping is handled by the writer; here we only protect sh syntax.
+func shellJoin(args []string) string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.ContainsAny(a, " \t\n\"'><()$`&|;*?[]{}~#") {
+			out = append(out, "'"+strings.ReplaceAll(a, "'", "'\\''")+"'")
+		} else {
+			out = append(out, a)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error) {
 	objs, err := g.compileCcSources(mod)
 	if err != nil || len(objs) == 0 {
@@ -20,10 +35,10 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 
 	vars := map[string]string{}
 	if len(ldflags) > 0 {
-		vars["ldflags"] = strings.Join(ldflags, " ")
+		vars["ldflags"] = shellJoin(ldflags)
 	}
 	if len(libs) > 0 {
-		vars["libs"] = strings.Join(libs, " ")
+		vars["libs"] = shellJoin(libs)
 	}
 
 	implicits := g.collectLinkImplicits(mod)
@@ -129,10 +144,10 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 			ldflags, libs := g.resolveLinkerArgs(sharedMod)
 			vars := map[string]string{}
 			if len(ldflags) > 0 {
-				vars["ldflags"] = strings.Join(ldflags, " ")
+				vars["ldflags"] = shellJoin(ldflags)
 			}
 			if len(libs) > 0 {
-				vars["libs"] = strings.Join(libs, " ")
+				vars["libs"] = shellJoin(libs)
 			}
 
 			implicits := g.collectLinkImplicits(sharedMod)
@@ -222,9 +237,9 @@ func (g *Generator) generateCcTest(mod *eval.EvaluatedModule) ([]string, error) 
 
 	vars := map[string]string{}
 	if len(ldflags) > 0 {
-		vars["ldflags"] = strings.Join(ldflags, " ")
+		vars["ldflags"] = shellJoin(ldflags)
 	}
-	vars["libs"] = strings.Join(libs, " ")
+	vars["libs"] = shellJoin(libs)
 
 	implicits := g.collectLinkImplicits(mod)
 
@@ -313,6 +328,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			flags = append(flags, conlyflags...)
 		case ".s", ".S":
 			rule = "cc_compile"
+		case ".asm":
+			rule = "asm_nasm"
 		default:
 			// Not a C/C++ source (e.g. proto, aidl, etc.)
 			continue
@@ -325,10 +342,24 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 
 		vars := map[string]string{}
 		if len(flags) > 0 {
-			vars["cflags"] = strings.Join(flags, " ")
+			vars["cflags"] = shellJoin(flags)
+		}
+		if rule == "asm_nasm" {
+			af := append([]string{}, mod.GetStringList("asflags")...)
+			af = append(af, "-I"+filepath.Dir(src))
+			for _, inc := range includes {
+				if len(inc) > 2 && inc[:2] == "-I" {
+					af = append(af, inc)
+				} else {
+					af = append(af, "-I"+inc)
+				}
+			}
+			if len(af) > 0 {
+				vars["asflags"] = shellJoin(af)
+			}
 		}
 		if len(includes) > 0 {
-			vars["includes"] = strings.Join(includes, " ")
+			vars["includes"] = shellJoin(includes)
 		}
 
 		if err := g.nw.Build(ninja.BuildEdge{
@@ -637,7 +668,11 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		candidates := []string{lib, "lib" + lib, strings.TrimPrefix(lib, "lib")}
 		for _, cand := range candidates {
 			if dir, ok := topModules[cand]; ok {
-				for _, sub := range []string{"lib64", "lib", "out/lib64", "out/lib"} {
+				subDirs := []string{"lib64", "out/lib64"}
+				if !strings.Contains(g.opts.TargetArch, "64") {
+					subDirs = []string{"lib", "out/lib"}
+				}
+				for _, sub := range subDirs {
 					lpath := filepath.Join(dir, sub)
 					if fi, err := os.Stat(lpath); err == nil && fi.IsDir() {
 						ldflags = append(ldflags, "-L"+lpath)

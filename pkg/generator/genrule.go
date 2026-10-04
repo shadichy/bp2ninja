@@ -42,6 +42,25 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 		}
 	}
 
+	excludeList := mod.GetStringList("exclude_srcs")
+	if len(excludeList) > 0 {
+		excludeMap := make(map[string]bool)
+		for _, ex := range excludeList {
+			excludeMap[ex] = true
+			excludeMap[filepath.Clean(ex)] = true
+			if mod.Dir != "" && mod.Dir != "." {
+				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
+			}
+		}
+		var filtered []string
+		for _, s := range srcs {
+			if !excludeMap[s] && !excludeMap[filepath.Base(s)] {
+				filtered = append(filtered, s)
+			}
+		}
+		srcs = filtered
+	}
+
 	if len(outs) == 0 {
 		outs = mod.GetStringList("outs")
 	}
@@ -144,6 +163,25 @@ func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error)
 		}
 	}
 
+	excludeList := mod.GetStringList("exclude_srcs")
+	if len(excludeList) > 0 {
+		excludeMap := make(map[string]bool)
+		for _, ex := range excludeList {
+			excludeMap[ex] = true
+			excludeMap[filepath.Clean(ex)] = true
+			if mod.Dir != "" && mod.Dir != "." {
+				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
+			}
+		}
+		var filtered []string
+		for _, s := range srcs {
+			if !excludeMap[s] && !excludeMap[filepath.Base(s)] {
+				filtered = append(filtered, s)
+			}
+		}
+		srcs = filtered
+	}
+
 	genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
 	if len(srcs) == 0 {
 		if g.opts.AllowMissingDeps {
@@ -219,19 +257,26 @@ func (g *Generator) expandGenruleCmd(
 		label = strings.TrimSpace(label)
 		// Check outs
 		for _, out := range outs {
-			if out == label {
+			if out == label || filepath.Base(out) == label {
 				return filepath.Join(genDir, out)
 			}
 		}
 		// Check srcs
 		for _, src := range srcs {
-			if src == label {
+			if src == label || filepath.Base(src) == label {
+				return src
+			}
+			if mod.Dir != "" && filepath.Clean(filepath.Join(mod.Dir, label)) == src {
 				return src
 			}
 		}
 		// Check tool_files
 		for _, tf := range toolFiles {
-			if tf == label {
+			if tf == label || filepath.Base(tf) == label {
+				addExtraInput(tf)
+				return tf
+			}
+			if mod.Dir != "" && filepath.Clean(filepath.Join(mod.Dir, label)) == tf {
 				addExtraInput(tf)
 				return tf
 			}
@@ -275,6 +320,33 @@ func (g *Generator) expandGenruleCmd(
 						sb.WriteString(strings.Join(srcs, " "))
 					case strings.HasPrefix(fullVar, "locations "):
 						label := strings.TrimSpace(strings.TrimPrefix(fullVar, "locations "))
+						if strings.ContainsAny(label, "*?") {
+							var matchedSrcs []string
+							for _, src := range srcs {
+								if m, _ := filepath.Match(label, src); m {
+									matchedSrcs = append(matchedSrcs, src)
+									continue
+								}
+								if m, _ := filepath.Match(label, filepath.Base(src)); m {
+									matchedSrcs = append(matchedSrcs, src)
+									continue
+								}
+							}
+							if len(matchedSrcs) > 0 {
+								sb.WriteString(strings.Join(matchedSrcs, " "))
+								break
+							}
+						}
+						if strings.HasPrefix(label, ":") || strings.HasPrefix(label, "//") {
+							refs := g.resolveReference(label)
+							if len(refs) > 0 {
+								for _, r := range refs {
+									addExtraInput(r)
+								}
+								sb.WriteString(strings.Join(refs, " "))
+								break
+							}
+						}
 						sb.WriteString(resolveLabel(label))
 					case fullVar == "in":
 						sb.WriteString(strings.Join(srcs, " "))

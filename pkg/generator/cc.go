@@ -481,7 +481,13 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	// Generated headers directories
 	genHeaders := append(mod.GetStringList("generated_headers"), mod.GetStringList("export_generated_headers")...)
 	for _, gh := range genHeaders {
-		incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh))
+		genBase := filepath.Join(g.opts.OutDir, "gen", gh)
+		incs = append(incs, "-I"+genBase)
+		if ghMod, ok := g.moduleMap[gh]; ok {
+			for _, expDir := range ghMod.GetStringList("export_include_dirs") {
+				incs = append(incs, "-I"+filepath.Clean(filepath.Join(genBase, expDir)))
+			}
+		}
 	}
 
 	// Fallback to local ./include if present
@@ -609,7 +615,10 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			return []string{filepath.Join(g.libDir(), baseName+".a")}
 		case "cc_library_headers":
 			return []string{filepath.Join(g.opts.OutDir, "headers", libMod.Name)}
-		case "genrule":
+		case "genrule", "gensrcs":
+			if outs, ok := g.moduleOutputs[libMod.Name]; ok {
+				return outs
+			}
 			var genOuts []string
 			for _, out := range libMod.GetStringList("out") {
 				genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", libMod.Name, out))

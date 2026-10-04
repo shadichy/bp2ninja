@@ -93,6 +93,102 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 	return fullOuts, err
 }
 
+func replaceExtension(path, ext string) string {
+	ext = strings.TrimPrefix(ext, ".")
+	oldExt := filepath.Ext(path)
+	base := strings.TrimSuffix(path, oldExt)
+	if ext == "" {
+		return base
+	}
+	return base + "." + ext
+}
+
+func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error) {
+	rawCmd := mod.GetString("cmd")
+	rawSrcs := mod.GetStringList("srcs")
+	outputExt := mod.GetString("output_extension")
+	tools := mod.GetStringList("tools")
+	toolFiles := mod.GetStringList("tool_files")
+	data := mod.GetStringList("data")
+
+	var srcs []string
+	for _, s := range rawSrcs {
+		for _, ref := range g.resolveReference(s) {
+			refPath := ref
+			if mod.Dir != "" && mod.Dir != "." && !strings.HasPrefix(ref, ":") && !strings.HasPrefix(ref, "//") && !filepath.IsAbs(ref) {
+				refPath = filepath.Clean(filepath.Join(mod.Dir, ref))
+			}
+			for _, m := range g.expandGlob(refPath) {
+				srcs = append(srcs, m)
+				if g.opts.AllowMissingDeps {
+					fullP := filepath.Join(g.opts.BpDir, m)
+					if _, err := os.Stat(fullP); err != nil {
+						if _, err2 := os.Stat(m); err2 != nil {
+							g.emitPhonyIfNeeded(m)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for i, tf := range toolFiles {
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(tf) && !strings.HasPrefix(tf, ":") {
+			toolFiles[i] = filepath.Clean(filepath.Join(mod.Dir, tf))
+		}
+	}
+
+	for i, d := range data {
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(d) && !strings.HasPrefix(d, ":") {
+			data[i] = filepath.Clean(filepath.Join(mod.Dir, d))
+		}
+	}
+
+	genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
+	if len(srcs) == 0 {
+		if g.opts.AllowMissingDeps {
+			phonyTarget := filepath.Join(genDir, mod.Name+".gen")
+			g.emitPhonyIfNeeded(phonyTarget)
+			return []string{phonyTarget}, nil
+		}
+		return nil, nil
+	}
+
+	var allOuts []string
+	for _, src := range srcs {
+		relPath := src
+		if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(relPath, mod.Dir+"/") {
+			relPath = strings.TrimPrefix(relPath, mod.Dir+"/")
+		}
+		outRel := replaceExtension(relPath, outputExt)
+		outFile := filepath.Join(genDir, outRel)
+		allOuts = append(allOuts, outFile)
+
+		// Expand cmd per source
+		expandedCmd, extraInputs := g.expandGenruleCmd(mod, rawCmd, []string{src}, []string{outRel}, []string{outFile}, tools, toolFiles, genDir)
+		for _, d := range data {
+			extraInputs = append(extraInputs, d)
+		}
+
+		outDir := filepath.Dir(outFile)
+		fullCmd := "mkdir -p " + outDir + " && " + expandedCmd
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{outFile},
+			Rule:      "genrule_cmd",
+			Inputs:    []string{src},
+			Implicits: dedup(extraInputs),
+			Variables: map[string]string{
+				"cmd": fullCmd,
+			},
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	return allOuts, nil
+}
+
 func (g *Generator) expandGenruleCmd(
 	mod *eval.EvaluatedModule,
 	rawCmd string,

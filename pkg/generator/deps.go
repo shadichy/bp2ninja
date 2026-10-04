@@ -78,6 +78,12 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
+	for _, d := range mod.GetAllStringList("data") {
+		if strings.HasPrefix(d, ":") {
+			raw = append(raw, strings.TrimPrefix(d, ":"))
+		}
+	}
+
 	seen := make(map[string]bool)
 	var res []string
 	for _, dep := range raw {

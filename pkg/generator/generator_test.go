@@ -879,5 +879,128 @@ func TestJavaImport(t *testing.T) {
 	}
 }
 
+func TestGensrcsSingleAndMultiFile(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "gensrcs",
+		Name: "art_operator_srcs",
+		Properties: map[string]interface{}{
+			"name":             "art_operator_srcs",
+			"cmd":              "$(location generate_operator_out) $(in) > $(out)",
+			"tools":            []interface{}{"generate_operator_out"},
+			"srcs":             []interface{}{"arch/instruction_set.h", "base/allocator.h"},
+			"output_extension": "operator_out.cc",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedOut1 := "out/gen/art_operator_srcs/arch/instruction_set.operator_out.cc"
+	expectedOut2 := "out/gen/art_operator_srcs/base/allocator.operator_out.cc"
+
+	if !strings.Contains(content, "build "+expectedOut1+": genrule_cmd arch/instruction_set.h") {
+		t.Errorf("Expected build edge for %s, got:\n%s", expectedOut1, content)
+	}
+	if !strings.Contains(content, "build "+expectedOut2+": genrule_cmd base/allocator.h") {
+		t.Errorf("Expected build edge for %s, got:\n%s", expectedOut2, content)
+	}
+	if !strings.Contains(content, "generate_operator_out arch/instruction_set.h > "+expectedOut1) {
+		t.Errorf("Expected expanded cmd for first source, got:\n%s", content)
+	}
+	if !strings.Contains(content, "generate_operator_out base/allocator.h > "+expectedOut2) {
+		t.Errorf("Expected expanded cmd for second source, got:\n%s", content)
+	}
+}
+
+func TestGensrcsConsumerGeneratedSources(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	genMod := &eval.EvaluatedModule{
+		Type: "gensrcs",
+		Name: "my_gensrcs",
+		Properties: map[string]interface{}{
+			"name":             "my_gensrcs",
+			"cmd":              "protoc $(in) -o $(out)",
+			"srcs":             []interface{}{"foo.proto"},
+			"output_extension": "cc",
+		},
+	}
+
+	ccMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libconsumer",
+		Properties: map[string]interface{}{
+			"name":              "libconsumer",
+			"srcs":              []interface{}{"main.cpp"},
+			"generated_sources": []interface{}{"my_gensrcs"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{genMod, ccMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	// Generated .cc source from my_gensrcs should be compiled into an object for libconsumer
+	if !strings.Contains(content, "build out/obj/libconsumer/out/gen/my_gensrcs/foo.o: cxx_compile out/gen/my_gensrcs/foo.cc") &&
+		!strings.Contains(content, "foo.o: cxx_compile out/gen/my_gensrcs/foo.cc") {
+		t.Errorf("Expected compiled object for generated source foo.cc, got:\n%s", content)
+	}
+}
+
+func TestGensrcsConsumerGeneratedHeaders(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	genMod := &eval.EvaluatedModule{
+		Type: "gensrcs",
+		Name: "proto_headers",
+		Properties: map[string]interface{}{
+			"name":                "proto_headers",
+			"cmd":                 "gen_header $(in) $(out)",
+			"srcs":                []interface{}{"api.proto"},
+			"output_extension":    "h",
+			"export_include_dirs": []interface{}{"."},
+		},
+	}
+
+	ccMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libuser",
+		Properties: map[string]interface{}{
+			"name":              "libuser",
+			"srcs":              []interface{}{"user.cpp"},
+			"generated_headers": []interface{}{"proto_headers"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{genMod, ccMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	// Check include path
+	if !strings.Contains(content, "-Iout/gen/proto_headers") {
+		t.Errorf("Expected -Iout/gen/proto_headers in compiler flags, got:\n%s", content)
+	}
+	// Check order-only dependency on generated header
+	if !strings.Contains(content, "|| out/gen/proto_headers/api.h") {
+		t.Errorf("Expected order-only dependency on out/gen/proto_headers/api.h, got:\n%s", content)
+	}
+}
+
+
 
 

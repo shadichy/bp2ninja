@@ -298,6 +298,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateJavaBinary(mod)
 		case "genrule":
 			targets, err = g.generateGenrule(mod)
+		case "gensrcs":
+			targets, err = g.generateGensrcs(mod)
 		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host":
 			targets, err = g.generatePrebuilt(mod)
 		default:
@@ -539,9 +541,10 @@ func (g *Generator) resolveTool(name string) string {
 	return name
 }
 
-// ResolveSrcs expands filegroup/genrule references and filters out exclude_srcs.
+// ResolveSrcs expands filegroup/genrule/gensrcs references and filters out exclude_srcs.
 func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 	rawSrcs := mod.GetStringList("srcs")
+	rawSrcs = append(rawSrcs, mod.GetStringList("generated_sources")...)
 	if len(rawSrcs) == 0 {
 		return nil
 	}
@@ -554,6 +557,8 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 				for _, fg := range fgSrcs {
 					expanded = append(expanded, g.expandGlob(fg)...)
 				}
+			} else if outs, ok := g.moduleOutputs[label]; ok {
+				expanded = append(expanded, outs...)
 			} else if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
 				for _, out := range genMod.GetStringList("out") {
 					expanded = append(expanded, filepath.Join(g.opts.OutDir, "gen", label, out))
@@ -561,6 +566,8 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 			} else {
 				expanded = append(expanded, s)
 			}
+		} else if outs, ok := g.moduleOutputs[s]; ok {
+			expanded = append(expanded, outs...)
 		} else {
 			srcPath := s
 			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {

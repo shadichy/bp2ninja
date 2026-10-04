@@ -172,7 +172,7 @@ func (g *Generator) generateJavaBinary(mod *eval.EvaluatedModule) ([]string, err
 	}
 
 	mainClass := mod.GetString("main_class")
-	runCmd := fmt.Sprintf(`echo '#!/bin/sh\nexec java -cp "%s" %s "$@"' > %s && chmod +x %s`,
+	runCmd := fmt.Sprintf(`echo '#!/bin/sh\nexec java -cp "%s" %s "$$@"' > %s && chmod +x %s`,
 		jarTarget, mainClass, binTarget, binTarget)
 
 	if err := g.nw.Build(ninja.BuildEdge{

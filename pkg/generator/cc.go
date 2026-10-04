@@ -15,6 +15,24 @@ import (
 func shellJoin(args []string) string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {
+		handled := false
+		for _, pfx := range []string{"-include ", "-isystem ", "-I ", "-imacros "} {
+			if strings.HasPrefix(a, pfx) {
+				flag := strings.TrimSpace(pfx)
+				target := strings.TrimSpace(strings.TrimPrefix(a, pfx))
+				out = append(out, flag)
+				if strings.ContainsAny(target, " \t\n\"'><()$`&|;*?[]{}~#") {
+					out = append(out, "'"+strings.ReplaceAll(target, "'", "'\\''")+"'")
+				} else {
+					out = append(out, target)
+				}
+				handled = true
+				break
+			}
+		}
+		if handled {
+			continue
+		}
 		if strings.ContainsAny(a, " \t\n\"'><()$`&|;*?[]{}~#") {
 			out = append(out, "'"+strings.ReplaceAll(a, "'", "'\\''")+"'")
 		} else {

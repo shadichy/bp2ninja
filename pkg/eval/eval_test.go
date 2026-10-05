@@ -377,4 +377,130 @@ cc_library {
 	}
 }
 
+func TestArchAndMultilibExpansion(t *testing.T) {
+	bp := `
+cc_library {
+    name: "libarch_test",
+    cflags: ["-DCOMMON"],
+    arch: {
+        arm64: {
+            cflags: ["-DARCH_ARM64"],
+            srcs: ["arm64.S"],
+        },
+        arm: {
+            cflags: ["-DARCH_ARM"],
+            srcs: ["arm32.S"],
+        },
+        x86_64: {
+            cflags: ["-DARCH_X86_64"],
+            srcs: ["x86_64.S"],
+        },
+        x86: {
+            cflags: ["-DARCH_X86"],
+            srcs: ["x86.S"],
+        },
+    },
+    multilib: {
+        lib32: {
+            cflags: ["-DBITNESS_32"],
+        },
+        lib64: {
+            cflags: ["-DBITNESS_64"],
+        },
+    },
+    target: {
+        android_arm64: {
+            cflags: ["-DTARGET_ANDROID_ARM64"],
+        },
+        android_x86_64: {
+            cflags: ["-DTARGET_ANDROID_X86_64"],
+        },
+    },
+}
+`
 
+	testCases := []struct {
+		arch          string
+		expectedFlags []string
+		expectedSrcs  []string
+		unexpected    []string
+	}{
+		{
+			arch:          "arm64",
+			expectedFlags: []string{"-DCOMMON", "-DARCH_ARM64", "-DBITNESS_64", "-DTARGET_ANDROID_ARM64"},
+			expectedSrcs:  []string{"arm64.S"},
+			unexpected:    []string{"-DARCH_ARM", "-DARCH_X86", "-DARCH_X86_64", "-DBITNESS_32", "-DTARGET_ANDROID_X86_64"},
+		},
+		{
+			arch:          "arm",
+			expectedFlags: []string{"-DCOMMON", "-DARCH_ARM", "-DBITNESS_32"},
+			expectedSrcs:  []string{"arm32.S"},
+			unexpected:    []string{"-DARCH_ARM64", "-DARCH_X86_64", "-DBITNESS_64"},
+		},
+		{
+			arch:          "x86_64",
+			expectedFlags: []string{"-DCOMMON", "-DARCH_X86_64", "-DBITNESS_64", "-DTARGET_ANDROID_X86_64"},
+			expectedSrcs:  []string{"x86_64.S"},
+			unexpected:    []string{"-DARCH_ARM", "-DARCH_ARM64", "-DBITNESS_32"},
+		},
+		{
+			arch:          "x86",
+			expectedFlags: []string{"-DCOMMON", "-DARCH_X86", "-DBITNESS_32"},
+			expectedSrcs:  []string{"x86.S"},
+			unexpected:    []string{"-DARCH_ARM", "-DARCH_X86_64", "-DBITNESS_64"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("Arch_"+tc.arch, func(t *testing.T) {
+			ctx := NewContext(nil, tc.arch)
+			ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+			if len(errs) > 0 {
+				t.Fatalf("Parse error: %v", errs)
+			}
+			if err := ctx.EvalFileInDir(ast, ""); err != nil {
+				t.Fatalf("EvalFileInDir failed: %v", err)
+			}
+			if len(ctx.Modules) != 1 {
+				t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+			}
+			mod := ctx.Modules[0]
+			cflags := mod.GetStringList("cflags")
+			srcs := mod.GetStringList("srcs")
+
+			for _, exp := range tc.expectedFlags {
+				found := false
+				for _, f := range cflags {
+					if f == exp {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("[%s] Expected flag %s in cflags %v", tc.arch, exp, cflags)
+				}
+			}
+
+			for _, unexp := range tc.unexpected {
+				for _, f := range cflags {
+					if f == unexp {
+						t.Errorf("[%s] Unexpected flag %s found in cflags %v", tc.arch, unexp, cflags)
+					}
+				}
+			}
+
+			for _, expSrc := range tc.expectedSrcs {
+				found := false
+				for _, s := range srcs {
+					if s == expSrc {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("[%s] Expected src %s in srcs %v", tc.arch, expSrc, srcs)
+				}
+			}
+		})
+	}
+}

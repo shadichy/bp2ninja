@@ -567,7 +567,14 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	if g.opts.SysrootDir != "" && !strings.Contains(g.opts.ClangPath, "-clang") {
 		incs = append(incs, "-isystem "+filepath.Join(g.opts.SysrootDir, "usr", "include"))
 	}
-	return dedup(incs)
+	filtered := incs[:0]
+	for _, e := range incs {
+		if e == "-I" || e == "-isystem" || e == "-idirafter" || e == "-iquote" {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return dedup(filtered)
 }
 
 var compoundFlags = map[string]bool{

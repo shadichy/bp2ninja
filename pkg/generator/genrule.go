@@ -478,3 +478,54 @@ func (g *Generator) generateFallback(mod *eval.EvaluatedModule) ([]string, error
 	}
 	return targets, nil
 }
+
+func (g *Generator) generatePythonBinary(mod *eval.EvaluatedModule) ([]string, error) {
+	main := mod.GetString("main")
+	if main == "" {
+		srcs := mod.GetStringList("srcs")
+		for _, s := range srcs {
+			if strings.HasSuffix(s, ".py") {
+				main = s
+				break
+			}
+		}
+		if main == "" && len(srcs) > 0 {
+			main = srcs[0]
+		}
+	}
+	if main == "" {
+		return nil, nil
+	}
+
+	if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(main) && !strings.HasPrefix(main, ":") {
+		main = filepath.Clean(filepath.Join(mod.Dir, main))
+	}
+
+	g.emitPhonyIfNeeded(main)
+
+	target := filepath.Join(g.binDir(), mod.Name)
+
+	var implicitInputs []string
+	for _, s := range mod.GetStringList("srcs") {
+		srcPath := s
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcPath) && !strings.HasPrefix(srcPath, ":") {
+			srcPath = filepath.Clean(filepath.Join(mod.Dir, srcPath))
+		}
+		if srcPath != main && !strings.ContainsAny(srcPath, "*?[") {
+			g.emitPhonyIfNeeded(srcPath)
+			implicitInputs = append(implicitInputs, srcPath)
+		}
+	}
+
+	err := g.nw.Build(ninja.BuildEdge{
+		Outputs:   []string{target},
+		Rule:      "python_binary",
+		Inputs:    []string{main},
+		Implicits: implicitInputs,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{target}, nil
+}

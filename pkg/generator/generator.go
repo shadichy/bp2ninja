@@ -302,6 +302,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateGensrcs(mod)
 		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host":
 			targets, err = g.generatePrebuilt(mod)
+		case "python_binary", "python_binary_host", "python_test_host":
+			targets, err = g.generatePythonBinary(mod)
 		default:
 			// Fallback only: Pattern recognition heuristic when no plugin or handler exists
 			targets, err = g.autoDeriveFallback(mod)
@@ -480,6 +482,15 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// Python executable binary wrapper
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "python_binary",
+		Command:     "mkdir -p $$(dirname $out) && printf '#!/bin/sh\\nexport PYTHONPATH=\"$$PWD\":$$PYTHONPATH\\nexec python3 \"$in\" \"$$@\"\\n' > $out && chmod +x $out",
+		Description: "PY_BIN $out",
+	}); err != nil {
+		return err
+	}
+
 	// Custom Genrule
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "genrule_cmd",
@@ -522,6 +533,8 @@ func (g *Generator) resolveTool(name string) string {
 			}
 			return filepath.Join(g.binDir(), filename)
 		case "cc_binary", "cc_binary_host":
+			return filepath.Join(g.binDir(), mod.Name)
+		case "python_binary", "python_binary_host", "python_test_host":
 			return filepath.Join(g.binDir(), mod.Name)
 		}
 	}

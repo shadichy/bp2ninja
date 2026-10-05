@@ -1,7 +1,6 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 

@@ -1001,6 +1001,64 @@ func TestGensrcsConsumerGeneratedHeaders(t *testing.T) {
 	}
 }
 
+func TestExcludeSrcsGlobAndFilegroup(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
 
+	fgMod := &eval.EvaluatedModule{
+		Type: "filegroup",
+		Name: "my_sources",
+		Properties: map[string]interface{}{
+			"name": "my_sources",
+			"srcs": []interface{}{
+				"mojo/core/channel.cc",
+				"mojo/core/channel_unittest.cc",
+				"mojo/public/js/bindings.js",
+			},
+			"exclude_srcs": []interface{}{
+				"**/*_unittest.cc",
+				"mojo/public/js/**/*",
+			},
+		},
+	}
 
+	ccMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libchannel",
+		Properties: map[string]interface{}{
+			"name": "libchannel",
+			"srcs": []interface{}{
+				":my_sources",
+				"extra.cpp",
+				"extra_test.cpp",
+			},
+			"exclude_srcs": []interface{}{
+				"*_test.cpp",
+			},
+		},
+	}
 
+	if err := gen.Generate([]*eval.EvaluatedModule{fgMod, ccMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "mojo/core/channel.cc") {
+		t.Errorf("Expected mojo/core/channel.cc in build rules")
+	}
+	if strings.Contains(content, "channel_unittest.cc") {
+		t.Errorf("channel_unittest.cc should have been excluded by filegroup exclude_srcs")
+	}
+	if strings.Contains(content, "bindings.js") {
+		t.Errorf("bindings.js should have been excluded by filegroup exclude_srcs")
+	}
+	if !strings.Contains(content, "extra.cpp") {
+		t.Errorf("Expected extra.cpp in build rules")
+	}
+	if strings.Contains(content, "extra_test.cpp") {
+		t.Errorf("extra_test.cpp should have been excluded by cc_library exclude_srcs")
+	}
+}

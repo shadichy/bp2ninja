@@ -229,12 +229,14 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			if mod.Type == "filegroup" {
 				var fgSrcs []string
 				for _, s := range mod.GetStringList("srcs") {
+					srcPath := s
 					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) && !strings.HasPrefix(s, ":") {
-						fgSrcs = append(fgSrcs, filepath.Clean(filepath.Join(mod.Dir, s)))
-					} else {
-						fgSrcs = append(fgSrcs, s)
+						srcPath = filepath.Clean(filepath.Join(mod.Dir, s))
 					}
+					fgSrcs = append(fgSrcs, g.expandGlob(srcPath)...)
 				}
+				fgExcludes := mod.GetStringList("exclude_srcs")
+				fgSrcs = filterExcludeSrcs(fgSrcs, fgExcludes, mod.Dir)
 				g.filegroups[mod.Name] = fgSrcs
 			}
 		}
@@ -592,21 +594,7 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 
 	excludeList := mod.GetStringList("exclude_srcs")
 	if len(excludeList) > 0 {
-		excludeMap := make(map[string]bool)
-		for _, ex := range excludeList {
-			excludeMap[ex] = true
-			excludeMap[filepath.Clean(ex)] = true
-			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(ex) {
-				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
-			}
-		}
-		var filtered []string
-		for _, src := range expanded {
-			if !excludeMap[src] && !excludeMap[filepath.Clean(src)] {
-				filtered = append(filtered, src)
-			}
-		}
-		expanded = filtered
+		expanded = filterExcludeSrcs(expanded, excludeList, mod.Dir)
 	}
 
 	return dedup(expanded)
@@ -704,3 +692,58 @@ func globToRegex(glob string) string {
 	}
 	return sb.String()
 }
+
+func filterExcludeSrcs(srcs []string, excludeList []string, modDir string) []string {
+	if len(excludeList) == 0 || len(srcs) == 0 {
+		return srcs
+	}
+	var filtered []string
+	for _, s := range srcs {
+		excluded := false
+		for _, ex := range excludeList {
+			exPath := ex
+			if modDir != "" && modDir != "." && !filepath.IsAbs(ex) {
+				exPath = filepath.Clean(filepath.Join(modDir, ex))
+			}
+			if matchesExclude(ex, s) || matchesExclude(exPath, s) {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+func matchesExclude(pattern, target string) bool {
+	pattern = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(pattern)), "./")
+	target = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(target)), "./")
+
+	if pattern == target {
+		return true
+	}
+	// Check basename match if pattern is a bare filename without slashes
+	if !strings.Contains(pattern, "/") && !strings.ContainsAny(pattern, "*?[") {
+		if pattern == filepath.Base(target) {
+			return true
+		}
+	}
+
+	// If pattern contains glob wildcards
+	if strings.ContainsAny(pattern, "*?[") {
+		regexStr := globToRegex(pattern)
+		if re, err := regexp.Compile("^" + regexStr + "$"); err == nil {
+			if re.MatchString(target) {
+				return true
+			}
+			if !strings.Contains(pattern, "/") && re.MatchString(filepath.Base(target)) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+

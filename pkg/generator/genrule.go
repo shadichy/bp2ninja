@@ -44,21 +44,7 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 
 	excludeList := mod.GetStringList("exclude_srcs")
 	if len(excludeList) > 0 {
-		excludeMap := make(map[string]bool)
-		for _, ex := range excludeList {
-			excludeMap[ex] = true
-			excludeMap[filepath.Clean(ex)] = true
-			if mod.Dir != "" && mod.Dir != "." {
-				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
-			}
-		}
-		var filtered []string
-		for _, s := range srcs {
-			if !excludeMap[s] && !excludeMap[filepath.Base(s)] {
-				filtered = append(filtered, s)
-			}
-		}
-		srcs = filtered
+		srcs = filterExcludeSrcs(srcs, excludeList, mod.Dir)
 	}
 
 	if len(outs) == 0 {
@@ -165,21 +151,7 @@ func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error)
 
 	excludeList := mod.GetStringList("exclude_srcs")
 	if len(excludeList) > 0 {
-		excludeMap := make(map[string]bool)
-		for _, ex := range excludeList {
-			excludeMap[ex] = true
-			excludeMap[filepath.Clean(ex)] = true
-			if mod.Dir != "" && mod.Dir != "." {
-				excludeMap[filepath.Clean(filepath.Join(mod.Dir, ex))] = true
-			}
-		}
-		var filtered []string
-		for _, s := range srcs {
-			if !excludeMap[s] && !excludeMap[filepath.Base(s)] {
-				filtered = append(filtered, s)
-			}
-		}
-		srcs = filtered
+		srcs = filterExcludeSrcs(srcs, excludeList, mod.Dir)
 	}
 
 	genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)

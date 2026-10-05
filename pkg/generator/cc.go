@@ -15,6 +15,18 @@ import (
 func shellJoin(args []string) string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {
+		if a == "" {
+			continue
+		}
+		// Drop dangling flag prefixes (e.g. bare "-I" from an empty include
+		// dir would otherwise swallow the following path argument).
+		switch a {
+		case "-I", "-isystem", "-idirafter", "-iquote", "-include", "-imacros",
+			"-iprefix", "-iwithprefix", "-iwithprefixbefore", "-isysroot",
+			"--sysroot", "-sysroot", "-target", "--target", "-MF", "-MQ", "-MT",
+			"-Xclang", "-Xlinker", "-install_name":
+			continue
+		}
 		handled := false
 		for _, pfx := range []string{"-include ", "-isystem ", "-I ", "-imacros "} {
 			if strings.HasPrefix(a, pfx) {
@@ -503,6 +515,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		incs = append(incs, "-I"+genBase)
 		if ghMod, ok := g.moduleMap[gh]; ok {
 			for _, expDir := range ghMod.GetStringList("export_include_dirs") {
+				if expDir == "" {
+					continue
+				}
 				incs = append(incs, "-I"+filepath.Clean(filepath.Join(genBase, expDir)))
 			}
 		}

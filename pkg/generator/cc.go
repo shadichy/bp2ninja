@@ -343,6 +343,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	includes := dedup(g.resolveIncludeDirs(mod))
 	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
+	cflags = stripIncludeFlags(cflags)
+	cppflags = stripIncludeFlags(cppflags)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
 	cflags = append(cflags, "-fPIC")
 	if g.opts.AllowMissingDeps {
@@ -768,6 +770,12 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
+	for _, flag := range append(append(mod.GetStringList("cflags"), mod.GetStringList("cppflags")...), append(g.opts.ExtraCflags, g.opts.ExtraCppflags...)...) {
+		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
+			incs = append(incs, flag)
+		}
+	}
+
 	if g.opts.SysrootDir != "" && !strings.Contains(g.opts.ClangPath, "-clang") {
 		incs = append(incs, "-isystem "+filepath.Join(g.opts.SysrootDir, "usr", "include"))
 	}
@@ -779,6 +787,16 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		filtered = append(filtered, e)
 	}
 	return dedup(filtered)
+}
+
+func stripIncludeFlags(flags []string) []string {
+	var clean []string
+	for _, f := range flags {
+		if !strings.HasPrefix(f, "-I") && !strings.HasPrefix(f, "-isystem") {
+			clean = append(clean, f)
+		}
+	}
+	return clean
 }
 
 var compoundFlags = map[string]bool{

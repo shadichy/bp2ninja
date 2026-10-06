@@ -438,7 +438,7 @@ func (g *Generator) emitStandardRules() error {
 	// CC Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "cc_compile",
-		Command:     "$cc -MD -MF $out.d $cflags $includes $${CFLAGS} $${CCFLAGS} -c $in -o $out",
+		Command:     "$cc -MD -MF $out.d $includes $cflags $${CFLAGS} $${CCFLAGS} -c $in -o $out",
 		DepFile:     "$out.d",
 		Deps:        "gcc",
 		Description: "CC $out",
@@ -449,7 +449,7 @@ func (g *Generator) emitStandardRules() error {
 	// CXX Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "cxx_compile",
-		Command:     "$cxx -MD -MF $out.d $cflags $includes $${CXXFLAGS} $${CPPFLAGS} -c $in -o $out",
+		Command:     "$cxx -MD -MF $out.d $includes $cflags $${CXXFLAGS} $${CPPFLAGS} -c $in -o $out",
 		DepFile:     "$out.d",
 		Deps:        "gcc",
 		Description: "CXX $out",

@@ -1375,3 +1375,89 @@ flag {
 	}
 }
 
+func TestTaggedModuleReferenceResolution(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	genMod := &eval.EvaluatedModule{
+		Type: "genrule",
+		Name: "framework-minus-apex.ravenwood-base",
+		Properties: map[string]interface{}{
+			"name": "framework-minus-apex.ravenwood-base",
+			"out":  []interface{}{"ravenwood.jar", "ravenwood-data.txt"},
+			"cmd":  "echo test > $(out)",
+		},
+	}
+
+	consumerMod := &eval.EvaluatedModule{
+		Type: "genrule",
+		Name: "consumer",
+		Properties: map[string]interface{}{
+			"name": "consumer",
+			"srcs": []interface{}{":framework-minus-apex.ravenwood-base{ravenwood.jar}"},
+			"out":  []interface{}{"final.out"},
+			"cmd":  "cat $(in) > $(out)",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{genMod, consumerMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedInput := filepath.Join("out", "gen", "framework-minus-apex.ravenwood-base", "ravenwood.jar")
+	if !strings.Contains(content, expectedInput) {
+		t.Errorf("Expected consumer rule to depend on %s, got:\n%s", expectedInput, content)
+	}
+	unexpectedInput := filepath.Join("out", "gen", "framework-minus-apex.ravenwood-base", "ravenwood-data.txt")
+	if strings.Contains(content, "genrule_cmd "+expectedInput+" "+unexpectedInput) {
+		t.Errorf("Consumer rule should not include non-tagged output %s", unexpectedInput)
+	}
+}
+
+func TestRootTargetDefaultBounding(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	rootMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "my_main_tool",
+		Dir:  "",
+		Properties: map[string]interface{}{
+			"name": "my_main_tool",
+			"srcs": []interface{}{"main.cpp"},
+		},
+	}
+
+	childMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "child_sub_tool",
+		Dir:  "sub/dir",
+		Properties: map[string]interface{}{
+			"name": "child_sub_tool",
+			"srcs": []interface{}{"child.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{rootMod, childMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	mainTarget := filepath.Join("out", "bin", "my_main_tool")
+	childTarget := filepath.Join("out", "bin", "child_sub_tool")
+
+	if !strings.Contains(content, "default "+mainTarget) {
+		t.Errorf("Expected default directive to contain %s, got:\n%s", mainTarget, content)
+	}
+	if strings.Contains(content, "default "+mainTarget+" "+childTarget) {
+		t.Errorf("Default directive should NOT contain child module target %s when root targets exist", childTarget)
+	}
+}
+

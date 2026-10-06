@@ -200,6 +200,13 @@ func (g *Generator) emitPhonyIfNeeded(target string) {
 	})
 }
 
+func parseTaggedLabel(label string) (string, string) {
+	if idx := strings.Index(label, "{"); idx != -1 && strings.HasSuffix(label, "}") {
+		return label[:idx], label[idx+1 : len(label)-1]
+	}
+	return label, ""
+}
+
 func (g *Generator) resolveReference(ref string) []string {
 	if ref == "current_android_jar" || ref == "system_android_jar" {
 		jar := g.resolveCurrentAndroidJar()
@@ -209,48 +216,95 @@ func (g *Generator) resolveReference(ref string) []string {
 	}
 	if strings.HasPrefix(ref, ":") {
 		label := strings.TrimPrefix(ref, ":")
-		if fg, ok := g.filegroups[label]; ok && len(fg) > 0 {
+		baseLabel, tag := parseTaggedLabel(label)
+		if fg, ok := g.filegroups[baseLabel]; ok && len(fg) > 0 {
 			return fg
 		}
-		if outs, ok := g.moduleOutputs[label]; ok && len(outs) > 0 {
+		if outs, ok := g.moduleOutputs[baseLabel]; ok && len(outs) > 0 {
+			if tag != "" {
+				var matched []string
+				for _, out := range outs {
+					if filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+						matched = append(matched, out)
+					}
+				}
+				if len(matched) > 0 {
+					return matched
+				}
+			}
 			return outs
 		}
-		if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
+		if genMod, ok := g.moduleMap[baseLabel]; ok && (genMod.Type == "genrule" || genMod.Type == "java_genrule" || genMod.Type == "gensrcs") {
 			var genOuts []string
 			for _, out := range genMod.GetStringList("out") {
-				genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", label, out))
+				fullOut := filepath.Join(g.opts.OutDir, "gen", baseLabel, out)
+				if tag == "" || filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+					genOuts = append(genOuts, fullOut)
+				}
+			}
+			if len(genOuts) == 0 {
+				for _, out := range genMod.GetStringList("out") {
+					genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", baseLabel, out))
+				}
 			}
 			return genOuts
 		}
-		if label == "current_android_jar" || label == "system_android_jar" {
+		if baseLabel == "current_android_jar" || baseLabel == "system_android_jar" {
 			jar := g.resolveCurrentAndroidJar()
 			if jar != "" {
 				return []string{jar}
 			}
 		}
 		if g.opts.AllowMissingDeps {
-			g.emitPhonyIfNeeded(label)
-			return []string{label}
+			g.emitPhonyIfNeeded(baseLabel)
+			return []string{baseLabel}
 		}
 	} else if strings.HasPrefix(ref, "//") {
 		parts := strings.Split(ref, ":")
 		if len(parts) == 2 {
 			label := parts[1]
-			if fg, ok := g.filegroups[label]; ok && len(fg) > 0 {
+			baseLabel, tag := parseTaggedLabel(label)
+			if fg, ok := g.filegroups[baseLabel]; ok && len(fg) > 0 {
 				return fg
 			}
-			if outs, ok := g.moduleOutputs[label]; ok && len(outs) > 0 {
+			if outs, ok := g.moduleOutputs[baseLabel]; ok && len(outs) > 0 {
+				if tag != "" {
+					var matched []string
+					for _, out := range outs {
+						if filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+							matched = append(matched, out)
+						}
+					}
+					if len(matched) > 0 {
+						return matched
+					}
+				}
 				return outs
 			}
-			if label == "current_android_jar" || label == "system_android_jar" {
+			if genMod, ok := g.moduleMap[baseLabel]; ok && (genMod.Type == "genrule" || genMod.Type == "java_genrule" || genMod.Type == "gensrcs") {
+				var genOuts []string
+				for _, out := range genMod.GetStringList("out") {
+					fullOut := filepath.Join(g.opts.OutDir, "gen", baseLabel, out)
+					if tag == "" || filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+						genOuts = append(genOuts, fullOut)
+					}
+				}
+				if len(genOuts) == 0 {
+					for _, out := range genMod.GetStringList("out") {
+						genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", baseLabel, out))
+					}
+				}
+				return genOuts
+			}
+			if baseLabel == "current_android_jar" || baseLabel == "system_android_jar" {
 				jar := g.resolveCurrentAndroidJar()
 				if jar != "" {
 					return []string{jar}
 				}
 			}
 			if g.opts.AllowMissingDeps {
-				g.emitPhonyIfNeeded(label)
-				return []string{label}
+				g.emitPhonyIfNeeded(baseLabel)
+				return []string{baseLabel}
 			}
 		}
 		if g.opts.AllowMissingDeps {
@@ -307,6 +361,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	}
 
 	var allTargets []string
+	var rootTargets []string
+	var anyRootTargets []string
 
 	for _, mod := range modules {
 		if mod.Name == "" || !mod.IsEnabled() {
@@ -331,7 +387,15 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				return fmt.Errorf("plugin failed for module %s (%s): %w", mod.Name, mod.Type, err)
 			}
 			g.moduleOutputs[mod.Name] = targets
-			allTargets = append(allTargets, targets...)
+			if mod.Dir == "" || mod.Dir == "." {
+				anyRootTargets = append(anyRootTargets, targets...)
+			}
+			if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
+				allTargets = append(allTargets, targets...)
+				if mod.Dir == "" || mod.Dir == "." {
+					rootTargets = append(rootTargets, targets...)
+				}
+			}
 			continue
 		}
 
@@ -387,20 +451,33 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			return fmt.Errorf("failed generating module %s: %w", mod.Name, err)
 		}
 		g.moduleOutputs[mod.Name] = targets
+		if mod.Dir == "" || mod.Dir == "." {
+			anyRootTargets = append(anyRootTargets, targets...)
+		}
 		if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
 			allTargets = append(allTargets, targets...)
+			if mod.Dir == "" || mod.Dir == "." {
+				rootTargets = append(rootTargets, targets...)
+			}
 		}
 	}
 
-	if len(allTargets) == 0 {
+	defaultTargets := rootTargets
+	if len(defaultTargets) == 0 && len(anyRootTargets) > 0 {
+		defaultTargets = anyRootTargets
+	}
+	if len(defaultTargets) == 0 {
+		defaultTargets = allTargets
+	}
+	if len(defaultTargets) == 0 {
 		for _, outs := range g.moduleOutputs {
-			allTargets = append(allTargets, outs...)
+			defaultTargets = append(defaultTargets, outs...)
 		}
 	}
 
-	if len(allTargets) > 0 {
+	if len(defaultTargets) > 0 {
 		g.nw.BlankLine()
-		g.nw.Default(allTargets...)
+		g.nw.Default(defaultTargets...)
 	}
 
 	return g.nw.Flush()
@@ -746,17 +823,42 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 	for _, s := range rawSrcs {
 		if strings.HasPrefix(s, ":") {
 			label := strings.TrimPrefix(s, ":")
-			if fgSrcs, ok := g.filegroups[label]; ok {
+			baseLabel, tag := parseTaggedLabel(label)
+			if fgSrcs, ok := g.filegroups[baseLabel]; ok {
 				for _, fg := range fgSrcs {
 					expanded = append(expanded, g.expandGlob(fg)...)
 				}
-			} else if outs, ok := g.moduleOutputs[label]; ok {
-				expanded = append(expanded, outs...)
-			} else if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
-				for _, out := range genMod.GetStringList("out") {
-					expanded = append(expanded, filepath.Join(g.opts.OutDir, "gen", label, out))
+			} else if outs, ok := g.moduleOutputs[baseLabel]; ok {
+				if tag != "" {
+					var matched []string
+					for _, out := range outs {
+						if filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+							matched = append(matched, out)
+						}
+					}
+					if len(matched) > 0 {
+						expanded = append(expanded, matched...)
+					} else {
+						expanded = append(expanded, outs...)
+					}
+				} else {
+					expanded = append(expanded, outs...)
 				}
-			} else if label == "current_android_jar" || label == "system_android_jar" {
+			} else if genMod, ok := g.moduleMap[baseLabel]; ok && (genMod.Type == "genrule" || genMod.Type == "java_genrule" || genMod.Type == "gensrcs") {
+				var genOuts []string
+				for _, out := range genMod.GetStringList("out") {
+					fullOut := filepath.Join(g.opts.OutDir, "gen", baseLabel, out)
+					if tag == "" || filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
+						genOuts = append(genOuts, fullOut)
+					}
+				}
+				if len(genOuts) == 0 {
+					for _, out := range genMod.GetStringList("out") {
+						genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", baseLabel, out))
+					}
+				}
+				expanded = append(expanded, genOuts...)
+			} else if baseLabel == "current_android_jar" || baseLabel == "system_android_jar" {
 				expanded = append(expanded, g.resolveCurrentAndroidJar())
 			} else {
 				expanded = append(expanded, s)

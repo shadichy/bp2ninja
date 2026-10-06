@@ -142,21 +142,39 @@ func (g *Generator) GetTopDirModules() map[string]string {
 				return filepath.SkipDir
 			}
 
-			// Map directory base name
-			g.topDirModules[baseName] = path
-			if strings.HasSuffix(baseName, "_headers") {
-				g.topDirModules[strings.TrimSuffix(baseName, "_headers")] = path
-			}
-
-			// If Android.bp or Android.bp.prebuilt exists in candidate directory, map declared module names
+			// 1. If Android.bp or Android.bp.prebuilt exists in candidate directory, map declared module names
 			for _, bpFile := range []string{"Android.bp", "Android.bp.prebuilt"} {
 				bpPath := filepath.Join(path, bpFile)
 				if data, err := os.ReadFile(bpPath); err == nil {
 					for _, match := range nameRegex.FindAllSubmatch(data, -1) {
 						mName := string(match[1])
+						if existing, ok := g.topDirModules[mName]; ok {
+							if fi, err := os.Stat(filepath.Join(existing, "include")); err == nil && fi.IsDir() {
+								continue
+							}
+						}
 						g.topDirModules[mName] = path
 						if strings.HasSuffix(mName, "_headers") {
-							g.topDirModules[strings.TrimSuffix(mName, "_headers")] = path
+							tr := strings.TrimSuffix(mName, "_headers")
+							if existing, ok := g.topDirModules[tr]; ok {
+								if fi, err := os.Stat(filepath.Join(existing, "include")); err == nil && fi.IsDir() {
+									continue
+								}
+							}
+							g.topDirModules[tr] = path
+						}
+					}
+				}
+			}
+
+			// 2. Map directory base name only if not already set, and only if candidate has an include directory
+			if _, ok := g.topDirModules[baseName]; !ok {
+				if fi, err := os.Stat(filepath.Join(path, "include")); err == nil && fi.IsDir() {
+					g.topDirModules[baseName] = path
+					if strings.HasSuffix(baseName, "_headers") {
+						tr := strings.TrimSuffix(baseName, "_headers")
+						if _, ok2 := g.topDirModules[tr]; !ok2 {
+							g.topDirModules[tr] = path
 						}
 					}
 				}

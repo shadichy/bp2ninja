@@ -75,6 +75,7 @@ type Generator struct {
 	filegroups     map[string][]string
 	emittedPhonies map[string]bool
 	topDirModules  map[string]string
+	protoHeaders   map[string][]string
 
 	// MissingDeps records external dependencies not found in the parsed blueprint set.
 	MissingDeps []string
@@ -96,6 +97,7 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		filegroups:     make(map[string][]string),
 		emittedPhonies: make(map[string]bool),
 		topDirModules:  nil,
+		protoHeaders:   make(map[string][]string),
 	}
 }
 
@@ -179,6 +181,12 @@ func (g *Generator) emitPhonyIfNeeded(target string) {
 }
 
 func (g *Generator) resolveReference(ref string) []string {
+	if ref == "current_android_jar" || ref == "system_android_jar" {
+		jar := g.resolveCurrentAndroidJar()
+		if jar != "" {
+			return []string{jar}
+		}
+	}
 	if strings.HasPrefix(ref, ":") {
 		label := strings.TrimPrefix(ref, ":")
 		if fg, ok := g.filegroups[label]; ok && len(fg) > 0 {
@@ -186,6 +194,19 @@ func (g *Generator) resolveReference(ref string) []string {
 		}
 		if outs, ok := g.moduleOutputs[label]; ok && len(outs) > 0 {
 			return outs
+		}
+		if genMod, ok := g.moduleMap[label]; ok && genMod.Type == "genrule" {
+			var genOuts []string
+			for _, out := range genMod.GetStringList("out") {
+				genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", label, out))
+			}
+			return genOuts
+		}
+		if label == "current_android_jar" || label == "system_android_jar" {
+			jar := g.resolveCurrentAndroidJar()
+			if jar != "" {
+				return []string{jar}
+			}
 		}
 		if g.opts.AllowMissingDeps {
 			g.emitPhonyIfNeeded(ref)
@@ -200,6 +221,12 @@ func (g *Generator) resolveReference(ref string) []string {
 			}
 			if outs, ok := g.moduleOutputs[label]; ok && len(outs) > 0 {
 				return outs
+			}
+			if label == "current_android_jar" || label == "system_android_jar" {
+				jar := g.resolveCurrentAndroidJar()
+				if jar != "" {
+					return []string{jar}
+				}
 			}
 		}
 		if g.opts.AllowMissingDeps {
@@ -238,6 +265,18 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				fgExcludes := mod.GetStringList("exclude_srcs")
 				fgSrcs = filterExcludeSrcs(fgSrcs, fgExcludes, mod.Dir)
 				g.filegroups[mod.Name] = fgSrcs
+			}
+			// Pre-index proto outputs for any module defining .proto sources
+			for _, src := range mod.GetStringList("srcs") {
+				if strings.HasSuffix(src, ".proto") {
+					rel := src
+					if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
+						rel = strings.TrimPrefix(src, mod.Dir+"/")
+					}
+					pbRel := strings.TrimSuffix(rel, ".proto")
+					pbHdr := filepath.Join(g.opts.OutDir, "gen", mod.Name, pbRel+".pb.h")
+					g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
+				}
 			}
 		}
 	}
@@ -502,6 +541,16 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// Protoc: emit C++ from .proto. Recipe build env pins /tmp/pbc/protoc321
+	// via $PROTOC (ABI-matched to the fleet runtime); fall back to system protoc.
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "protoc",
+		Command:     "mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args",
+		Description: "PROTOC $in",
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -515,6 +564,102 @@ func (g *Generator) binDir() string {
 
 func (g *Generator) libDir() string {
 	return filepath.Join(g.opts.OutDir, "lib64")
+}
+
+// resolveCurrentAndroidJar locates the platform SDK android.jar matching APILevel or best available.
+func (g *Generator) resolveCurrentAndroidJar() string {
+	if g.opts.AndroidJarPath != "" {
+		if fi, err := os.Stat(g.opts.AndroidJarPath); err == nil && !fi.IsDir() {
+			return g.opts.AndroidJarPath
+		}
+	}
+
+	targetApi := g.opts.APILevel
+	if targetApi <= 0 {
+		targetApi = 34
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	candidates := []string{
+		os.Getenv("ANDROID_SDK"),
+		os.Getenv("ANDROID_HOME"),
+		"/opt/android-sdk",
+		filepath.Join(homeDir, "Android/Sdk"),
+	}
+
+	// 1. Look for <SDK>/platforms/android-<version>/android.jar
+	for _, sdk := range candidates {
+		if sdk == "" {
+			continue
+		}
+		// Exact match: platforms/android-<targetApi>/android.jar or platforms/android-<targetApi>.0/android.jar
+		exact := filepath.Join(sdk, "platforms", fmt.Sprintf("android-%d", targetApi), "android.jar")
+		if fi, err := os.Stat(exact); err == nil && !fi.IsDir() {
+			return exact
+		}
+		exactDot := filepath.Join(sdk, "platforms", fmt.Sprintf("android-%d.0", targetApi), "android.jar")
+		if fi, err := os.Stat(exactDot); err == nil && !fi.IsDir() {
+			return exactDot
+		}
+
+		// Search available platforms
+		platformsDir := filepath.Join(sdk, "platforms")
+		if entries, err := os.ReadDir(platformsDir); err == nil {
+			var bestJar string
+			bestDiff := 9999
+			for _, e := range entries {
+				name := e.Name()
+				if !strings.HasPrefix(name, "android-") {
+					continue
+				}
+				jarPath := filepath.Join(platformsDir, name, "android.jar")
+				if fi, err := os.Stat(jarPath); err != nil || fi.IsDir() {
+					continue
+				}
+				verStr := strings.TrimPrefix(name, "android-")
+				if idx := strings.Index(verStr, "."); idx != -1 {
+					verStr = verStr[:idx]
+				}
+				var verNum int
+				if n, err := fmt.Sscanf(verStr, "%d", &verNum); err == nil && n == 1 {
+					diff := targetApi - verNum
+					if diff < 0 {
+						diff = -diff + 100 // Prefer <= targetApi if possible
+					}
+					if diff < bestDiff {
+						bestDiff = diff
+						bestJar = jarPath
+					}
+				} else if bestJar == "" {
+					bestJar = jarPath
+				}
+			}
+			if bestJar != "" {
+				return bestJar
+			}
+		}
+	}
+
+	// 2. In-tree prebuilts/sdk/current/public/android.jar
+	if g.opts.TopDir != "" {
+		treeJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/android.jar")
+		if fi, err := os.Stat(treeJar); err == nil && !fi.IsDir() {
+			return treeJar
+		}
+	}
+
+	// 3. Fallback: <SDK>/android.jar if present
+	for _, sdk := range candidates {
+		if sdk == "" {
+			continue
+		}
+		p := filepath.Join(sdk, "android.jar")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+
+	return filepath.Join("/opt/android-sdk/platforms", fmt.Sprintf("android-%d", targetApi), "android.jar")
 }
 
 // resolveTool locates the executable or output path for a named tool/module.
@@ -578,11 +723,15 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 				for _, out := range genMod.GetStringList("out") {
 					expanded = append(expanded, filepath.Join(g.opts.OutDir, "gen", label, out))
 				}
+			} else if label == "current_android_jar" || label == "system_android_jar" {
+				expanded = append(expanded, g.resolveCurrentAndroidJar())
 			} else {
 				expanded = append(expanded, s)
 			}
 		} else if outs, ok := g.moduleOutputs[s]; ok {
 			expanded = append(expanded, outs...)
+		} else if s == "current_android_jar" || s == "system_android_jar" {
+			expanded = append(expanded, g.resolveCurrentAndroidJar())
 		} else {
 			srcPath := s
 			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {

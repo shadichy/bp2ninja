@@ -242,6 +242,14 @@ func (g *Generator) expandGenruleCmd(
 				return src
 			}
 		}
+		// Check references (:label, //path:label, current_android_jar)
+		if strings.HasPrefix(label, ":") || strings.HasPrefix(label, "//") || label == "current_android_jar" || label == "system_android_jar" {
+			refs := g.resolveReference(label)
+			if len(refs) > 0 {
+				addExtraInput(refs[0])
+				return refs[0]
+			}
+		}
 		// Check tool_files
 		for _, tf := range toolFiles {
 			if tf == label || filepath.Base(tf) == label {
@@ -309,7 +317,7 @@ func (g *Generator) expandGenruleCmd(
 								break
 							}
 						}
-						if strings.HasPrefix(label, ":") || strings.HasPrefix(label, "//") {
+						if strings.HasPrefix(label, ":") || strings.HasPrefix(label, "//") || label == "current_android_jar" || label == "system_android_jar" {
 							refs := g.resolveReference(label)
 							if len(refs) > 0 {
 								for _, r := range refs {

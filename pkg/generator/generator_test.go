@@ -708,23 +708,23 @@ func TestCcLibraryPhonyWhenZeroObjsAndAllowMissingDeps(t *testing.T) {
 	opts.AllowMissingDeps = true
 	gen := New(opts, nw, nil)
 
-	// Library with only a proto source (0 C/C++ objects)
-	protoLib := &eval.EvaluatedModule{
+	// Library with no C/C++ sources (0 C/C++ objects)
+	emptyLib := &eval.EvaluatedModule{
 		Type: "cc_library_static",
-		Name: "libproto_only",
+		Name: "libempty_only",
 		Properties: map[string]interface{}{
-			"name": "libproto_only",
-			"srcs": []interface{}{"message.proto"},
+			"name": "libempty_only",
+			"srcs": []interface{}{"notes.txt"},
 		},
 	}
 
-	if err := gen.Generate([]*eval.EvaluatedModule{protoLib}); err != nil {
+	if err := gen.Generate([]*eval.EvaluatedModule{emptyLib}); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
 	content := buf.String()
-	if !strings.Contains(content, "build out/lib64/libproto_only.a: phony") {
-		t.Errorf("Expected phony rule for out/lib64/libproto_only.a, got:\n%s", content)
+	if !strings.Contains(content, "build out/lib64/libempty_only.a: phony") {
+		t.Errorf("Expected phony rule for out/lib64/libempty_only.a, got:\n%s", content)
 	}
 }
 
@@ -1060,5 +1060,162 @@ func TestExcludeSrcsGlobAndFilegroup(t *testing.T) {
 	}
 	if strings.Contains(content, "extra_test.cpp") {
 		t.Errorf("extra_test.cpp should have been excluded by cc_library exclude_srcs")
+	}
+}
+
+func TestProtocRuleAndIncludes(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	protoLib := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libproto_mod",
+		Properties: map[string]interface{}{
+			"name": "libproto_mod",
+			"srcs": []interface{}{
+				"protos/aconfig_storage_metadata.proto",
+				"src/impl.cpp",
+			},
+		},
+	}
+
+	consumerBinary := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "aconfigd",
+		Properties: map[string]interface{}{
+			"name":        "aconfigd",
+			"srcs":        []interface{}{"aconfigd.cpp"},
+			"static_libs": []interface{}{"libproto_mod"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{protoLib, consumerBinary}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify protoc rule syntax
+	if !strings.Contains(content, "rule protoc") ||
+		!strings.Contains(content, "command = mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args") {
+		t.Errorf("Expected valid Ninja protoc rule with $$(dirname $out), got:\n%s", content)
+	}
+
+	// 2. Verify protoc edge preserving relative path
+	expectedProtoOutCc := "out/gen/libproto_mod/protos/aconfig_storage_metadata.pb.cc"
+	expectedProtoOutH := "out/gen/libproto_mod/protos/aconfig_storage_metadata.pb.h"
+	if !strings.Contains(content, expectedProtoOutCc) || !strings.Contains(content, expectedProtoOutH) {
+		t.Errorf("Expected protoc outputs for %s and %s, got:\n%s", expectedProtoOutCc, expectedProtoOutH, content)
+	}
+
+	// 3. Verify object compilation of the generated .pb.cc
+	if !strings.Contains(content, "aconfig_storage_metadata.pb.o: cxx_compile "+expectedProtoOutCc) {
+		t.Errorf("Expected cxx_compile for generated .pb.cc, got:\n%s", content)
+	}
+
+	// 4. Verify order-only dependency on .pb.h for local object and consumer object
+	if !strings.Contains(content, "|| "+expectedProtoOutH) {
+		t.Errorf("Expected order-only dependency on %s, got:\n%s", expectedProtoOutH, content)
+	}
+
+	// 5. Verify -Iout/gen/libproto_mod is passed to compiler includes
+	if !strings.Contains(content, "-Iout/gen/libproto_mod") {
+		t.Errorf("Expected -Iout/gen/libproto_mod in compiler includes, got:\n%s", content)
+	}
+}
+
+func TestCurrentAndroidJarResolution(t *testing.T) {
+	tmpDir := t.TempDir()
+	p34 := filepath.Join(tmpDir, "platforms/android-34")
+	p32 := filepath.Join(tmpDir, "platforms/android-32")
+	if err := os.MkdirAll(p34, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p32, 0755); err != nil {
+		t.Fatal(err)
+	}
+	jar34 := filepath.Join(p34, "android.jar")
+	jar32 := filepath.Join(p32, "android.jar")
+	if err := os.WriteFile(jar34, []byte("jar34"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jar32, []byte("jar32"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ANDROID_SDK", tmpDir)
+	t.Setenv("ANDROID_HOME", "")
+
+	// 1. Exact match APILevel 34
+	var buf1 bytes.Buffer
+	nw1 := ninja.NewWriter(&buf1)
+	opts1 := DefaultOptions(".", "out")
+	opts1.APILevel = 34
+	gen1 := New(opts1, nw1, nil)
+
+	resolvedJar1 := gen1.resolveCurrentAndroidJar()
+	if resolvedJar1 != jar34 {
+		t.Errorf("Expected resolved android.jar for API 34 to be %s, got %s", jar34, resolvedJar1)
+	}
+
+	// 2. Exact match APILevel 32
+	var buf2 bytes.Buffer
+	nw2 := ninja.NewWriter(&buf2)
+	opts2 := DefaultOptions(".", "out")
+	opts2.APILevel = 32
+	gen2 := New(opts2, nw2, nil)
+
+	resolvedJar2 := gen2.resolveCurrentAndroidJar()
+	if resolvedJar2 != jar32 {
+		t.Errorf("Expected resolved android.jar for API 32 to be %s, got %s", jar32, resolvedJar2)
+	}
+
+	// 3. Resolve :current_android_jar in java_library srcs
+	javaMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "my_java_lib",
+		Properties: map[string]interface{}{
+			"name": "my_java_lib",
+			"srcs": []interface{}{
+				"Foo.java",
+				":current_android_jar",
+			},
+		},
+	}
+	if err := gen1.Generate([]*eval.EvaluatedModule{javaMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content1 := buf1.String()
+	if !strings.Contains(content1, jar34) {
+		t.Errorf("Expected ninja output to contain resolved jar path %s, got:\n%s", jar34, content1)
+	}
+
+	// 4. Resolve :current_android_jar in genrule $(location :current_android_jar)
+	var buf3 bytes.Buffer
+	nw3 := ninja.NewWriter(&buf3)
+	opts3 := DefaultOptions(".", "out")
+	opts3.APILevel = 34
+	gen3 := New(opts3, nw3, nil)
+
+	genMod := &eval.EvaluatedModule{
+		Type: "genrule",
+		Name: "my_genrule",
+		Properties: map[string]interface{}{
+			"name": "my_genrule",
+			"srcs": []interface{}{":current_android_jar"},
+			"out":  []interface{}{"out.h"},
+			"cmd":  "process $(location :current_android_jar) $(out)",
+		},
+	}
+	if err := gen3.Generate([]*eval.EvaluatedModule{genMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content3 := buf3.String()
+	if !strings.Contains(content3, "process "+jar34+" out/gen/my_genrule/out.h") {
+		t.Errorf("Expected genrule cmd to expand $(location :current_android_jar) to %s, got:\n%s", jar34, content3)
 	}
 }

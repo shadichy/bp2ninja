@@ -88,7 +88,7 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	var res []string
 	for _, dep := range raw {
 		dep = strings.TrimSpace(dep)
-		if dep == "" || seen[dep] {
+		if dep == "" || seen[dep] || dep == "current_android_jar" || dep == "system_android_jar" {
 			continue
 		}
 		seen[dep] = true

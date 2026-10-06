@@ -202,6 +202,29 @@ func (c *Context) evalBinaryOp(op rune, left, right interface{}) interface{} {
 }
 
 // applyDefaults flattens any `defaults: ["..."]` referenced by the module.
+func cloneProperty(val interface{}) interface{} {
+	switch v := val.(type) {
+	case []interface{}:
+		res := make([]interface{}, len(v))
+		for i, x := range v {
+			res[i] = cloneProperty(x)
+		}
+		return res
+	case []string:
+		res := make([]string, len(v))
+		copy(res, v)
+		return res
+	case map[string]interface{}:
+		res := make(map[string]interface{}, len(v))
+		for k, item := range v {
+			res[k] = cloneProperty(item)
+		}
+		return res
+	default:
+		return val
+	}
+}
+
 func (c *Context) applyDefaults(mod *EvaluatedModule) {
 	defaultsList := mod.GetStringList("defaults")
 	if len(defaultsList) == 0 {
@@ -209,7 +232,9 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 	}
 	delete(mod.Properties, "defaults")
 
-	// For each referenced defaults module, merge its properties
+	// Accumulated properties from all defaults in order
+	mergedDefaults := make(map[string]interface{})
+
 	for _, defName := range defaultsList {
 		defMod, ok := c.Defaults[defName]
 		if !ok {
@@ -222,17 +247,24 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 			if k == "name" || k == "defaults" {
 				continue
 			}
-			valToMerge := defVal
-			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs") {
-				valToMerge = adjustPathProperty(defVal, defMod.Dir, mod.Dir)
+			valToMerge := cloneProperty(defVal)
+			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs" || k == "arch" || k == "target" || k == "multilib") {
+				valToMerge = adjustPathProperty(valToMerge, defMod.Dir, mod.Dir)
 			}
-			modVal, exists := mod.Properties[k]
-			if !exists {
-				mod.Properties[k] = valToMerge
+			if existing, exists := mergedDefaults[k]; exists {
+				mergedDefaults[k] = mergeProperties(existing, valToMerge)
 			} else {
-				// Merge lists or maps
-				mod.Properties[k] = mergeProperties(valToMerge, modVal)
+				mergedDefaults[k] = valToMerge
 			}
+		}
+	}
+
+	// Now merge mod's own properties on top of mergedDefaults
+	for k, defVal := range mergedDefaults {
+		if modVal, exists := mod.Properties[k]; exists {
+			mod.Properties[k] = mergeProperties(defVal, modVal)
+		} else {
+			mod.Properties[k] = defVal
 		}
 	}
 }
@@ -254,7 +286,7 @@ func adjustPathProperty(val interface{}, fromDir, toDir string) interface{} {
 		}
 		return res
 	case []string:
-		var res []string
+		var res []interface{}
 		for _, item := range v {
 			if !filepath.IsAbs(item) && !strings.HasPrefix(item, ":") {
 				full := filepath.Join(fromDir, item)
@@ -264,6 +296,12 @@ func adjustPathProperty(val interface{}, fromDir, toDir string) interface{} {
 				}
 			}
 			res = append(res, item)
+		}
+		return res
+	case map[string]interface{}:
+		res := make(map[string]interface{}, len(v))
+		for k, item := range v {
+			res[k] = adjustPathProperty(item, fromDir, toDir)
 		}
 		return res
 	default:
@@ -422,15 +460,31 @@ func (c *Context) applyVariantBlock(mod *EvaluatedModule) {
 	}
 }
 
-func mergeProperties(base, override interface{}) interface{} {
-	switch b := base.(type) {
+func toInterfaceSlice(v interface{}) ([]interface{}, bool) {
+	switch s := v.(type) {
 	case []interface{}:
-		if o, ok := override.([]interface{}); ok {
-			res := make([]interface{}, len(b)+len(o))
-			copy(res, b)
-			copy(res[len(b):], o)
+		return s, true
+	case []string:
+		res := make([]interface{}, len(s))
+		for i, x := range s {
+			res[i] = x
+		}
+		return res, true
+	default:
+		return nil, false
+	}
+}
+
+func mergeProperties(base, override interface{}) interface{} {
+	if bSlice, okB := toInterfaceSlice(base); okB {
+		if oSlice, okO := toInterfaceSlice(override); okO {
+			res := make([]interface{}, len(bSlice)+len(oSlice))
+			copy(res, bSlice)
+			copy(res[len(bSlice):], oSlice)
 			return res
 		}
+	}
+	switch b := base.(type) {
 	case map[string]interface{}:
 		if o, ok := override.(map[string]interface{}); ok {
 			res := make(map[string]interface{})
@@ -532,6 +586,8 @@ func (m *EvaluatedModule) GetStringList(prop string) []string {
 				res = append(res, s)
 			}
 		}
+	} else if strList, ok := val.([]string); ok {
+		res = append(res, strList...)
 	} else if s, ok := val.(string); ok {
 		res = append(res, s)
 	}

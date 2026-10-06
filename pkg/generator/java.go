@@ -16,6 +16,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 	// 1. Dependency JARs from libs and static_libs
 	depLibs := append(mod.GetStringList("libs"), mod.GetStringList("static_libs")...)
 	for _, lib := range depLibs {
+		if lib == "current_android_jar" || lib == ":current_android_jar" || lib == "system_android_jar" || lib == ":system_android_jar" {
+			jar := g.resolveCurrentAndroidJar()
+			if jar != "" {
+				cpDeps = append(cpDeps, jar)
+				cpEntries = append(cpEntries, jar)
+			}
+			continue
+		}
 		jarTarget := filepath.Join(g.libDir(), lib+".jar")
 		cpDeps = append(cpDeps, jarTarget)
 		cpEntries = append(cpEntries, jarTarget)
@@ -39,9 +47,12 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 	}
 
 	// 3. Android SDK android.jar for Android-targeted modules
-	if g.opts.AndroidJarPath != "" && !g.opts.IsHost {
-		cpEntries = append(cpEntries, g.opts.AndroidJarPath)
-		cpDeps = append(cpDeps, g.opts.AndroidJarPath)
+	if !g.opts.IsHost {
+		androidJar := g.resolveCurrentAndroidJar()
+		if androidJar != "" {
+			cpEntries = append(cpEntries, androidJar)
+			cpDeps = append(cpDeps, androidJar)
+		}
 	}
 
 	cpEntries = dedup(cpEntries)
@@ -58,11 +69,14 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 
 	var javaSrcs []string
 	var ktSrcs []string
+	var jarSrcs []string
 	for _, src := range srcs {
 		if strings.HasSuffix(src, ".kt") {
 			ktSrcs = append(ktSrcs, src)
 		} else if strings.HasSuffix(src, ".java") {
 			javaSrcs = append(javaSrcs, src)
+		} else if strings.HasSuffix(src, ".jar") {
+			jarSrcs = append(jarSrcs, src)
 		}
 	}
 
@@ -76,6 +90,16 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	}
 
 	cpFlag, cpDeps := g.buildClasspath(mod)
+	if len(jarSrcs) > 0 {
+		cpDeps = append(cpDeps, jarSrcs...)
+		var currentCp []string
+		if cpFlag != "" {
+			currentCp = strings.Split(strings.TrimPrefix(cpFlag, "-cp "), ":")
+		}
+		currentCp = append(currentCp, jarSrcs...)
+		currentCp = dedup(currentCp)
+		cpFlag = "-cp " + strings.Join(currentCp, ":")
+	}
 	classesDir := filepath.Join(g.opts.OutDir, "classes", mod.Name)
 
 	var rule string

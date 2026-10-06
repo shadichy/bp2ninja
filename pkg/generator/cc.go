@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,40 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 			} else if ghMod, ok := g.moduleMap[gh]; ok && ghMod.Type == "genrule" {
 				for _, out := range ghMod.GetStringList("out") {
 					genDeps = append(genDeps, filepath.Join(g.opts.OutDir, "gen", gh, out))
+				}
+			}
+		}
+		// If cc_library_headers has proto srcs, emit protoc rules
+		protoGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
+		for _, src := range g.ResolveSrcs(mod) {
+			if strings.HasSuffix(src, ".proto") {
+				relSrc := src
+				if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
+					relSrc = strings.TrimPrefix(src, mod.Dir+"/")
+				}
+				pbRel := strings.TrimSuffix(relSrc, ".proto")
+				pbSrc := filepath.Join(protoGenDir, pbRel+".pb.cc")
+				pbHdr := filepath.Join(protoGenDir, pbRel+".pb.h")
+				genDeps = append(genDeps, pbHdr)
+				g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
+
+				pbArgs := []string{"--cpp_out=" + protoGenDir, "-I."}
+				if mod.Dir != "" && mod.Dir != "." {
+					pbArgs = append(pbArgs, "-I"+mod.Dir)
+				}
+				if pDir := filepath.Dir(src); pDir != "." {
+					pbArgs = append(pbArgs, "-I"+pDir)
+				}
+				pbArgs = append(pbArgs, src)
+				if err := g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{pbSrc, pbHdr},
+					Rule:    "protoc",
+					Inputs:  []string{src},
+					Variables: map[string]string{
+						"protoc_args": shellJoin(pbArgs),
+					},
+				}); err != nil {
+					return nil, err
 				}
 			}
 		}
@@ -339,12 +374,103 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			}
 		}
 	}
+
+	// 1. Process all .proto sources and emit protoc rules
+	protoGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
+	var modProtoHeaders []string
+	var effectiveSrcs []string
+
+	for _, src := range srcs {
+		ext := filepath.Ext(src)
+		if ext == ".proto" {
+			relSrc := src
+			if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
+				relSrc = strings.TrimPrefix(src, mod.Dir+"/")
+			}
+			pbRel := strings.TrimSuffix(relSrc, ext)
+			pbSrc := filepath.Join(protoGenDir, pbRel+".pb.cc")
+			pbHdr := filepath.Join(protoGenDir, pbRel+".pb.h")
+			modProtoHeaders = append(modProtoHeaders, pbHdr)
+			g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
+
+			pbArgs := []string{"--cpp_out=" + protoGenDir, "-I."}
+			if mod.Dir != "" && mod.Dir != "." {
+				pbArgs = append(pbArgs, "-I"+mod.Dir)
+			}
+			if pDir := filepath.Dir(src); pDir != "." {
+				pbArgs = append(pbArgs, "-I"+pDir)
+			}
+			if protoProps := mod.GetMap("proto"); protoProps != nil {
+				if linc, ok := protoProps["local_include_dirs"].([]interface{}); ok {
+					for _, d := range linc {
+						if s, ok := d.(string); ok {
+							pDir := s
+							if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+								pDir = filepath.Clean(filepath.Join(mod.Dir, s))
+							}
+							pbArgs = append(pbArgs, "-I"+pDir)
+						}
+					}
+				}
+				if rinc, ok := protoProps["include_dirs"].([]interface{}); ok {
+					for _, d := range rinc {
+						if s, ok := d.(string); ok {
+							pbArgs = append(pbArgs, "-I"+s)
+						}
+					}
+				}
+			}
+			for _, inc := range includes {
+				if len(inc) > 2 && inc[:2] == "-I" {
+					pbArgs = append(pbArgs, inc)
+				} else {
+					pbArgs = append(pbArgs, "-I"+inc)
+				}
+			}
+			pbArgs = append(pbArgs, src)
+
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{pbSrc, pbHdr},
+				Rule:    "protoc",
+				Inputs:  []string{src},
+				Variables: map[string]string{
+					"protoc_args": shellJoin(pbArgs),
+				},
+			}); err != nil {
+				return nil, fmt.Errorf("proto edge: %w", err)
+			}
+			effectiveSrcs = append(effectiveSrcs, pbSrc)
+		} else {
+			effectiveSrcs = append(effectiveSrcs, src)
+		}
+	}
+
+	if len(modProtoHeaders) > 0 {
+		includes = append(includes, "-I"+protoGenDir)
+		for _, hdr := range modProtoHeaders {
+			if dir := filepath.Dir(hdr); dir != protoGenDir {
+				includes = append(includes, "-I"+dir)
+			}
+		}
+		includes = dedup(includes)
+		orderOnlyDeps = append(orderOnlyDeps, modProtoHeaders...)
+	}
+
+	// Pull order-only dependencies from referenced libraries' generated proto headers
+	depLibs := append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...)
+	depLibs = append(depLibs, mod.GetAllStringList("whole_static_libs")...)
+	depLibs = append(depLibs, mod.GetAllStringList("header_libs")...)
+	for _, lib := range depLibs {
+		if hdrs, ok := g.protoHeaders[lib]; ok {
+			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
+		}
+	}
 	orderOnlyDeps = dedup(orderOnlyDeps)
 
 	objDir := g.objDir(mod.Name + suffix)
 	var objs []string
 
-	for _, src := range srcs {
+	for _, src := range effectiveSrcs {
 		ext := filepath.Ext(src)
 		rule := "cc_compile"
 		flags := append([]string{}, cflags...)
@@ -361,7 +487,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		case ".asm":
 			rule = "asm_nasm"
 		default:
-			// Not a C/C++ source (e.g. proto, aidl, etc.)
+			// Not a C/C++ source (e.g. aidl, etc.)
 			continue
 		}
 		flags = dedup(flags)
@@ -464,7 +590,21 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 				incs = append(incs, "-I"+incPath)
 			}
+			hasProto := len(g.protoHeaders[hl]) > 0
+			if !hasProto {
+				for _, s := range hlMod.GetStringList("srcs") {
+					if strings.HasSuffix(s, ".proto") {
+						hasProto = true
+						break
+					}
+				}
+			}
+			if hasProto {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
+			}
 			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
+		} else if len(g.protoHeaders[hl]) > 0 {
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
 		}
 	}
 
@@ -480,11 +620,25 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 				incs = append(incs, "-I"+incPath)
 			}
+			hasProto := len(g.protoHeaders[lib]) > 0
+			if !hasProto {
+				for _, s := range libMod.GetStringList("srcs") {
+					if strings.HasSuffix(s, ".proto") {
+						hasProto = true
+						break
+					}
+				}
+			}
+			if hasProto {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", lib))
+			}
 			for _, hl := range libMod.GetStringList("export_header_lib_headers") {
 				if !visitedHl[hl] {
 					queueHl = append(queueHl, hl)
 				}
 			}
+		} else if len(g.protoHeaders[lib]) > 0 {
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", lib))
 		}
 	}
 
@@ -504,7 +658,29 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 				incs = append(incs, "-I"+incPath)
 			}
+			hasProto := len(g.protoHeaders[hl]) > 0
+			if !hasProto {
+				for _, s := range hlMod.GetStringList("srcs") {
+					if strings.HasSuffix(s, ".proto") {
+						hasProto = true
+						break
+					}
+				}
+			}
+			if hasProto {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
+			}
 			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
+		} else if len(g.protoHeaders[hl]) > 0 {
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
+		}
+	}
+
+	// Add module's own generated proto directory if it contains proto sources
+	for _, s := range mod.GetStringList("srcs") {
+		if strings.HasSuffix(s, ".proto") {
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", mod.Name))
+			break
 		}
 	}
 
@@ -553,13 +729,19 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 
 	for _, dep := range neededDeps {
 		if dir, ok := topModules[dep]; ok {
-			incDir := filepath.Join(dir, "include")
-			if fi, err := os.Stat(incDir); err == nil && fi.IsDir() {
-				incs = append(incs, "-I"+incDir)
+			// Never point at the tree's external/libcxx{,abi}: the NDK
+			// driver already provides its own c++/v1 as internal-isystem,
+			// and a stale tree copy shadows it via -I (searched first),
+			// breaking every C++ TU with undeclared-identifier errors
+			// inside libc++'s own headers under new clang.
+			if base := filepath.Base(dir); base == "libcxx" || base == "libcxxabi" {
+				continue
 			}
-			incVndk := filepath.Join(dir, "include_vndk")
-			if fi, err := os.Stat(incVndk); err == nil && fi.IsDir() {
-				incs = append(incs, "-I"+incVndk)
+			for _, sub := range []string{"include", "include_vndk", "header_only_include", "include_jni"} {
+				candidate := filepath.Join(dir, sub)
+				if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+					incs = append(incs, "-I"+candidate)
+				}
 			}
 		}
 	}

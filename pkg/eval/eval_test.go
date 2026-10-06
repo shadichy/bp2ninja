@@ -504,3 +504,71 @@ cc_library {
 		})
 	}
 }
+
+func TestChainedDefaultsLocalIncludeDirs(t *testing.T) {
+	bp := `
+cc_defaults {
+    name: "def_base",
+    local_include_dirs: ["common/src/jni/main/include"],
+    cflags: ["-DDEF_BASE"],
+}
+
+cc_defaults {
+    name: "def_unbundled",
+    defaults: ["def_base"],
+    local_include_dirs: ["common/src/jni/unbundled/include"],
+    cflags: ["-DDEF_UNBUNDLED"],
+}
+
+cc_library {
+    name: "libchained_test",
+    defaults: ["def_unbundled"],
+    local_include_dirs: ["local_override/include"],
+    cflags: ["-DLOCAL_OVERRIDE"],
+    srcs: ["main.cc"],
+}
+`
+	ctx := NewContext(nil, "x86_64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	if len(ctx.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+	}
+	mod := ctx.Modules[0]
+	incs := mod.GetStringList("local_include_dirs")
+	expected := []string{
+		"common/src/jni/main/include",
+		"common/src/jni/unbundled/include",
+		"local_override/include",
+	}
+
+	if len(incs) != len(expected) {
+		t.Fatalf("Expected %d include dirs, got %d: %v", len(expected), len(incs), incs)
+	}
+	for i, exp := range expected {
+		if incs[i] != exp {
+			t.Errorf("At index %d: expected %q, got %q", i, exp, incs[i])
+		}
+	}
+
+	cflags := mod.GetStringList("cflags")
+	expectedFlags := []string{"-DDEF_BASE", "-DDEF_UNBUNDLED", "-DLOCAL_OVERRIDE"}
+	for _, ef := range expectedFlags {
+		found := false
+		for _, f := range cflags {
+			if f == ef {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected flag %s in cflags %v", ef, cflags)
+		}
+	}
+}

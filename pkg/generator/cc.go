@@ -346,7 +346,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
 	cflags = append(cflags, "-fPIC")
 	if g.opts.AllowMissingDeps {
-		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall")
+		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion")
 	}
 
 	// Apply C / C++ standard properties (c_std, cpp_std)

@@ -76,6 +76,7 @@ type Generator struct {
 	emittedPhonies map[string]bool
 	topDirModules  map[string]string
 	protoHeaders   map[string][]string
+	aconfigHeaders map[string][]string
 
 	// MissingDeps records external dependencies not found in the parsed blueprint set.
 	MissingDeps []string
@@ -98,6 +99,7 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		emittedPhonies: make(map[string]bool),
 		topDirModules:  nil,
 		protoHeaders:   make(map[string][]string),
+		aconfigHeaders: make(map[string][]string),
 	}
 }
 
@@ -356,6 +358,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				g.emitPhonyIfNeeded(jarTarget)
 			}
 			targets = []string{jarTarget}
+		case "cc_aconfig_library":
+			targets, err = g.generateCcAconfigLibrary(mod)
 		default:
 			// Fallback only: Pattern recognition heuristic when no plugin or handler exists
 			targets, err = g.autoDeriveFallback(mod)

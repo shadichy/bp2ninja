@@ -1284,3 +1284,94 @@ func TestJavaAconfigLibraryPhony(t *testing.T) {
 	}
 }
 
+func TestCcAconfigLibrary(t *testing.T) {
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "out")
+	aconfigDir := filepath.Join(tmpDir, "services", "backup")
+	if err := os.MkdirAll(aconfigDir, 0755); err != nil {
+		t.Fatalf("Failed to create aconfigDir: %v", err)
+	}
+	aconfigContent := `
+package: "com.android.server.backup"
+
+flag {
+    name: "enable_max_size_writes_to_pipes"
+    namespace: "onboarding"
+    description: "Enables the write buffer to pipes to be of maximum size."
+    bug: "265976737"
+    is_fixed_read_only: true
+}
+`
+	if err := os.WriteFile(filepath.Join(aconfigDir, "flags.aconfig"), []byte(aconfigContent), 0644); err != nil {
+		t.Fatalf("Failed to write flags.aconfig: %v", err)
+	}
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tmpDir, outDir)
+	opts.BpDir = tmpDir
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	declMod := &eval.EvaluatedModule{
+		Type: "aconfig_declarations",
+		Name: "backup_flags",
+		Dir:  "services/backup",
+		Properties: map[string]interface{}{
+			"name":    "backup_flags",
+			"package": "com.android.server.backup",
+			"srcs":    []interface{}{"flags.aconfig"},
+		},
+	}
+
+	ccAconfigMod := &eval.EvaluatedModule{
+		Type: "cc_aconfig_library",
+		Name: "backup_flags_cc_lib",
+		Properties: map[string]interface{}{
+			"name":                 "backup_flags_cc_lib",
+			"aconfig_declarations": "backup_flags",
+		},
+	}
+
+	ccLibMod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libandroidfw",
+		Properties: map[string]interface{}{
+			"name":        "libandroidfw",
+			"srcs":        []interface{}{"Util.cpp"},
+			"static_libs": []interface{}{"backup_flags_cc_lib"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{declMod, ccAconfigMod, ccLibMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// 1. Verify generated header exists and has correct content
+	hdrPath := filepath.Join(outDir, "gen", "backup_flags_cc_lib", "include", "com_android_server_backup.h")
+	hdrBytes, err := os.ReadFile(hdrPath)
+	if err != nil {
+		t.Fatalf("Expected generated header at %s, got error: %v", hdrPath, err)
+	}
+	hdrStr := string(hdrBytes)
+	if !strings.Contains(hdrStr, "namespace com::android::server::backup") {
+		t.Errorf("Expected namespace com::android::server::backup in header, got:\n%s", hdrStr)
+	}
+	if !strings.Contains(hdrStr, "inline bool enable_max_size_writes_to_pipes()") {
+		t.Errorf("Expected inline bool enable_max_size_writes_to_pipes() in header, got:\n%s", hdrStr)
+	}
+
+	// 2. Verify Ninja build file contains include directory for libandroidfw
+	content := buf.String()
+	expectedInc := "-I" + filepath.Join(outDir, "gen", "backup_flags_cc_lib", "include")
+	if !strings.Contains(content, expectedInc) {
+		t.Errorf("Expected %s in Ninja rules for libandroidfw, got:\n%s", expectedInc, content)
+	}
+
+	// 3. Verify static archive target for backup_flags_cc_lib
+	expectedStatic := filepath.Join(outDir, "lib64", "libbackup_flags_cc_lib.a")
+	if !strings.Contains(content, "build "+expectedStatic+": archive_static") {
+		t.Errorf("Expected archive_static for %s, got:\n%s", expectedStatic, content)
+	}
+}
+

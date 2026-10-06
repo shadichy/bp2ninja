@@ -467,6 +467,9 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		if hdrs, ok := g.protoHeaders[lib]; ok {
 			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
 		}
+		if hdrs, ok := g.aconfigHeaders[lib]; ok {
+			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
+		}
 	}
 	orderOnlyDeps = dedup(orderOnlyDeps)
 
@@ -579,6 +582,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 		visitedHl[hl] = true
 		if hlMod, ok := g.moduleMap[hl]; ok {
+			if hlMod.Type == "cc_aconfig_library" {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hlMod.Name, "include"))
+			}
 			for _, dir := range hlMod.GetStringList("export_include_dirs") {
 				incPath := dir
 				if hlMod.Dir != "" && hlMod.Dir != "." && !filepath.IsAbs(dir) {
@@ -616,6 +622,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	allLibs = append(allLibs, mod.GetAllStringList("whole_static_libs")...)
 	for _, lib := range allLibs {
 		if libMod, ok := g.moduleMap[lib]; ok {
+			if libMod.Type == "cc_aconfig_library" {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name, "include"))
+			}
 			for _, dir := range libMod.GetStringList("export_include_dirs") {
 				incPath := dir
 				if libMod.Dir != "" && libMod.Dir != "." && !filepath.IsAbs(dir) {
@@ -846,7 +855,7 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			return []string{filepath.Join(g.libDir(), baseName+".so")}
 		case "cc_library_shared", "cc_library_host_shared":
 			return []string{filepath.Join(g.libDir(), baseName+".so")}
-		case "cc_library_static", "cc_library_host_static":
+		case "cc_library_static", "cc_library_host_static", "cc_aconfig_library":
 			return []string{filepath.Join(g.libDir(), baseName+".a")}
 		case "cc_library_headers":
 			return []string{filepath.Join(g.opts.OutDir, "headers", libMod.Name)}

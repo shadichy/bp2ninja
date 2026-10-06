@@ -558,7 +558,7 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	}
 	for _, dir := range mod.GetStringList("include_dirs") {
 		incPath := dir
-		if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(g.opts.TopDir) {
+		if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(dir) {
 			incPath = filepath.Join(g.opts.TopDir, dir)
 		}
 		incs = append(incs, "-I"+incPath)

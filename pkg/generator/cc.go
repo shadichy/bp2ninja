@@ -117,8 +117,28 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 				if mod.Dir != "" && mod.Dir != "." {
 					pbArgs = append(pbArgs, "-I"+mod.Dir)
 				}
-				if pDir := filepath.Dir(src); pDir != "." {
-					pbArgs = append(pbArgs, "-I"+pDir)
+				if protoProps := mod.GetMap("proto"); protoProps != nil {
+					if linc, ok := protoProps["local_include_dirs"].([]interface{}); ok {
+						for _, d := range linc {
+							if s, ok := d.(string); ok {
+								pDir := s
+								if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+									pDir = filepath.Clean(filepath.Join(mod.Dir, s))
+								}
+								pbArgs = append(pbArgs, "-I"+pDir)
+							}
+						}
+					}
+					if rinc, ok := protoProps["include_dirs"].([]interface{}); ok {
+						for _, d := range rinc {
+							if s, ok := d.(string); ok {
+								pbArgs = append(pbArgs, "-I"+s)
+								if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(s) {
+									pbArgs = append(pbArgs, "-I"+filepath.Join(g.opts.TopDir, s))
+								}
+							}
+						}
+					}
 				}
 				pbArgs = append(pbArgs, src)
 				if err := g.nw.Build(ninja.BuildEdge{
@@ -421,6 +441,9 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 					for _, d := range rinc {
 						if s, ok := d.(string); ok {
 							pbArgs = append(pbArgs, "-I"+s)
+							if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(s) {
+								pbArgs = append(pbArgs, "-I"+filepath.Join(g.opts.TopDir, s))
+							}
 						}
 					}
 				}

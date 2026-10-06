@@ -9,19 +9,80 @@ import (
 	"bp2ninja/pkg/ninja"
 )
 
+func (g *Generator) resolveData(mod *eval.EvaluatedModule) []string {
+	var dataInputs []string
+	for _, d := range mod.GetStringList("data") {
+		if strings.HasPrefix(d, ":") || strings.HasPrefix(d, "//") {
+			for _, ref := range g.resolveReference(d) {
+				dataInputs = append(dataInputs, ref)
+				if g.opts.AllowMissingDeps {
+					g.emitPhonyIfNeeded(ref)
+				}
+			}
+		} else {
+			p := d
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(d) {
+				p = filepath.Clean(filepath.Join(mod.Dir, d))
+			}
+			dataInputs = append(dataInputs, p)
+			if g.opts.AllowMissingDeps {
+				g.emitPhonyIfNeeded(p)
+			}
+		}
+	}
+	return dataInputs
+}
+
+func (g *Generator) resolveToolFiles(mod *eval.EvaluatedModule, toolFiles []string) []string {
+	var resolved []string
+	for _, tf := range toolFiles {
+		if strings.HasPrefix(tf, ":") || strings.HasPrefix(tf, "//") {
+			for _, ref := range g.resolveReference(tf) {
+				resolved = append(resolved, ref)
+				if g.opts.AllowMissingDeps {
+					g.emitPhonyIfNeeded(ref)
+				}
+			}
+		} else {
+			p := tf
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(tf) {
+				p = filepath.Clean(filepath.Join(mod.Dir, tf))
+			}
+			resolved = append(resolved, p)
+		}
+	}
+	return resolved
+}
+
 func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error) {
 	rawCmd := mod.GetString("cmd")
 	rawSrcs := mod.GetStringList("srcs")
 	outs := mod.GetStringList("out")
 	tools := mod.GetStringList("tools")
 	toolFiles := mod.GetStringList("tool_files")
+	resolvedToolFiles := g.resolveToolFiles(mod, toolFiles)
+	dataInputs := g.resolveData(mod)
 
 	var srcs []string
 	for _, s := range rawSrcs {
-		for _, ref := range g.resolveReference(s) {
-			refPath := ref
-			if mod.Dir != "" && mod.Dir != "." && !strings.HasPrefix(ref, ":") && !strings.HasPrefix(ref, "//") && !filepath.IsAbs(ref) {
-				refPath = filepath.Clean(filepath.Join(mod.Dir, ref))
+		if strings.HasPrefix(s, ":") || strings.HasPrefix(s, "//") {
+			for _, ref := range g.resolveReference(s) {
+				for _, m := range g.expandGlob(ref) {
+					srcs = append(srcs, m)
+					if g.opts.AllowMissingDeps {
+						fullP := filepath.Join(g.opts.BpDir, m)
+						if _, err := os.Stat(fullP); err != nil {
+							if _, err2 := os.Stat(m); err2 != nil {
+								g.emitPhonyIfNeeded(m)
+							}
+						}
+					}
+				}
+			}
+		} else {
+			refPath := s
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+				refPath = filepath.Clean(filepath.Join(mod.Dir, s))
 			}
 			for _, m := range g.expandGlob(refPath) {
 				srcs = append(srcs, m)
@@ -34,11 +95,6 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 					}
 				}
 			}
-		}
-	}
-	for i, tf := range toolFiles {
-		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(tf) && !strings.HasPrefix(tf, ":") {
-			toolFiles[i] = filepath.Clean(filepath.Join(mod.Dir, tf))
 		}
 	}
 
@@ -70,7 +126,8 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 	}
 
 	// Expand variables in cmd: $(location ...), $(locations ...), $(in), $(out), $(genDir)
-	expandedCmd, extraInputs := g.expandGenruleCmd(mod, rawCmd, srcs, outs, fullOuts, tools, toolFiles, genDir)
+	expandedCmd, extraInputs := g.expandGenruleCmd(mod, rawCmd, srcs, outs, fullOuts, tools, resolvedToolFiles, genDir)
+	extraInputs = append(extraInputs, dataInputs...)
 
 	// Ensure parent directories for all outputs exist
 	dirSet := make(map[string]bool)
@@ -89,7 +146,7 @@ func (g *Generator) generateGenrule(mod *eval.EvaluatedModule) ([]string, error)
 		Outputs:   fullOuts,
 		Rule:      "genrule_cmd",
 		Inputs:    srcs,
-		Implicits: extraInputs,
+		Implicits: dedup(extraInputs),
 		Variables: map[string]string{
 			"cmd": fullCmd,
 		},
@@ -114,14 +171,29 @@ func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error)
 	outputExt := mod.GetString("output_extension")
 	tools := mod.GetStringList("tools")
 	toolFiles := mod.GetStringList("tool_files")
-	data := mod.GetStringList("data")
+	resolvedToolFiles := g.resolveToolFiles(mod, toolFiles)
+	dataInputs := g.resolveData(mod)
 
 	var srcs []string
 	for _, s := range rawSrcs {
-		for _, ref := range g.resolveReference(s) {
-			refPath := ref
-			if mod.Dir != "" && mod.Dir != "." && !strings.HasPrefix(ref, ":") && !strings.HasPrefix(ref, "//") && !filepath.IsAbs(ref) {
-				refPath = filepath.Clean(filepath.Join(mod.Dir, ref))
+		if strings.HasPrefix(s, ":") || strings.HasPrefix(s, "//") {
+			for _, ref := range g.resolveReference(s) {
+				for _, m := range g.expandGlob(ref) {
+					srcs = append(srcs, m)
+					if g.opts.AllowMissingDeps {
+						fullP := filepath.Join(g.opts.BpDir, m)
+						if _, err := os.Stat(fullP); err != nil {
+							if _, err2 := os.Stat(m); err2 != nil {
+								g.emitPhonyIfNeeded(m)
+							}
+						}
+					}
+				}
+			}
+		} else {
+			refPath := s
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+				refPath = filepath.Clean(filepath.Join(mod.Dir, s))
 			}
 			for _, m := range g.expandGlob(refPath) {
 				srcs = append(srcs, m)
@@ -134,18 +206,6 @@ func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error)
 					}
 				}
 			}
-		}
-	}
-
-	for i, tf := range toolFiles {
-		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(tf) && !strings.HasPrefix(tf, ":") {
-			toolFiles[i] = filepath.Clean(filepath.Join(mod.Dir, tf))
-		}
-	}
-
-	for i, d := range data {
-		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(d) && !strings.HasPrefix(d, ":") {
-			data[i] = filepath.Clean(filepath.Join(mod.Dir, d))
 		}
 	}
 
@@ -175,10 +235,8 @@ func (g *Generator) generateGensrcs(mod *eval.EvaluatedModule) ([]string, error)
 		allOuts = append(allOuts, outFile)
 
 		// Expand cmd per source
-		expandedCmd, extraInputs := g.expandGenruleCmd(mod, rawCmd, []string{src}, []string{outRel}, []string{outFile}, tools, toolFiles, genDir)
-		for _, d := range data {
-			extraInputs = append(extraInputs, d)
-		}
+		expandedCmd, extraInputs := g.expandGenruleCmd(mod, rawCmd, []string{src}, []string{outRel}, []string{outFile}, tools, resolvedToolFiles, genDir)
+		extraInputs = append(extraInputs, dataInputs...)
 
 		outDir := filepath.Dir(outFile)
 		fullCmd := "mkdir -p " + outDir + " && " + expandedCmd

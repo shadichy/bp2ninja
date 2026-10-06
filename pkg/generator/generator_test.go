@@ -1219,3 +1219,68 @@ func TestCurrentAndroidJarResolution(t *testing.T) {
 		t.Errorf("Expected genrule cmd to expand $(location :current_android_jar) to %s, got:\n%s", jar34, content3)
 	}
 }
+
+func TestGensrcsDataColonReference(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "gensrcs",
+		Name: "framework-javastream-protos",
+		Properties: map[string]interface{}{
+			"name":             "framework-javastream-protos",
+			"srcs":             []interface{}{"proto/ipconnectivity.proto"},
+			"output_extension": "srcjar",
+			"data":             []interface{}{":libprotobuf-internal-protos"},
+			"cmd":              "protoc $(in) -o $(out)",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	// Ninja prerequisite should NOT have leading colon
+	if strings.Contains(content, ":libprotobuf-internal-protos") {
+		t.Errorf("Ninja output should not contain raw colon reference :libprotobuf-internal-protos, got:\n%s", content)
+	}
+	// It should contain resolved reference and phony target for missing dep
+	if !strings.Contains(content, "| libprotobuf-internal-protos") {
+		t.Errorf("Expected implicit dependency on libprotobuf-internal-protos, got:\n%s", content)
+	}
+	if !strings.Contains(content, "build libprotobuf-internal-protos: phony") {
+		t.Errorf("Expected phony target for libprotobuf-internal-protos, got:\n%s", content)
+	}
+}
+
+func TestJavaAconfigLibraryPhony(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_aconfig_library",
+		Name: "easter_egg_flags_lib",
+		Properties: map[string]interface{}{
+			"name":                 "easter_egg_flags_lib",
+			"aconfig_declarations": "easter_egg_flags",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedJar := filepath.Join("out/lib64", "easter_egg_flags_lib.jar")
+	if !strings.Contains(content, "build "+expectedJar+": phony") {
+		t.Errorf("Expected phony target for %s, got:\n%s", expectedJar, content)
+	}
+}
+

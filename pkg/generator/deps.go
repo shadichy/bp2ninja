@@ -81,6 +81,11 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	for _, d := range mod.GetAllStringList("data") {
 		if strings.HasPrefix(d, ":") {
 			raw = append(raw, strings.TrimPrefix(d, ":"))
+		} else if strings.HasPrefix(d, "//") {
+			parts := strings.Split(d, ":")
+			if len(parts) == 2 {
+				raw = append(raw, parts[1])
+			}
 		}
 	}
 

@@ -209,8 +209,8 @@ func (g *Generator) resolveReference(ref string) []string {
 			}
 		}
 		if g.opts.AllowMissingDeps {
-			g.emitPhonyIfNeeded(ref)
-			return []string{ref}
+			g.emitPhonyIfNeeded(label)
+			return []string{label}
 		}
 	} else if strings.HasPrefix(ref, "//") {
 		parts := strings.Split(ref, ":")
@@ -228,10 +228,15 @@ func (g *Generator) resolveReference(ref string) []string {
 					return []string{jar}
 				}
 			}
+			if g.opts.AllowMissingDeps {
+				g.emitPhonyIfNeeded(label)
+				return []string{label}
+			}
 		}
 		if g.opts.AllowMissingDeps {
-			g.emitPhonyIfNeeded(ref)
-			return []string{ref}
+			cleanRef := strings.TrimPrefix(ref, "//")
+			g.emitPhonyIfNeeded(cleanRef)
+			return []string{cleanRef}
 		}
 	}
 	return []string{ref}
@@ -267,7 +272,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				g.filegroups[mod.Name] = fgSrcs
 			}
 			// Pre-index proto outputs for any module defining .proto sources
-			for _, src := range mod.GetStringList("srcs") {
+			for _, src := range g.ResolveSrcs(mod) {
 				if strings.HasSuffix(src, ".proto") {
 					rel := src
 					if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
@@ -345,6 +350,12 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generatePrebuilt(mod)
 		case "python_binary", "python_binary_host", "python_test_host":
 			targets, err = g.generatePythonBinary(mod)
+		case "java_aconfig_library":
+			jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+			if g.opts.AllowMissingDeps {
+				g.emitPhonyIfNeeded(jarTarget)
+			}
+			targets = []string{jarTarget}
 		default:
 			// Fallback only: Pattern recognition heuristic when no plugin or handler exists
 			targets, err = g.autoDeriveFallback(mod)

@@ -24,15 +24,64 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 			}
 			continue
 		}
-		jarTarget := filepath.Join(g.libDir(), lib+".jar")
-		cpDeps = append(cpDeps, jarTarget)
-		cpEntries = append(cpEntries, jarTarget)
 
-		// If dependency is missing and AllowMissingDeps is true, ensure phony target exists
-		if g.opts.AllowMissingDeps {
-			if _, ok := g.moduleMap[lib]; !ok {
-				g.emitPhonyIfNeeded(jarTarget)
+		cleanLib := strings.TrimSuffix(lib, ".jar")
+		var targets []string
+
+		// Check if dependency has registered outputs (e.g. from genrule)
+		if outs, ok := g.moduleOutputs[lib]; ok && len(outs) > 0 {
+			for _, o := range outs {
+				if strings.HasSuffix(o, ".jar") {
+					targets = append(targets, o)
+				}
 			}
+		}
+		if len(targets) == 0 {
+			if outs, ok := g.moduleOutputs[cleanLib]; ok && len(outs) > 0 {
+				for _, o := range outs {
+					if strings.HasSuffix(o, ".jar") {
+						targets = append(targets, o)
+					}
+				}
+			}
+		}
+
+		// Check if dependency is a genrule/java_genrule in moduleMap
+		if len(targets) == 0 {
+			for _, key := range []string{lib, cleanLib} {
+				if depMod, ok := g.moduleMap[key]; ok && (depMod.Type == "genrule" || depMod.Type == "java_genrule") {
+					for _, out := range depMod.GetStringList("out") {
+						if strings.HasSuffix(out, ".jar") {
+							targets = append(targets, filepath.Join(g.opts.OutDir, "gen", key, out))
+						}
+					}
+					if len(targets) > 0 {
+						break
+					}
+				}
+			}
+		}
+
+		if len(targets) == 0 {
+			jarTarget := filepath.Join(g.libDir(), cleanLib+".jar")
+			targets = append(targets, jarTarget)
+			if g.opts.AllowMissingDeps {
+				hasJarOutput := false
+				for _, o := range append(g.moduleOutputs[lib], g.moduleOutputs[cleanLib]...) {
+					if strings.HasSuffix(o, ".jar") {
+						hasJarOutput = true
+						break
+					}
+				}
+				if !hasJarOutput {
+					g.emitPhonyIfNeeded(jarTarget)
+				}
+			}
+		}
+
+		for _, t := range targets {
+			cpDeps = append(cpDeps, t)
+			cpEntries = append(cpEntries, t)
 		}
 	}
 
@@ -158,12 +207,12 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 }
 
 func (g *Generator) generateJavaLibrary(mod *eval.EvaluatedModule) ([]string, error) {
-	jarTarget := filepath.Join(g.libDir(), mod.Name+".jar")
+	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
 	return g.compileJavaKotlin(mod, jarTarget)
 }
 
 func (g *Generator) generateJavaImport(mod *eval.EvaluatedModule) ([]string, error) {
-	jarTarget := filepath.Join(g.libDir(), mod.Name+".jar")
+	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
 	jars := mod.GetStringList("jars")
 	if len(jars) == 0 {
 		if g.opts.AllowMissingDeps {
@@ -187,8 +236,8 @@ func (g *Generator) generateJavaImport(mod *eval.EvaluatedModule) ([]string, err
 }
 
 func (g *Generator) generateJavaBinary(mod *eval.EvaluatedModule) ([]string, error) {
-	jarTarget := filepath.Join(g.libDir(), mod.Name+".jar")
-	binTarget := filepath.Join(g.binDir(), mod.Name)
+	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+	binTarget := filepath.Join(g.binDir(), strings.TrimSuffix(mod.Name, ".jar"))
 
 	jarOutputs, err := g.compileJavaKotlin(mod, jarTarget)
 	if err != nil {
@@ -273,6 +322,23 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 		Inputs:    finalInputs,
 		Variables: vars,
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return []string{apkTarget}, err
+	// 4. Also provide lib/<name>.jar for other modules depending on this app's classes
+	libJarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+	if len(jarOutputs) > 0 {
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{libJarTarget},
+			Rule:    "copy",
+			Inputs:  jarOutputs,
+		}); err != nil {
+			return nil, err
+		}
+	} else if g.opts.AllowMissingDeps {
+		g.emitPhonyIfNeeded(libJarTarget)
+	}
+
+	return []string{apkTarget, libJarTarget}, nil
 }

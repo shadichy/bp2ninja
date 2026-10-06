@@ -345,6 +345,9 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
 	cflags = append(cflags, "-fPIC")
+	if g.opts.AllowMissingDeps {
+		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall")
+	}
 
 	// Apply C / C++ standard properties (c_std, cpp_std)
 	if cStd := mod.GetString("c_std"); cStd != "" {
@@ -737,10 +740,20 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			if base := filepath.Base(dir); base == "libcxx" || base == "libcxxabi" {
 				continue
 			}
-			for _, sub := range []string{"include", "include_vndk", "header_only_include", "include_jni"} {
+			for _, sub := range []string{"include", "include_vndk", "header_only_include", "include_jni", "util/include"} {
 				candidate := filepath.Join(dir, sub)
 				if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
 					incs = append(incs, "-I"+candidate)
+				}
+			}
+			if entries, err := os.ReadDir(dir); err == nil {
+				for _, e := range entries {
+					if e.IsDir() {
+						subCandidate := filepath.Join(dir, e.Name(), "include")
+						if fi, err := os.Stat(subCandidate); err == nil && fi.IsDir() {
+							incs = append(incs, "-I"+subCandidate)
+						}
+					}
 				}
 			}
 		}

@@ -104,6 +104,39 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 
+	// 4. SDK prebuilts from TopDir
+	if g.opts.TopDir != "" {
+		targetApi := g.opts.APILevel
+		if targetApi <= 0 {
+			targetApi = 34
+		}
+		for _, lib := range depLibs {
+			cleanLib := strings.TrimSuffix(lib, ".jar")
+			topJarCandidates := []string{
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public", cleanLib+".jar"),
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/public", cleanLib+".jar"),
+			}
+			for _, c := range topJarCandidates {
+				if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+					cpEntries = append(cpEntries, c)
+					cpDeps = append(cpDeps, c)
+					break
+				}
+			}
+		}
+	}
+
+	// 5. Environment CLASSPATH fallback (prebuilt jars in /apex or host environment)
+	if envCP := os.Getenv("CLASSPATH"); envCP != "" {
+		for _, part := range strings.Split(envCP, ":") {
+			if part != "" {
+				if fi, err := os.Stat(part); err == nil && !fi.IsDir() {
+					cpEntries = append(cpEntries, part)
+				}
+			}
+		}
+	}
+
 	cpEntries = dedup(cpEntries)
 	cpDeps = dedup(cpDeps)
 

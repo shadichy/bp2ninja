@@ -1,154 +1,315 @@
 # bp2ninja
 
-**bp2ninja** is a high-speed, standalone compiler that converts `Android.bp` (Soong/Blueprint) build manifests directly into `build.ninja` files, completely **bypassing monolithic AOSP dependency checks**.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Language](https://img.shields.io/badge/Language-Go%201.21+-00ADD8.svg)](https://go.dev/)
 
-It enables compiling Android repositories in complete isolation outside the full Android source tree, using prebuilt libraries, sysroots, and modular Go plugins.
+**bp2ninja** is an ultra-fast, standalone compiler that converts `Android.bp` (Soong/Blueprint) build manifests directly into standard `build.ninja` files, **completely bypassing monolithic AOSP dependency checks**.
+
+It enables building individual Android platform components, native libraries, HALs, Extractive APEXes, and apps in complete isolation outside the full multi-hundred-gigabyte Android source tree, utilizing prebuilt libraries, modular sysroots, Android NDKs, and modular Go plugins.
+
+---
+
+## Table of Contents
+
+- [Why bp2ninja?](#why-bp2ninja)
+- [Key Features](#key-features)
+- [Architecture & Design](#architecture--design)
+- [Installation](#installation)
+- [CLI Reference](#cli-reference)
+- [Environment Variables](#environment-variables)
+- [Subcommands](#subcommands)
+- [Common Workflows & Examples](#common-workflows--examples)
+  - [1. Cross-Compiling for Target Device](#1-cross-compiling-for-target-device)
+  - [2. Building for Host Architecture](#2-building-for-host-architecture)
+  - [3. Dual-Variant Dynamic (.so) and Static (.a) Libraries](#3-dual-variant-dynamic-so-and-static-a-libraries)
+  - [4. Protobuf (protoc) Code Generation](#4-protobuf-protoc-code-generation)
+  - [5. Kotlin and Java Compilation](#5-kotlin-and-java-compilation)
+  - [6. AConfig Code Generation (cc_aconfig_library)](#6-aconfig-code-generation-cc_aconfig_library)
+  - [7. Recursive Multi-Module Discovery](#7-recursive-multi-module-discovery)
+- [Documentation & Man Pages](#documentation--man-pages)
+- [License](#license)
+
+---
+
+## Why bp2ninja?
+
+In official AOSP builds, converting Blueprint files requires running `soong_build`, which parses every `Android.bp` file across ~1,500 repositories in the entire tree. This process:
+- Takes **~25 to 30 minutes** just to resolve dependencies and produce the initial Ninja file.
+- Demands gigabytes of memory and a complete checked-out tree.
+- Fails immediately if even a single transitive dependency or package is absent from the workspace.
+
+**bp2ninja** solves this by:
+- Operating as an **independent, standalone Go executable** with zero external dependencies.
+- Scanning and evaluating `Android.bp` trees in milliseconds (**~14 seconds for 8,000+ modules across an entire system tree**, ~1.7 ms per file).
+- Bypassing unavailable source modules by automatically emitting `-l<lib>` linker flags, pointing to prebuilt library directories, and generating safe phony rules for missing targets.
 
 ---
 
 ## Key Features
 
-1. **Direct BP-to-Ninja Translation:**
-   Translates `cc_binary`, `cc_library`, `cc_library_shared`, `cc_library_static`, `android_app`, `java_library`, `genrule`, `prebuilt_etc`, and `sh_binary` into Ninja build rules in milliseconds.
-2. **Dependency Check Bypass:**
-   Instead of demanding that all dependencies (`shared_libs`, `static_libs`, `header_libs`) exist as source code in a 1,500-repo checkout, `bp2ninja` emits `-l<lib>` flags and points to prebuilt library directories (`$OUT/system/lib64`).
-3. **Defaults & Variable Flattening:**
-   Recursively resolves top-level variable assignments and flattens `defaults: ["..."]` (e.g., `cc_defaults`) into target modules.
-4. **Declarative `soong_config` Support:**
-   Evaluates conditional properties based on target SoC/board flags (e.g. `-config target_board_platform=sm8450`).
-5. **Native AST Auto-Derivation (Zero Plugins Needed):**
-   Automatically derives Ninja build edges for custom Soong module types (codegen, TableGen, directory collectors, packaging, build properties, Mojom, kernel configs, and VINTF compatibility matrices) directly from AST heuristics, achieving 100% pass rate across tested repositories.
-6. **Zero External Go Dependencies:**
-   Contains a self-contained Blueprint AST parser; builds instantly without downloading any internet packages.
+- **100% Native Pure-Go Engine**: Self-contained Blueprint AST parser, evaluator, and Ninja emitter without Python dependencies or runtime CGo requirements.
+- **Dual-Variant Compilation**: Automatically emits build rules for **both dynamic (`.so`) and static (`.a`)** libraries for `cc_library` modules. Objects are compiled once when flags and sources match, or cleanly partitioned (`.shared` / `.static`) when differentiated variants are declared.
+- **Android NDK Auto-Discovery**: Automatically locates installed Android NDKs across Google Android Studio (`~/Android/Sdk/ndk/*`), Linux distribution packages (`/opt/android-ndk`, `/opt/android-ndk-beta`), and environment paths (`$ANDROID_NDK`).
+- **Target & Host Modes**:
+  - Target: Cross-compiles for `arm64`, `arm`, `x86_64`, `x86`, or `riscv64` against specified Android API levels (`-api 34`).
+  - Host: `-host` mode switches to host compilers (`$CC`, `$CXX`), expanding `host: {}` blocks, `target.host`, `target.linux`, and `target.linux_glibc`.
+- **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
+- **Protobuf (`protoc`) Generator**: Automatically transforms `.proto` files into C++ headers and source files, preserves subpath directory layouts (e.g. `protos/aconfig_storage_metadata.pb.h`), adds output include paths, and links order-only header dependencies (`|| <pbHdr>`). Supports ABI pinning via `$PROTOC`.
+- **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
+- **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
+- **Platform `android.jar` Resolution**: Dynamic resolution of `:current_android_jar` and `:system_android_jar` to `<SDK>/platforms/android-<API>/android.jar` matching target API level.
+- **Granular Codegen (`genrule`, `gensrcs`)**: Per-source edge generation for `gensrcs`, `export_include_dirs`, consumer wiring (`generated_sources`, `generated_headers`), and `data: [...]` dependency tracking.
+- **Recursive Subdirectory Discovery**: Discovers nested `Android.bp` trees automatically via `-subdirs` (`-r`), unifying multi-module checkouts into a single cohesive Ninja graph.
+- **Pure-Go Modular Plugins**: In-tree Go converter (`convert-plugin`) and workspace orchestrator (`gowork`) to convert custom Soong rules into dynamically loaded `.so` plugins, with auto-discovery in `/usr/lib/bp2ninja/plugins/`.
 
 ---
 
-## Directory Structure
+## Architecture & Design
 
 ```
 bp2ninja/
 ├── cmd/
-│   └── bp2ninja/          # Main CLI entry point
+│   └── bp2ninja/          # Main CLI entry point and subcommand dispatcher
 ├── pkg/
-│   ├── parser/            # Self-contained Blueprint AST parser
-│   ├── eval/              # AST evaluator, variable resolution & defaults flattener
-│   ├── ninja/             # Ninja syntax writer
-│   ├── generator/         # Module translators & native auto-derivation engine
-│   └── plugins/           # Dynamic .so plugin loader (optional user extensions)
-├── scripts/
-│   └── benchmark_coverage.py  # 150-target coverage benchmarking suite
-├── Makefile
-└── go.mod
+│   ├── parser/            # Blueprint lexer, AST parser, and pretty-printer
+│   ├── eval/              # AST evaluator, variable resolution, and defaults flattener
+│   ├── generator/         # Ninja rule generators (cc, java, genrule, aconfig, discovery)
+│   ├── ndk/               # Android NDK discovery and toolchain resolution
+│   ├── ninja/             # Low-level Ninja syntax writer
+│   ├── plugins/           # Dynamic .so plugin loader and Go converter
+│   └── gowork/            # Go workspace (go.work) generator for Android modules
+├── docs/                  # Detailed documentation (Architecture, Usage, Modules)
+├── man/                   # UNIX man1 manual page (bp2ninja.1)
+├── Makefile               # Build recipes
+└── go.mod                 # Go module definition
 ```
 
 ---
 
-## Building `bp2ninja`
+## Installation
 
-Build using standard `make` or `go`:
+### From Source
+
+Ensure Go 1.21 or newer is installed:
 
 ```bash
-cd tools/bp2ninja
-make
+git clone https://github.com/shadichy/bp2ninja.git
+cd bp2ninja
+make build
 ```
 
-The compiled binary will be placed at `bin/bp2ninja`.
-
-### Go Workspace Integration (`go.work`)
-
-For IDE support (VS Code, GoLand, `gopls`) and compiling `android/*` packages outside a monolithic checkout, generate a `go.work` workspace file:
+The compiled binary will be placed at `bin/bp2ninja`. You can copy or link it to `~/.local/bin` or `/usr/local/bin`:
 
 ```bash
-# Auto-detect local tree or clone missing repos from googlesource.com
-make gowork
+install -Dm755 bin/bp2ninja ~/.local/bin/bp2ninja
+```
 
-# Or force remote cloning from android.googlesource.com
-python3 scripts/gen_gowork.py --remote
+### Arch Linux / CachyOS (AUR)
 
-# Clean up workspace files
-make clean-gowork
+```bash
+yay -S bp2ninja
 ```
 
 ---
 
-## CLI Usage
+## CLI Reference
 
 ```text
-Usage of bp2ninja:
-  -bp string
-        Path to the target Android.bp file (default "Android.bp")
-  -o string
-        Output Ninja build file path (default "build.ninja")
-  -out string
-        Output directory for build artifacts (default "out")
-  -top string
-        Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)
-  -sysroot string
-        Path to Android sysroot / NDK (optional)
-  -prebuilt-libs string
-        Directory containing prebuilt .so / .a libraries
-  -cc string
-        C compiler executable path (default "clang")
-  -cxx string
-        C++ compiler executable path (default "clang++")
-  -arch string
-        Target architecture (arm64, arm, x86_64) (default "arm64")
-  -a value
-        Path to compiled Go plugin (.so) to load (repeated or comma-separated)
-  -add-plugin value
-        Path to compiled Go plugin (.so) to load (repeated or comma-separated)
-  -plugin value
-        Alias for -a/--add-plugin
-  -config value
-        Soong config variable in key=value format (can be repeated)
+Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
+```
+
+### Core Options
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-bp` | string | `Android.bp` | Path to target `Android.bp` file or directory (or positional arg). |
+| `-o` | string | `build.ninja` | Output Ninja build manifest path. |
+| `-out` | string | `out` | Directory for build outputs and generated intermediates. |
+| `-top` | string | `.` | Android source tree root (defaults to `$ANDROID_BUILD_TOP` or current dir). |
+| `-host` | bool | `false` | Build for host environment instead of target (expands `host: {}` properties). |
+| `-subdirs`, `-r` | bool | `true` | Recursively discover nested `Android.bp` files across subdirectories. |
+| `-allow-missing-deps` | bool | `true` | Generate phony targets for missing inputs/dependencies to bypass check failures. |
+
+### Architecture & Toolchain Options
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-arch` | string | `arm64` | Target architecture: `arm64`, `arm`, `x86_64`, `x86`, `riscv64`. |
+| `-api` | int | `34` | Target Android API level for NDK compilation. |
+| `-ndk` | string | `""` | Path to Android NDK, or `'auto'` for automatic discovery. |
+| `-ndk-version` | string | `""` | Preferred NDK version (e.g. `'latest'`, `'beta'`, `'r27'`, `'30'`). |
+| `-ndk-info` | bool | `false` | Query and list all discovered Android NDK installations and exit. |
+| `-sysroot` | string | `""` | Path to Android sysroot (auto-derived if `-ndk` is specified). |
+| `-prebuilt-libs` | string | `""` | Directory containing prebuilt libraries (`.so` / `.a`) for linker search path. |
+| `-cc` | string | `clang` | C compiler executable path (or via `$CC`). |
+| `-cxx` | string | `clang++` | C++ compiler executable path (or via `$CXX`). |
+
+### Flag & Macro Overrides
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-cflags` | string | `""` | Extra C compiler flags (can also be passed via `$CFLAGS`). |
+| `-cppflags`, `-cxxflags` | string | `""` | Extra C++ compiler flags (can also be passed via `$CXXFLAGS` / `$CPPFLAGS`). |
+| `-ldflags` | string | `""` | Extra linker flags (can also be passed via `$LDFLAGS`). |
+| `-config` | repeated | `[]` | Soong config variable in `key=value` format (e.g. `-config board=sm8450`). |
+
+### Plugin & Go Workspace Options
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-a`, `-plugin`, `-add-plugin`| repeated | `[]` | Path to compiled Go plugin (`.so`) to load. |
+| `-convert-plugin` | string | `""` | Convert in-tree Soong plugin sources into a `bp2ninja` `.so` plugin. |
+| `-bp2ninja-dir` | string | `""` | Path to `bp2ninja` root source directory (used with `-convert-plugin`). |
+| `-gen-gowork` | bool | `false` | Generate `go.work` workspace resolving Android platform Go packages. |
+| `-clean-gowork` | bool | `false` | Remove `go.work` and `go.work.sum`. |
+| `-tree` | string | `""` | Android source tree root for `go.work` generation. |
+| `-remote` | bool | `false` | Clone missing packages remotely from GoogleSource during `go.work` generation. |
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+| :--- | :--- |
+| `CC` | Default C compiler path when `-cc` is not passed. |
+| `CXX` | Default C++ compiler path when `-cxx` is not passed. |
+| `CFLAGS` / `CCFLAGS` | Compiler flags injected at generation time and runtime into `$cflags`. |
+| `CXXFLAGS` / `CPPFLAGS` | C++ flags injected at generation time and runtime into `$cflags`. |
+| `LDFLAGS` | Linker flags injected at generation time and runtime into `$ldflags`. |
+| `ANDROID_BUILD_TOP` | Fallback path for `-top`. |
+| `ANDROID_NDK` | Path to Android NDK installation (checked by auto-discovery). |
+| `ANDROID_SDK` / `ANDROID_HOME` | Path to Android SDK (used to locate `<SDK>/platforms/android-<API>/android.jar`). |
+| `BP2NINJA_PLUGINS_DIR` | Directory containing dynamic `.so` plugins for auto-loading. |
+| `PROTOC` | Custom path to Protobuf compiler (useful for ABI pinning to Protobuf 21.12). |
+| `CLASSPATH` | Host Java classpath search path. |
+
+---
+
+## Subcommands
+
+In addition to standard flags, `bp2ninja` provides first-class CLI subcommands:
+
+```bash
+# Display discovered Android NDK installations
+bp2ninja -ndk-info
+
+# Compile an in-tree Soong plugin package into a bp2ninja .so plugin
+bp2ninja convert-plugin path/to/soong/rules -o rules.so
+
+# Generate a go.work workspace for IDE and plugin compilation
+bp2ninja gowork --tree /path/to/android/tree [--remote]
+
+# Clean up go.work artifacts
+bp2ninja clean-gowork
 ```
 
 ---
 
-## Examples
+## Common Workflows & Examples
 
-### 1. Converting a C/C++ Repository
-Convert `system/logging/logcat/Android.bp` to a local `build.ninja`:
-```bash
-./bin/bp2ninja \
-    -bp /path/to/system/logging/logcat/Android.bp \
-    -o logcat.ninja \
-    -prebuilt-libs /path/to/out/target/product/generic_arm64/system/lib64
-```
-Then build with Ninja:
-```bash
-ninja -f logcat.ninja
-```
+### 1. Cross-Compiling for Target Device
 
-### 2. Evaluating `soong_config` Board Variables
-If a repository conditionally adds CFLAGS based on SoC platform:
-```bash
-./bin/bp2ninja \
-    -bp hardware/qcom/display/Android.bp \
-    -config target_board_platform=sm8450 \
-    -o display.ninja
-```
-
-### 3. Converting Complex Custom Modules (Zero Plugins Needed)
-For repositories containing custom Soong modules (such as Wayland protocol codegen, TableGen, ca-certificates, Cuttlefish packages, or kernel configs):
+Convert an Android repository (e.g. `system/core/libbase`) targeting `x86_64` API 34 using an auto-discovered NDK:
 
 ```bash
-# Wayland Protocol Codegen (127 build actions generated automatically)
-./bin/bp2ninja -bp external/wayland-protocols/Android.bp -o wayland.ninja
+bp2ninja -bp system/core/libbase \
+         -arch x86_64 \
+         -api 34 \
+         -ndk auto \
+         -prebuilt-libs /path/to/sysroot/lib64 \
+         -o libbase.ninja
 
-# LLVM TableGen & Clang
-./bin/bp2ninja -bp external/clang/Android.bp -o clang.ninja
-
-# Arm Compute Library (1,138 build actions generated automatically)
-./bin/bp2ninja -bp external/ComputeLibrary/Android.bp -o arm.ninja
+# Build with Ninja
+ninja -f libbase.ninja
 ```
-*Note: The `-a / --add-plugin` flag remains available if you wish to load optional external Go `.so` plugins.*
+
+### 2. Building for Host Architecture
+
+Build host tools (e.g. `apexer`, `simg2img`, `signapk`) using host Clang and host libraries:
+
+```bash
+bp2ninja -bp system/apex/apexer \
+         -host \
+         -o apexer.ninja
+
+ninja -f apexer.ninja
+```
+
+### 3. Dual-Variant Dynamic (.so) and Static (.a) Libraries
+
+For any `cc_library`, `bp2ninja` outputs build edges for both formats:
+
+```bash
+bp2ninja -bp external/zlib -o zlib.ninja
+
+# Build BOTH dynamic and static libraries:
+ninja -f zlib.ninja
+
+# Build ONLY the shared library:
+ninja -f zlib.ninja out/lib64/libz.so
+
+# Build ONLY the static library archive:
+ninja -f zlib.ninja out/lib64/libz.a
+```
+
+### 4. Protobuf (protoc) Code Generation
+
+For modules defining `.proto` files inside subdirectories:
+
+```bash
+# Pin ABI-matched protoc if needed
+export PROTOC=/usr/bin/protoc
+
+bp2ninja -bp system/update_engine -arch x86_64 -api 34 -ndk auto -o update_engine.ninja
+ninja -f update_engine.ninja out/lib64/libupdate_metadata-protos.a
+```
+
+### 5. Kotlin and Java Compilation
+
+For Android apps or libraries with mixed Kotlin + Java sources:
+
+```bash
+bp2ninja -bp packages/apps/ExactCalculator -o calculator.ninja
+ninja -f calculator.ninja
+```
+
+### 6. AConfig Code Generation (`cc_aconfig_library`)
+
+When building libraries depending on Android 14+ feature flags:
+
+```bash
+bp2ninja -bp frameworks/base/libs/androidfw -o androidfw.ninja
+ninja -f androidfw.ninja
+```
+
+### 7. Recursive Multi-Module Discovery
+
+Pass a directory containing many subprojects to generate a single consolidated Ninja manifest:
+
+```bash
+bp2ninja system/core -o system_core.ninja
+ninja -f system_core.ninja
+```
 
 ---
 
-## Accelerated Product Build Workflow
+## Documentation & Man Pages
 
-By using `bp2ninja` to build repositories outside the main AOSP tree:
-1. Repositories are compiled in parallel as standalone modules.
-2. Compiled artifacts (`.apk`, `.so`, `.jar`) are reintroduced into the Android tree using Soong's native prebuilt mechanisms (`cc_prebuilt_library_shared`, `android_app_import`).
-3. The main AOSP ROM build is trimmed to the **~47 core monolithic repos**, reducing full image assembly time from **~60+ minutes to ~10 minutes**.
+Comprehensive documentation is available in the [`docs/`](docs/) directory and UNIX man page:
+
+- [**docs/USAGE.md**](docs/USAGE.md) — Comprehensive user guide, CLI reference, and troubleshooting.
+- [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md) — Internal architecture, AST pipeline, evaluator, and rule generation.
+- [**docs/MODULES.md**](docs/MODULES.md) — Supported Blueprint module types, properties, and variant matrices.
+- [**man/bp2ninja.1**](man/bp2ninja.1) — Standard UNIX manual page. View via `man -l man/bp2ninja.1`.
+
+To install the man page on your system:
+
+```bash
+install -Dm644 man/bp2ninja.1 /usr/share/man/man1/bp2ninja.1
+```
+
+---
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

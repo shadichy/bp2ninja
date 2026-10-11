@@ -1,0 +1,247 @@
+.TH BP2NINJA 1 "October 2026" "bp2ninja 0.1.0" "User Commands"
+.SH NAME
+bp2ninja \- High-speed standalone Android.bp (Soong/Blueprint) to Ninja generator
+.SH SYNOPSIS
+.B bp2ninja
+[\fIOPTIONS\fR] [\fIpath/to/Android.bp\fR | \fIpath/to/directory\fR]
+.br
+.B bp2ninja
+\fB\-ndk\-info\fR
+.br
+.B bp2ninja
+\fBconvert\-plugin\fR \fITARGET\fR [\fB\-o\fR \fIOUT.so\fR] [\fB\-\-bp2ninja\-dir\fR \fIDIR\fR]
+.br
+.B bp2ninja
+\fBgowork\fR [\fB\-\-tree\fR \fIDIR\fR] [\fB\-\-remote\fR] [\fB\-\-clean\fR]
+.br
+.B bp2ninja
+\fBclean\-gowork\fR
+.SH DESCRIPTION
+.B bp2ninja
+is a pure-Go, standalone compiler that converts Android Blueprint (\fBAndroid.bp\fR) build manifests directly into \fBbuild.ninja\fR files.
+.PP
+Unlike Google's monolithic \fBsoong_build\fR, which demands an entire checked-out multi-hundred-gigabyte Android platform tree and requires ~30 minutes to evaluate all dependencies,
+.B bp2ninja
+operates in complete isolation. It translates Blueprint AST definitions into standard Ninja rules in milliseconds by evaluating defaults, flattening variable scopes, resolving arch/target properties, and automatically mapping missing source dependencies to prebuilt library directories, linker flags, or safe phony rules.
+.PP
+.B bp2ninja
+supports native C/C++ binaries and libraries (with automatic dual-variant \fB.so\fR dynamic and \fB.a\fR static target generation), Java and Kotlin compilation pipelines, AConfig code generation, Protobuf compiler rules with directory layout preservation, and complex custom Soong code generators through AST auto-derivation or dynamic Go plugins.
+
+.SH OPTIONS
+.TP
+.BI \-bp " PATH"
+Path to the target \fBAndroid.bp\fR file or repository directory. Defaults to \fBAndroid.bp\fR in the current working directory. Can also be supplied as a positional argument.
+.TP
+.BI \-o " FILE"
+Output Ninja build file path. Defaults to \fBbuild.ninja\fR.
+.TP
+.BI \-out " DIR"
+Output directory for build artifacts and intermediate files. Defaults to \fBout\fR.
+.TP
+.BI \-top " DIR"
+Top-level directory of the Android source tree (if building inside or against an AOSP tree). Defaults to the value of \fB$ANDROID_BUILD_TOP\fR or the current directory.
+.TP
+.B \-host
+Build for the host operating system and architecture instead of the target device. In host mode, \fBhost: {}\fR property blocks, \fBtarget.host\fR, and \fBtarget.linux\fR are expanded, device-only targets are skipped, and host compilers (\fB$CC\fR, \fB$CXX\fR) are invoked.
+.TP
+.BR \-subdirs ", " \-r
+Recursively discover all nested \fBAndroid.bp\fR files in subdirectories and consolidate their build edges into the generated Ninja file. Enabled by default.
+.TP
+.B \-allow\-missing\-deps
+Generate phony targets for missing dependencies or inputs, permitting standalone compilation of isolated modules without requiring all prerequisite source repositories. Enabled by default.
+
+.SS Target Architecture & NDK Toolchain Options
+.TP
+.BI \-arch " ARCH"
+Target device processor architecture. Supported values: \fBarm64\fR (default), \fBarm\fR, \fBx86_64\fR, \fBx86\fR, \fBriscv64\fR.
+.TP
+.BI \-api " LEVEL"
+Target Android API level for NDK cross-compilation. Defaults to \fB34\fR (Android 14).
+.TP
+.BI \-ndk " PATH"
+Path to the Android NDK root directory, or \fBauto\fR to automatically search common discovery paths (Google Android Studio SDK directories, distribution packages such as \fI/opt/android-ndk\fR, and \fB$ANDROID_NDK\fR).
+.TP
+.BI \-ndk\-version " VERSION"
+Preferred Android NDK version string or tag when multiple NDKs are discovered (e.g. \fBlatest\fR, \fBbeta\fR, \fBr27\fR, \fB30\fR).
+.TP
+.B \-ndk\-info
+Probe the host system for installed Android NDK toolchains, print version, triple, and sysroot details for each discovery, and exit.
+.TP
+.BI \-sysroot " DIR"
+Path to the Android target sysroot. Automatically determined when \fB\-ndk\fR is specified.
+.TP
+.BI \-prebuilt\-libs " DIR"
+Directory containing prebuilt shared (\fB.so\fR) or static (\fB.a\fR) libraries. Appended to compiler linker search paths (\fB\-L\fR).
+.TP
+.BI \-cc " PATH"
+C compiler executable path. Defaults to \fBclang\fR, or the NDK toolchain clang binary if NDK is active.
+.TP
+.BI \-cxx " PATH"
+C++ compiler executable path. Defaults to \fBclang++\fR, or the NDK toolchain clang++ binary if NDK is active.
+
+.SS Compiler Flags & Configuration
+.TP
+.BI \-cflags " FLAGS"
+Additional C compiler flags passed to all compilation targets. Can also be set via \fB$CFLAGS\fR.
+.TP
+.BR \-cppflags " FLAGS, " \-cxxflags " FLAGS"
+Additional C++ compiler flags passed to all compilation targets. Can also be set via \fB$CXXFLAGS\fR or \fB$CPPFLAGS\fR.
+.TP
+.BI \-ldflags " FLAGS"
+Additional linker flags passed to all link actions. Can also be set via \fB$LDFLAGS\fR.
+.TP
+.BI \-config " KEY=VALUE"
+Set a Soong configuration variable for conditional evaluation (e.g. \fB\-config target_board_platform=sm8450\fR). Can be repeated.
+
+.SS Modular Plugins & Go Workspace
+.TP
+.BR \-a " PATH, " \-plugin " PATH, " \-add\-plugin " PATH"
+Load a compiled Go plugin (\fB.so\fR) implementing custom Soong module handlers. Can be repeated or comma-separated.
+.TP
+.BI \-convert\-plugin " TARGET"
+Convert an in-tree Soong Go package into a dynamically loadable \fBbp2ninja\fR plugin.
+.TP
+.BI \-bp2ninja\-dir " DIR"
+Path to the \fBbp2ninja\fR source repository root (used when compiling plugins with \fB\-convert\-plugin\fR).
+.TP
+.B \-gen\-gowork
+Generate a \fBgo.work\fR workspace referencing Android platform Go packages.
+.TP
+.B \-clean\-gowork
+Remove \fBgo.work\fR and \fBgo.work.sum\fR workspace files.
+.TP
+.B \-remote
+Allow cloning missing platform Go repositories from \fBandroid.googlesource.com\fR when generating workspaces.
+.TP
+.BI \-tree " DIR"
+Android source tree root used for \fBgo.work\fR discovery.
+
+.SH SUBCOMMANDS
+.TP
+.B bp2ninja \-ndk\-info
+List all discovered Android NDK installations with their versions, supported architectures, and Clang toolchain locations.
+.TP
+.BI "bp2ninja convert\-plugin " "TARGET [\-o OUT.so] [\-\-bp2ninja\-dir DIR]"
+Transpile and compile an in-tree Blueprint/Soong Go package into a standalone \fB.so\fR plugin.
+.TP
+.BI "bp2ninja gowork " "[\-\-tree DIR] [\-\-remote] [\-\-clean]"
+Generate or clean a multi-package Go workspace for development and IDE support.
+
+.SH ENVIRONMENT
+.TP
+.B CC
+Default C compiler executable if \fB\-cc\fR is not specified.
+.TP
+.B CXX
+Default C++ compiler executable if \fB\-cxx\fR is not specified.
+.TP
+.B CFLAGS, CCFLAGS
+Flags passed during generation and made available at Ninja run time via \fB$${CFLAGS}\fR.
+.TP
+.B CXXFLAGS, CPPFLAGS
+C++ flags passed during generation and made available at Ninja run time via \fB$${CXXFLAGS}\fR.
+.TP
+.B LDFLAGS
+Linker flags passed during generation and made available at Ninja run time via \fB$${LDFLAGS}\fR.
+.TP
+.B ANDROID_BUILD_TOP
+Root of the Android source tree when \fB\-top\fR is omitted.
+.TP
+.B ANDROID_NDK
+Path to an Android NDK installation for auto-discovery.
+.TP
+.B ANDROID_SDK, ANDROID_HOME
+Root of an Android SDK installation. Used to resolve \fB:current_android_jar\fR and \fB:system_android_jar\fR to \fI<SDK>/platforms/android-<API>/android.jar\fR.
+.TP
+.B BP2NINJA_PLUGINS_DIR
+Directory searched automatically for \fB*.so\fR plugins in addition to \fI/usr/lib/bp2ninja/plugins\fR and \fI/usr/local/lib/bp2ninja/plugins\fR.
+.TP
+.B PROTOC
+Path to the Protobuf compiler binary. Useful when pinning to a specific fleet ABI (e.g. Protobuf 21.12).
+.TP
+.B CLASSPATH
+Host Java classpath entries appended to Java and Kotlin build edges.
+
+.SH SUPPORTED MODULE TYPES
+.B bp2ninja
+natively translates the following Blueprint module types:
+.TP
+.B C/C++ Modules
+\fBcc_binary\fR, \fBcc_binary_host\fR, \fBcc_library\fR, \fBcc_library_shared\fR, \fBcc_library_static\fR, \fBcc_library_headers\fR, \fBcc_library_host\fR, \fBcc_library_host_shared\fR, \fBcc_library_host_static\fR, \fBcc_test\fR, \fBcc_test_host\fR, \fBcc_benchmark\fR, \fBcc_fuzz\fR.
+.IP
+For \fBcc_library\fR, both \fB.so\fR (shared) and \fB.a\fR (static) targets are emitted in the same manifest.
+.TP
+.B Java & Kotlin Modules
+\fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR.
+.TP
+.B Codegen & Feature Flags
+\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR.
+.TP
+.B System & Prebuilt Modules
+\fBprebuilt_etc\fR, \fBprebuilt_etc_host\fR, \fBsh_binary\fR, \fBsh_binary_host\fR, \fBpython_binary\fR, \fBpython_binary_host\fR, \fBpython_test_host\fR.
+.TP
+.B Declarative Meta-modules
+\fBcc_defaults\fR, \fBjava_defaults\fR, \fBfilegroup\fR, \fBphony\fR, \fBsoong_config_module_type\fR, \fBsoong_config_string_variable\fR, \fBsoong_config_bool_variable\fR.
+
+.SH EXAMPLES
+.PP
+.B 1. Cross-compiling a native library for Android arm64 with NDK auto-discovery:
+.RS
+.nf
+bp2ninja \-bp system/core/libbase \-arch arm64 \-api 34 \-ndk auto \-o libbase.ninja
+ninja \-f libbase.ninja
+.fi
+.RE
+.PP
+.B 2. Building host tooling using the host Clang toolchain:
+.RS
+.nf
+bp2ninja \-bp system/apex/apexer \-host \-o apexer.ninja
+ninja \-f apexer.ninja
+.fi
+.RE
+.PP
+.B 3. Building both shared and static library targets from a cc_library:
+.RS
+.nf
+bp2ninja \-bp external/zlib \-o zlib.ninja
+ninja \-f zlib.ninja out/lib64/libz.so
+ninja \-f zlib.ninja out/lib64/libz.a
+.fi
+.RE
+.PP
+.B 4. Converting an entire subdirectory containing multiple nested modules:
+.RS
+.nf
+bp2ninja \-subdirs system/core \-o core.ninja
+ninja \-f core.ninja
+.fi
+.RE
+.PP
+.B 5. Compiling with custom CFLAGS overrides at runtime:
+.RS
+.nf
+CFLAGS="\-O3 \-flto" ninja \-f build.ninja
+.fi
+.RE
+
+.SH EXIT STATUS
+.TP
+.B 0
+Successful generation of the Ninja build manifest.
+.TP
+.B 1
+Syntax error in \fBAndroid.bp\fR, invalid command-line flag, or failure during module evaluation.
+
+.SH SEE ALSO
+.BR ninja (1),
+.BR clang (1),
+.BR make (1)
+.PP
+Project documentation and source repository:
+.UR https://github.com/shadichy/bp2ninja
+.UE
+
+.SH AUTHORS
+.B bp2ninja
+is developed and maintained by the Android Generic / Bliss OS Team and contributors.

@@ -22,3 +22,15 @@ test:
 
 clean:
 	rm -rf $(BIN_DIR) plugins/*.so plugins/*/ bp2ninja out/ .deps/ go.work go.work.sum
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+MANDIR ?= $(PREFIX)/share/man/man1
+DOCDIR ?= $(PREFIX)/share/doc/bp2ninja
+
+install: build
+	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/bp2ninja
+	install -Dm644 man/bp2ninja.1 $(DESTDIR)$(MANDIR)/bp2ninja.1
+	install -d $(DESTDIR)$(DOCDIR)
+	install -Dm644 README.md $(DESTDIR)$(DOCDIR)/README.md
+	cp -aL docs/* $(DESTDIR)$(DOCDIR)/

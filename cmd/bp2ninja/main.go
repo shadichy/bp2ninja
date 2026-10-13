@@ -322,10 +322,15 @@ func main() {
 	}
 
 	var searchDirs []string
-	if envDir := os.Getenv("BP2NINJA_PLUGINS_DIR"); envDir != "" {
-		searchDirs = append(searchDirs, envDir)
+	if os.Getenv("BP2NINJA_DISABLE_PLUGINS") == "" {
+		if envDir := os.Getenv("BP2NINJA_PLUGINS_DIR"); envDir != "" {
+			if envDir != "none" && envDir != "0" {
+				searchDirs = append(searchDirs, envDir)
+			}
+		} else {
+			searchDirs = append(searchDirs, "/usr/lib/bp2ninja/plugins", "/usr/local/lib/bp2ninja/plugins")
+		}
 	}
-	searchDirs = append(searchDirs, "/usr/lib/bp2ninja/plugins", "/usr/local/lib/bp2ninja/plugins")
 
 	for _, sDir := range searchDirs {
 		if matches, err := filepath.Glob(filepath.Join(sDir, "*.so")); err == nil {

@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -29,12 +30,14 @@ func NewScope() *Scope {
 
 // Context coordinates AST evaluation across multiple modules and defaults.
 type Context struct {
-	Scope           *Scope
-	Defaults        map[string]*EvaluatedModule
-	Modules         []*EvaluatedModule
-	ConfigVariables map[string]string // e.g. "target_board_platform" -> "sm8450"
-	TargetArch      string
-	IsHost          bool
+	Scope               *Scope
+	Defaults            map[string]*EvaluatedModule
+	Modules             []*EvaluatedModule
+	ConfigVariables     map[string]string // e.g. "target_board_platform" -> "sm8450"
+	TargetArch          string
+	IsHost              bool
+	HostCodegenArches   []string
+	TargetCodegenArches []string
 }
 
 // NewContext creates an evaluation context.
@@ -45,13 +48,23 @@ func NewContext(configVars map[string]string, targetArch string) *Context {
 	if targetArch == "" {
 		targetArch = "arm64"
 	}
+	var hostCodegen []string
+	if envHost := os.Getenv("ART_HOST_CODEGEN_ARCHS"); envHost != "" {
+		hostCodegen = strings.Fields(envHost)
+	}
+	var targetCodegen []string
+	if envTarget := os.Getenv("ART_TARGET_CODEGEN_ARCHS"); envTarget != "" {
+		targetCodegen = strings.Fields(envTarget)
+	}
 	return &Context{
-		Scope:           NewScope(),
-		Defaults:        make(map[string]*EvaluatedModule),
-		Modules:         make([]*EvaluatedModule, 0),
-		ConfigVariables: configVars,
-		TargetArch:      targetArch,
-		IsHost:          false,
+		Scope:               NewScope(),
+		Defaults:            make(map[string]*EvaluatedModule),
+		Modules:             make([]*EvaluatedModule, 0),
+		ConfigVariables:     configVars,
+		TargetArch:          targetArch,
+		IsHost:              false,
+		HostCodegenArches:   hostCodegen,
+		TargetCodegenArches: targetCodegen,
 	}
 }
 
@@ -90,6 +103,8 @@ func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 		c.applyMultilib(mod)
 		c.applyTarget(mod)
 		c.applyVariantBlock(mod)
+		c.applyCodegen(mod)
+		c.applyArtImplicitFlags(mod)
 		if c.IsHost && !isDeclarativeMetaModule(mod.Type) && !mod.IsHostSupported() {
 			mod.Properties["enabled"] = false
 		}
@@ -248,7 +263,7 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 				continue
 			}
 			valToMerge := cloneProperty(defVal)
-			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs" || k == "arch" || k == "target" || k == "multilib") {
+			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs" || k == "arch" || k == "target" || k == "multilib" || k == "codegen") {
 				valToMerge = adjustPathProperty(valToMerge, defMod.Dir, mod.Dir)
 			}
 			if existing, exists := mergedDefaults[k]; exists {
@@ -447,17 +462,112 @@ func (c *Context) applyTarget(mod *EvaluatedModule) {
 // applyVariantBlock resolves static: {} or shared: {} sub-blocks for single-variant modules.
 func (c *Context) applyVariantBlock(mod *EvaluatedModule) {
 	switch mod.Type {
-	case "cc_library_static", "cc_library_host_static":
+	case "cc_library_static", "cc_library_host_static", "art_cc_library_static":
 		mod.ApplyVariant("static")
 	case "cc_library_shared", "cc_library_host_shared":
 		mod.ApplyVariant("shared")
-	case "cc_binary", "cc_binary_host", "cc_test", "cc_test_host", "cc_benchmark", "cc_fuzz":
+	case "cc_binary", "cc_binary_host", "art_cc_binary", "cc_test", "cc_test_host", "art_cc_test", "cc_benchmark", "cc_fuzz":
 		if mod.GetBool("static_executable") {
 			mod.ApplyVariant("static")
 		} else {
 			mod.ApplyVariant("shared")
 		}
 	}
+}
+
+// applyCodegen resolves the ART Soong plugin `codegen: { <arch>: { ... } }` property block.
+func (c *Context) applyCodegen(mod *EvaluatedModule) {
+	rawCodegen, ok := mod.Properties["codegen"].(map[string]interface{})
+	if !ok || len(rawCodegen) == 0 {
+		return
+	}
+	delete(mod.Properties, "codegen")
+
+	var activeArches []string
+	if c.IsHost {
+		if len(c.HostCodegenArches) > 0 {
+			activeArches = c.HostCodegenArches
+		} else {
+			activeArches = []string{"arm", "arm64", "riscv64", "x86", "x86_64"}
+		}
+	} else {
+		if len(c.TargetCodegenArches) > 0 {
+			activeArches = c.TargetCodegenArches
+		} else {
+			switch c.TargetArch {
+			case "arm64":
+				activeArches = []string{"arm", "arm64"}
+			case "arm":
+				activeArches = []string{"arm"}
+			case "x86_64":
+				activeArches = []string{"x86", "x86_64"}
+			case "x86":
+				activeArches = []string{"x86"}
+			case "riscv64":
+				activeArches = []string{"riscv64"}
+			default:
+				activeArches = []string{c.TargetArch}
+			}
+		}
+	}
+
+	for _, arch := range activeArches {
+		archProps, found := rawCodegen[arch].(map[string]interface{})
+		if !found {
+			continue
+		}
+		for propName, propVal := range archProps {
+			if existing, exists := mod.Properties[propName]; exists {
+				mod.Properties[propName] = mergeProperties(existing, propVal)
+			} else {
+				mod.Properties[propName] = propVal
+			}
+		}
+	}
+
+	// De-duplicate srcs if multiple arches declared identical sources
+	if rawSrcs, ok := mod.Properties["srcs"].([]interface{}); ok {
+		seen := make(map[string]bool)
+		var unique []interface{}
+		for _, s := range rawSrcs {
+			str, ok := s.(string)
+			if ok {
+				if !seen[str] {
+					seen[str] = true
+					unique = append(unique, s)
+				}
+			} else {
+				unique = append(unique, s)
+			}
+		}
+		mod.Properties["srcs"] = unique
+	}
+}
+
+// applyArtImplicitFlags injects implicit ART compiler flags for art_cc_* modules on target.
+func (c *Context) applyArtImplicitFlags(mod *EvaluatedModule) {
+	if !strings.HasPrefix(mod.Type, "art_") || c.IsHost {
+		return
+	}
+	flags := []string{"-DART_TARGET", "-DART_TARGET_ANDROID"}
+	if os.Getenv("ART_TARGET_LINUX") == "true" {
+		flags = []string{"-DART_TARGET", "-DART_TARGET_LINUX"}
+	}
+	cflags := mod.GetStringList("cflags")
+	existing := make(map[string]bool)
+	for _, f := range cflags {
+		existing[f] = true
+	}
+	var newFlags []interface{}
+	for _, f := range cflags {
+		newFlags = append(newFlags, f)
+	}
+	for _, f := range flags {
+		if !existing[f] {
+			newFlags = append(newFlags, f)
+		}
+	}
+	mod.Properties["cflags"] = newFlags
 }
 
 func toInterfaceSlice(v interface{}) ([]interface{}, bool) {
@@ -562,12 +672,15 @@ func (m *EvaluatedModule) IsDeviceSupported() bool {
 }
 
 func isDeclarativeMetaModule(modType string) bool {
+	if strings.HasSuffix(modType, "_defaults") || strings.HasSuffix(modType, "_default") || modType == "defaults" {
+		return true
+	}
 	switch modType {
 	case "package", "license", "license_kind", "package_metadata",
 		"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 		"soong_config_bool_variable", "soong_config_module_type_import",
 		"filegroup", "phony", "ndk_headers", "ndk_library", "vintf_fragment",
-		"cc_defaults", "java_defaults":
+		"cc_defaults", "java_defaults", "art_cc_defaults", "art_global_defaults":
 		return true
 	}
 	return false

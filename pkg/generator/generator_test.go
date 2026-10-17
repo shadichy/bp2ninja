@@ -9,6 +9,7 @@ import (
 
 	"bp2ninja/pkg/eval"
 	"bp2ninja/pkg/ninja"
+	"bp2ninja/pkg/parser"
 )
 
 func TestGenerateWithSubdirectories(t *testing.T) {
@@ -1461,3 +1462,223 @@ func TestRootTargetDefaultBounding(t *testing.T) {
 	}
 }
 
+func TestCcBinaryMassSymlinks(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	toyboxMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "toybox",
+		Properties: map[string]interface{}{
+			"name":     "toybox",
+			"srcs":     []interface{}{"main.c"},
+			"symlinks": []interface{}{"cat", "ls", "grep"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{toyboxMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Verify rule symlink is emitted
+	if !strings.Contains(content, "rule symlink") {
+		t.Errorf("Expected 'rule symlink' in build.ninja, got:\n%s", content)
+	}
+
+	// Verify symlink build edges
+	for _, alias := range []string{"cat", "ls", "grep"} {
+		expectedEdge := "build " + filepath.Join("out", "bin", alias) + ": symlink " + filepath.Join("out", "bin", "toybox")
+		if !strings.Contains(content, expectedEdge) {
+			t.Errorf("Expected edge %q, got:\n%s", expectedEdge, content)
+		}
+		expectedTarget := "symlink_target = toybox"
+		if !strings.Contains(content, expectedTarget) {
+			t.Errorf("Expected variable %q, got:\n%s", expectedTarget, content)
+		}
+	}
+}
+
+func TestSymlinkPreferredArch(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	appProcessMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "app_process64",
+		Properties: map[string]interface{}{
+			"name":                   "app_process64",
+			"srcs":                   []interface{}{"app_main.cpp"},
+			"symlink_preferred_arch": true,
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{appProcessMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedEdge := "build " + filepath.Join("out", "bin", "app_process") + ": symlink " + filepath.Join("out", "bin", "app_process64")
+	if !strings.Contains(content, expectedEdge) {
+		t.Errorf("Expected edge %q, got:\n%s", expectedEdge, content)
+	}
+	expectedTarget := "symlink_target = app_process64"
+	if !strings.Contains(content, expectedTarget) {
+		t.Errorf("Expected variable %q, got:\n%s", expectedTarget, content)
+	}
+}
+
+func TestInstallSymlink(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	symMod := &eval.EvaluatedModule{
+		Type: "install_symlink",
+		Name: "linker_asan_link",
+		Properties: map[string]interface{}{
+			"name":               "linker_asan_link",
+			"installed_location": "bin/linker_asan",
+			"symlink_target":     "/apex/com.android.runtime/bin/linker",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{symMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedEdge := "build " + filepath.Join("out", "bin", "linker_asan") + ": symlink"
+	if !strings.Contains(content, expectedEdge) {
+		t.Errorf("Expected edge %q, got:\n%s", expectedEdge, content)
+	}
+	expectedTarget := "symlink_target = /apex/com.android.runtime/bin/linker"
+	if !strings.Contains(content, expectedTarget) {
+		t.Errorf("Expected variable %q, got:\n%s", expectedTarget, content)
+	}
+}
+
+func TestPrebuiltMassSymlinks(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	shMod := &eval.EvaluatedModule{
+		Type: "sh_binary",
+		Name: "myscript",
+		Properties: map[string]interface{}{
+			"name":     "myscript",
+			"src":      "myscript.sh",
+			"symlinks": []interface{}{"alias_script"},
+		},
+	}
+
+	etcMod := &eval.EvaluatedModule{
+		Type: "prebuilt_etc",
+		Name: "myconfig",
+		Properties: map[string]interface{}{
+			"name":     "myconfig",
+			"src":      "myconfig.conf",
+			"sub_dir":  "settings",
+			"symlinks": []interface{}{"alias_conf"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{shMod, etcMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	expectedSh := "build " + filepath.Join("out", "bin", "alias_script") + ": symlink " + filepath.Join("out", "bin", "myscript")
+	if !strings.Contains(content, expectedSh) {
+		t.Errorf("Expected edge %q, got:\n%s", expectedSh, content)
+	}
+	expectedEtc := "build " + filepath.Join("out", "etc", "settings", "alias_conf") + ": symlink " + filepath.Join("out", "etc", "settings", "myconfig")
+	if !strings.Contains(content, expectedEtc) {
+		t.Errorf("Expected edge %q, got:\n%s", expectedEtc, content)
+	}
+}
+
+func TestArtCcLibraryNinjaGeneration(t *testing.T) {
+	bp := `
+art_cc_defaults {
+    name: "vixl-arm",
+    codegen: {
+        arm: {
+            srcs: ["src/aarch32/assembler-aarch32.cc"],
+            cppflags: ["-DVIXL_INCLUDE_TARGET_T32"],
+        },
+    },
+}
+
+art_cc_defaults {
+    name: "vixl-arm64",
+    codegen: {
+        arm64: {
+            srcs: ["src/aarch64/assembler-aarch64.cc"],
+            cppflags: ["-DVIXL_INCLUDE_SIMULATOR_AARCH64", "-DVIXL_INCLUDE_TARGET_A64"],
+        },
+    },
+}
+
+art_cc_library {
+    name: "libvixl",
+    defaults: ["vixl-arm", "vixl-arm64"],
+    srcs: ["src/code-buffer-vixl.cc"],
+}
+`
+	ctx := eval.NewContext(nil, "x86_64")
+	// Target is x86_64 with ART_TARGET_CODEGEN_ARCHS enabling ARM and ARM64
+	ctx.TargetCodegenArches = []string{"arm", "arm64", "x86", "x86_64"}
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.TargetArch = "x86_64"
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Verify libvixl.so and libvixl.a are real targets with link_shared and archive_static
+	expectedShared := filepath.Join("out", "lib64", "libvixl.so")
+	expectedStatic := filepath.Join("out", "lib64", "libvixl.a")
+	if !strings.Contains(content, "build "+expectedShared+": link_shared") {
+		t.Errorf("Expected link_shared for %s, got:\n%s", expectedShared, content)
+	}
+	if !strings.Contains(content, "build "+expectedStatic+": archive_static") {
+		t.Errorf("Expected archive_static for %s, got:\n%s", expectedStatic, content)
+	}
+
+	// Verify that phony fallbacks are NOT emitted for libvixl
+	if strings.Contains(content, "build "+expectedShared+": phony") {
+		t.Errorf("Did not expect phony rule for %s", expectedShared)
+	}
+	if strings.Contains(content, "build "+expectedStatic+": phony") {
+		t.Errorf("Did not expect phony rule for %s", expectedStatic)
+	}
+
+	// Verify compilation of AArch64 simulator sources
+	expectedA64Obj := filepath.Join("out", "obj", "libvixl", "src", "aarch64", "assembler-aarch64.o")
+	if !strings.Contains(content, "build "+expectedA64Obj+": cxx_compile") {
+		t.Errorf("Expected compile rule for %s, got:\n%s", expectedA64Obj, content)
+	}
+}

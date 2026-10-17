@@ -34,9 +34,11 @@ type Options struct {
 	AllowMissingDeps bool
 	BpDir            string
 	ExtraCflags      []string
-	ExtraCppflags    []string
-	ExtraLdflags     []string
-	IsHost           bool
+	ExtraCppflags       []string
+	ExtraLdflags        []string
+	IsHost              bool
+	HostCodegenArches   []string
+	TargetCodegenArches []string
 }
 
 // DefaultOptions provides sensible defaults for standalone Android builds.
@@ -400,6 +402,10 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		}
 
 		// Standard module generators
+		if strings.HasSuffix(mod.Type, "_defaults") || strings.HasSuffix(mod.Type, "_default") || mod.Type == "defaults" {
+			continue
+		}
+
 		var targets []string
 		var err error
 
@@ -408,15 +414,20 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 			"soong_config_bool_variable", "soong_config_module_type_import",
 			"filegroup", "phony", "ndk_headers", "ndk_library", "vintf_fragment",
-			"cc_defaults", "java_defaults":
+			"cc_defaults", "java_defaults", "art_cc_defaults", "art_global_defaults":
 			// Declarative meta-modules in generic BP: no direct build action
 			continue
-		case "cc_binary", "cc_binary_host":
+		case "install_symlink":
+			targets, err = g.generateInstallSymlink(mod)
+		case "android_filesystem", "filesystem":
+			targets, err = g.generateFilesystem(mod)
+		case "cc_binary", "cc_binary_host", "art_cc_binary":
 			targets, err = g.generateCcBinary(mod)
 		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers",
-			"cc_library_host", "cc_library_host_shared", "cc_library_host_static":
+			"cc_library_host", "cc_library_host_shared", "cc_library_host_static",
+			"art_cc_library", "art_cc_library_static":
 			targets, err = g.generateCcLibrary(mod)
-		case "cc_test", "cc_benchmark", "cc_test_host", "cc_fuzz":
+		case "cc_test", "cc_benchmark", "cc_test_host", "cc_fuzz", "art_cc_test", "art_cc_test_library":
 			targets, err = g.generateCcTest(mod)
 		case "android_app", "android_app_certificate":
 			targets, err = g.generateAndroidApp(mod)
@@ -657,6 +668,15 @@ func (g *Generator) emitStandardRules() error {
 		Name:        "protoc",
 		Command:     "mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args",
 		Description: "PROTOC $in",
+	}); err != nil {
+		return err
+	}
+
+	// Symlink
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "symlink",
+		Command:     "mkdir -p $$(dirname $out) && rm -f $out && ln -sf $symlink_target $out",
+		Description: "SYMLINK $out",
 	}); err != nil {
 		return err
 	}
@@ -1031,3 +1051,54 @@ func matchesExclude(pattern, target string) bool {
 	return false
 }
 
+func (g *Generator) generateInstallSymlink(mod *eval.EvaluatedModule) ([]string, error) {
+	installedLoc := mod.GetString("installed_location")
+	symlinkTarget := mod.GetString("symlink_target")
+	if installedLoc == "" || symlinkTarget == "" {
+		return nil, nil
+	}
+	outPath := filepath.Join(g.opts.OutDir, installedLoc)
+	err := g.nw.Build(ninja.BuildEdge{
+		Outputs: []string{outPath},
+		Rule:    "symlink",
+		Variables: map[string]string{
+			"symlink_target": symlinkTarget,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []string{outPath}, nil
+}
+
+func (g *Generator) generateFilesystem(mod *eval.EvaluatedModule) ([]string, error) {
+	rawSymlinks, ok := mod.Properties["symlinks"].([]interface{})
+	if !ok || len(rawSymlinks) == 0 {
+		return nil, nil
+	}
+	var targets []string
+	for _, raw := range rawSymlinks {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		target, _ := item["target"].(string)
+		name, _ := item["name"].(string)
+		if target == "" || name == "" {
+			continue
+		}
+		outPath := filepath.Join(g.opts.OutDir, name)
+		err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{outPath},
+			Rule:    "symlink",
+			Variables: map[string]string{
+				"symlink_target": target,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, outPath)
+	}
+	return targets, nil
+}

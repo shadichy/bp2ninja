@@ -572,3 +572,175 @@ cc_library {
 		}
 	}
 }
+
+func TestArtCodegenHostExpansion(t *testing.T) {
+	bp := `
+art_cc_defaults {
+    name: "vixl_arm",
+    codegen: {
+        arm: {
+            srcs: ["src/aarch32/assembler-aarch32.cc"],
+            cppflags: ["-DVIXL_INCLUDE_TARGET_T32"],
+        },
+    },
+}
+
+art_cc_defaults {
+    name: "vixl_arm64",
+    codegen: {
+        arm64: {
+            srcs: ["src/aarch64/assembler-aarch64.cc"],
+            cppflags: ["-DVIXL_INCLUDE_SIMULATOR_AARCH64"],
+        },
+    },
+}
+
+art_cc_library {
+    name: "libvixl_test",
+    defaults: ["vixl_arm", "vixl_arm64"],
+    host_supported: true,
+    srcs: ["src/utils.cc"],
+}
+`
+	ctx := NewContext(nil, "x86_64")
+	ctx.IsHost = true
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	if len(ctx.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+	}
+	mod := ctx.Modules[0]
+	srcs := mod.GetStringList("srcs")
+	expectedSrcs := []string{
+		"src/utils.cc",
+		"src/aarch32/assembler-aarch32.cc",
+		"src/aarch64/assembler-aarch64.cc",
+	}
+	for _, exp := range expectedSrcs {
+		found := false
+		for _, s := range srcs {
+			if s == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected source %q in srcs: %v", exp, srcs)
+		}
+	}
+
+	cppflags := mod.GetStringList("cppflags")
+	expectedFlags := []string{"-DVIXL_INCLUDE_TARGET_T32", "-DVIXL_INCLUDE_SIMULATOR_AARCH64"}
+	for _, ef := range expectedFlags {
+		found := false
+		for _, f := range cppflags {
+			if f == ef {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected flag %q in cppflags: %v", ef, cppflags)
+		}
+	}
+}
+
+func TestArtCodegenTargetOverride(t *testing.T) {
+	bp := `
+art_cc_defaults {
+    name: "vixl_arm64",
+    codegen: {
+        arm64: {
+            srcs: ["src/aarch64/assembler-aarch64.cc"],
+            cppflags: ["-DVIXL_INCLUDE_SIMULATOR_AARCH64"],
+        },
+        x86_64: {
+            srcs: ["src/x86_64/assembler-x86_64.cc"],
+        },
+    },
+}
+
+art_cc_library {
+    name: "libvixl_target",
+    defaults: ["vixl_arm64"],
+    srcs: ["src/utils.cc"],
+}
+`
+	// Target is x86_64, but ART_TARGET_CODEGEN_ARCHS specifies arm64 and x86_64
+	ctx := NewContext(nil, "x86_64")
+	ctx.TargetCodegenArches = []string{"arm64", "x86_64"}
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	if len(ctx.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+	}
+	mod := ctx.Modules[0]
+	srcs := mod.GetStringList("srcs")
+	expectedSrcs := []string{
+		"src/utils.cc",
+		"src/aarch64/assembler-aarch64.cc",
+		"src/x86_64/assembler-x86_64.cc",
+	}
+	for _, exp := range expectedSrcs {
+		found := false
+		for _, s := range srcs {
+			if s == exp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected source %q in srcs: %v", exp, srcs)
+		}
+	}
+}
+
+func TestArtImplicitFlags(t *testing.T) {
+	bp := `
+art_cc_library {
+    name: "libart_test",
+    srcs: ["test.cc"],
+}
+`
+	ctx := NewContext(nil, "arm64")
+	ctx.IsHost = false
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	if len(ctx.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+	}
+	mod := ctx.Modules[0]
+	cflags := mod.GetStringList("cflags")
+	hasArtTarget := false
+	hasArtTargetAndroid := false
+	for _, f := range cflags {
+		if f == "-DART_TARGET" {
+			hasArtTarget = true
+		}
+		if f == "-DART_TARGET_ANDROID" {
+			hasArtTargetAndroid = true
+		}
+	}
+	if !hasArtTarget || !hasArtTargetAndroid {
+		t.Errorf("Expected -DART_TARGET and -DART_TARGET_ANDROID in cflags: %v", cflags)
+	}
+}
+

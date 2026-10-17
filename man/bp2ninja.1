@@ -90,6 +90,12 @@ Additional C++ compiler flags passed to all compilation targets. Can also be set
 .BI \-ldflags " FLAGS"
 Additional linker flags passed to all link actions. Can also be set via \fB$LDFLAGS\fR.
 .TP
+.BI \-art\-target\-codegen\-archs " ARCHES"
+Space-delimited target codegen architectures for ART and VIXL modules (e.g. \fB"arm arm64 x86 x86_64"\fR). Can also be supplied via \fB$ART_TARGET_CODEGEN_ARCHS\fR.
+.TP
+.BI \-art\-host\-codegen\-archs " ARCHES"
+Space-delimited host codegen architectures (defaults to all supported architectures: \fBarm arm64 riscv64 x86 x86_64\fR). Can also be supplied via \fB$ART_HOST_CODEGEN_ARCHS\fR.
+.TP
 .BI \-config " KEY=VALUE"
 Set a Soong configuration variable for conditional evaluation (e.g. \fB\-config target_board_platform=sm8450\fR). Can be repeated.
 

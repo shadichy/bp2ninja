@@ -86,6 +86,10 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Explicit path to target sysroot. If `-ndk` is provided, the sysroot is derived automatically from the NDK toolchain directory.
 - **`-prebuilt-libs <dir>`**:
   Directory containing prebuilt `.so` or `.a` libraries. Passed as `-L<dir>` to linker invocations.
+- **`-art-target-codegen-archs "<arch-list>"`**:
+  Space-delimited list of target codegen architectures for ART compiler and VIXL modules (e.g. `"arm arm64 x86 x86_64"` for BlissOS / translation runtimes). Can also be supplied via `$ART_TARGET_CODEGEN_ARCHS`.
+- **`-art-host-codegen-archs "<arch-list>"`**:
+  Space-delimited list of host codegen architectures (defaults to all supported arches: `arm arm64 riscv64 x86 x86_64`). Can also be supplied via `$ART_HOST_CODEGEN_ARCHS`.
 
 ---
 
@@ -158,6 +162,8 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
 | `ANDROID_BUILD_TOP` | Default root directory for `-top`. |
 | `ANDROID_NDK` | Directory searched by `-ndk auto` discovery. |
 | `ANDROID_SDK`, `ANDROID_HOME` | SDK root used to resolve `:current_android_jar` to `<SDK>/platforms/android-<API>/android.jar`. |
+| `ART_TARGET_CODEGEN_ARCHS` | Space-delimited target codegen architectures for ART/VIXL (e.g. `"arm arm64 x86 x86_64"`). |
+| `ART_HOST_CODEGEN_ARCHS` | Space-delimited host codegen architectures (defaults to all supported architectures). |
 | `BP2NINJA_PLUGINS_DIR` | Directory automatically scanned for `*.so` plugins. |
 | `PROTOC` | Path to Protobuf compiler executable (for ABI pinning). |
 | `CLASSPATH` | Host Java classpath search path. |

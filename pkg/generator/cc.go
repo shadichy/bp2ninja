@@ -81,7 +81,49 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 		Implicits: implicits,
 		Variables: vars,
 	})
-	return []string{target}, err
+	if err != nil {
+		return nil, err
+	}
+	targets := []string{target}
+
+	symlinks := mod.GetStringList("symlinks")
+	if mod.GetBool("symlink_preferred_arch") {
+		// e.g. "app_process64" -> stem "app_process"
+		if strings.HasSuffix(mod.Name, "64") {
+			stem := strings.TrimSuffix(mod.Name, "64")
+			already := false
+			for _, s := range symlinks {
+				if s == stem {
+					already = true
+					break
+				}
+			}
+			if !already {
+				symlinks = append(symlinks, stem)
+			}
+		}
+	}
+
+	for _, s := range symlinks {
+		if s == "" {
+			continue
+		}
+		symPath := filepath.Join(g.binDir(), s)
+		err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{symPath},
+			Rule:    "symlink",
+			Inputs:  []string{target},
+			Variables: map[string]string{
+				"symlink_target": filepath.Base(target),
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, symPath)
+	}
+
+	return targets, nil
 }
 
 func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, error) {
@@ -165,9 +207,11 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 	staticMod := mod.WithVariant("static")
 
 	buildShared := (mod.Type == "cc_library" || mod.Type == "cc_library_shared" ||
-		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_shared") && sharedMod.IsEnabled()
+		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_shared" ||
+		mod.Type == "art_cc_library") && sharedMod.IsEnabled()
 	buildStatic := (mod.Type == "cc_library" || mod.Type == "cc_library_static" ||
-		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_static") && staticMod.IsEnabled()
+		mod.Type == "cc_library_host" || mod.Type == "cc_library_host_static" ||
+		mod.Type == "art_cc_library" || mod.Type == "art_cc_library_static") && staticMod.IsEnabled()
 
 	if !buildShared && !buildStatic {
 		return nil, nil

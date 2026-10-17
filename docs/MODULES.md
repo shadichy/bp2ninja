@@ -34,19 +34,26 @@ This document provides a comprehensive reference of the Soong and Blueprint modu
 
 ## C/C++ Modules
 
-### Binaries (`cc_binary`, `cc_binary_host`)
+### Binaries (`cc_binary`, `cc_binary_host`, `art_cc_binary`)
 Compiles C/C++ sources, assembles static archives, and links an executable binary placed into `out/bin/<name>`.
-- `cc_binary`: Target device binary.
+- `cc_binary`, `art_cc_binary`: Target device binary.
 - `cc_binary_host`: Host workstation binary (compiled with host toolchain).
+- **Mass-Symlinks (`symlinks: [...]`)**: Generates discrete `symlink` build edges in `out/bin/` for every alias (e.g. `toybox` with 150+ command symlinks, `toolbox`, `init`).
+- **Preferred Architecture (`symlink_preferred_arch: true`)**: Automatically creates an unadorned symlink (e.g. `out/bin/app_process -> app_process64`).
 
-### Libraries (`cc_library`, `cc_library_shared`, `cc_library_static`, `cc_library_headers`)
-- **`cc_library`**: Dual-variant target. By default, generates **both dynamic (`out/lib64/lib<name>.so`) and static (`out/lib64/lib<name>.a`)** targets in the same Ninja manifest.
+### Libraries (`cc_library`, `cc_library_shared`, `cc_library_static`, `cc_library_headers`, `art_cc_library`, `art_cc_library_static`)
+- **`cc_library`, `art_cc_library`**: Dual-variant target. By default, generates **both dynamic (`out/lib64/lib<name>.so`) and static (`out/lib64/lib<name>.a`)** targets in the same Ninja manifest.
 - **`cc_library_shared`**: Generates only the shared dynamic library (`.so`).
-- **`cc_library_static`**: Generates only the static library archive (`.a`).
+- **`cc_library_static`, `art_cc_library_static`**: Generates only the static library archive (`.a`).
 - **`cc_library_headers`**: Header-only library. Emits include directories and an optional phony target. Does not compile object files.
 
-### Tests & Benchmarks (`cc_test`, `cc_test_host`, `cc_benchmark`, `cc_fuzz`)
+### Tests & Benchmarks (`cc_test`, `cc_test_host`, `art_cc_test`, `art_cc_test_library`, `cc_benchmark`, `cc_fuzz`)
 Compiles test binaries. These targets are omitted from the default Ninja build target to prevent tests from bloating production builds, but can be built explicitly via `ninja out/bin/<name>`.
+
+### ART Soong Schema & Codegen Properties
+Modules in the ART compiler ecosystem and VIXL use domain-specific types and the `codegen:` property block:
+- **`art_cc_*`**: Native equivalents of standard `cc_*` modules with implicit `-DART_TARGET` flags and full integration with ART defaults.
+- **`codegen: { <arch>: { srcs, cflags, cppflags, static_libs, shared_libs } }`**: Declares architecture-specific code generation or simulation sources. On host builds (`--host`), expands all supported architectures (`arm`, `arm64`, `riscv64`, `x86`, `x86_64`) by default. On target builds, expands the active device architecture or the list set in `$ART_TARGET_CODEGEN_ARCHS` (e.g. for multi-arch simulation / translation on x86_64).
 
 ### C/C++ Properties Matrix
 
@@ -136,6 +143,16 @@ Copies configuration files, XMLs, and assets into target or host partitions (`ou
 
 ### `sh_binary`, `sh_binary_host`
 Copies shell scripts and ensures executable permissions (`chmod +x`) in `out/bin/<name>`.
+
+### `install_symlink`
+Dedicated Android 17 / main branch module type defining declarative symlinks:
+- `installed_location`: Relative output location (e.g. `bin/foo`, `lib64/libbar.so`).
+- `symlink_target`: Destination path (e.g. `/system/bin/foo` or relative binary name).
+- Emits a direct `rule symlink` Ninja edge (`mkdir -p $(dirname $out) && rm -f $out && ln -sf $symlink_target $out`).
+
+### `android_filesystem`, `filesystem`
+Defines partition images or filesystem trees with declarative symlinks:
+- Parses `symlinks: [{ target: "...", name: "..." }]` and emits Ninja symlink edges for each declared link.
 
 ### `python_binary`, `python_binary_host`, `python_test_host`
 Generates self-contained executable Python wrapper scripts in `out/bin/<name>` setting `PYTHONPATH`.

@@ -185,6 +185,12 @@ func main() {
 	flag.StringVar(&extraCppflags, "cxxflags", "", "Alias for -cppflags")
 	flag.StringVar(&extraLdflags, "ldflags", "", "Extra linker flags (or via $LDFLAGS)")
 
+	// ART codegen architecture flags
+	var artTargetCodegen string
+	var artHostCodegen string
+	flag.StringVar(&artTargetCodegen, "art-target-codegen-archs", "", "Space-delimited target codegen architectures for ART/VIXL (or via $ART_TARGET_CODEGEN_ARCHS)")
+	flag.StringVar(&artHostCodegen, "art-host-codegen-archs", "", "Space-delimited host codegen architectures for ART/VIXL (or via $ART_HOST_CODEGEN_ARCHS)")
+
 	// Android NDK flags
 	flag.StringVar(&ndkPath, "ndk", "", "Path to Android NDK or 'auto' to auto-discover (Studio, $ANDROID_NDK, distro packages)")
 	flag.StringVar(&ndkVersion, "ndk-version", "", "Preferred Android NDK version (e.g. 'latest', 'beta', 'r29', '30')")
@@ -424,6 +430,12 @@ func main() {
 
 	evalCtx := eval.NewContext(configMap, arch)
 	evalCtx.IsHost = isHost
+	if artTargetCodegen != "" {
+		evalCtx.TargetCodegenArches = strings.Fields(artTargetCodegen)
+	}
+	if artHostCodegen != "" {
+		evalCtx.HostCodegenArches = strings.Fields(artHostCodegen)
+	}
 
 	evaluatedFiles := make(map[string]bool)
 	var explicitSubdirs []string
@@ -631,6 +643,8 @@ func main() {
 	opts.ClangCxxPath = clangCxxPath
 	opts.ArPath = arPath
 	opts.AllowMissingDeps = allowMissing
+	opts.HostCodegenArches = evalCtx.HostCodegenArches
+	opts.TargetCodegenArches = evalCtx.TargetCodegenArches
 	if activeNDK != nil {
 		opts.NDKDir = activeNDK.Path
 	}

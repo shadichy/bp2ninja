@@ -477,8 +477,32 @@ func (g *Generator) generatePrebuilt(mod *eval.EvaluatedModule) ([]string, error
 		Rule:    rule,
 		Inputs:  []string{src},
 	})
+	if err != nil {
+		return nil, err
+	}
+	targets := []string{target}
 
-	return []string{target}, err
+	symlinks := mod.GetStringList("symlinks")
+	for _, s := range symlinks {
+		if s == "" {
+			continue
+		}
+		symPath := filepath.Join(destDir, s)
+		err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{symPath},
+			Rule:    "symlink",
+			Inputs:  []string{target},
+			Variables: map[string]string{
+				"symlink_target": filename,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, symPath)
+	}
+
+	return targets, nil
 }
 
 func (g *Generator) generateFallback(mod *eval.EvaluatedModule) ([]string, error) {

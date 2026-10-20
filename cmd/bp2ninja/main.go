@@ -153,6 +153,9 @@ func main() {
 		extraCflags         string
 		extraCppflags       string
 		extraLdflags        string
+		extraAsflags        string
+		ldPath              string
+		includeRoot         string
 		pluginPaths         stringListFlag
 		configVars          stringListFlag
 		convertPluginTarget string
@@ -169,21 +172,24 @@ func main() {
 	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
 	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
 	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
+	flag.StringVar(&includeRoot, "include-root", "", "Root directory for resolving root-relative include paths in cflags and include_dirs")
 	flag.StringVar(&sysrootDir, "sysroot", "", "Path to Android sysroot / NDK (optional)")
 	flag.StringVar(&prebuiltLibs, "prebuilt-libs", "", "Directory containing prebuilt .so / .a libraries")
 	flag.StringVar(&clangPath, "cc", "clang", "C compiler executable path")
 	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
+	flag.StringVar(&ldPath, "ld", "ld.lld", "Linker executable path")
 	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, riscv64)")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
 	flag.BoolVar(&isHost, "host", false, "Build for host instead of target (uses host compiler and host libraries)")
 	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
 	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
 
-	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS)
+	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS, ASFLAGS)
 	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS)")
 	flag.StringVar(&extraCppflags, "cppflags", "", "Extra C++ flags (or via $CPPFLAGS / $CXXFLAGS)")
 	flag.StringVar(&extraCppflags, "cxxflags", "", "Alias for -cppflags")
 	flag.StringVar(&extraLdflags, "ldflags", "", "Extra linker flags (or via $LDFLAGS)")
+	flag.StringVar(&extraAsflags, "asflags", "", "Extra assembler flags (or via $ASFLAGS)")
 
 	// ART codegen architecture flags
 	var artTargetCodegen string
@@ -625,6 +631,9 @@ func main() {
 		if tc.AR != "" {
 			arPath = tc.AR
 		}
+		if tc.LD != "" && ldPath == "ld.lld" {
+			ldPath = tc.LD
+		}
 		if sysrootDir == "" {
 			sysrootDir = tc.Sysroot
 		}
@@ -642,6 +651,8 @@ func main() {
 	opts.ClangPath = clangPath
 	opts.ClangCxxPath = clangCxxPath
 	opts.ArPath = arPath
+	opts.LdPath = ldPath
+	opts.IncludeRoot = includeRoot
 	opts.AllowMissingDeps = allowMissing
 	opts.HostCodegenArches = evalCtx.HostCodegenArches
 	opts.TargetCodegenArches = evalCtx.TargetCodegenArches
@@ -686,6 +697,15 @@ func main() {
 		combinedLdflags = append(combinedLdflags, strings.Fields(extraLdflags)...)
 	}
 	opts.ExtraLdflags = combinedLdflags
+
+	var combinedAsflags []string
+	if envAsflags := os.Getenv("ASFLAGS"); envAsflags != "" {
+		combinedAsflags = append(combinedAsflags, strings.Fields(envAsflags)...)
+	}
+	if extraAsflags != "" {
+		combinedAsflags = append(combinedAsflags, strings.Fields(extraAsflags)...)
+	}
+	opts.ExtraAsflags = combinedAsflags
 
 	// 5. Open output file and generate Ninja rules
 	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil && filepath.Dir(outFile) != "." {

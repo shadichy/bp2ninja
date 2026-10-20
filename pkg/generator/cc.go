@@ -61,8 +61,21 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 		return nil, err
 	}
 
-	target := filepath.Join(g.binDir(), mod.Name)
+	binName := mod.GetString("stem")
+	if binName == "" {
+		binName = mod.Name
+	}
+	target := filepath.Join(g.binDir(), binName)
 	ldflags, libs := g.resolveLinkerArgs(mod)
+
+	// Bare-metal / self-relocating binary support (e.g. linker64)
+	if mod.GetBool("nocrt") || mod.GetBool("no_default_compiler_flags") {
+		ldflags = append(ldflags, "-nostartfiles")
+	}
+	if mod.GetBool("static_executable") || mod.GetBool("force_static_executable") {
+		ldflags = append(ldflags, "-static")
+	}
+	ldflags = dedup(ldflags)
 
 	vars := map[string]string{}
 	if len(ldflags) > 0 {
@@ -86,11 +99,27 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 	}
 	targets := []string{target}
 
+	if binName != mod.Name {
+		aliasPath := filepath.Join(g.binDir(), mod.Name)
+		err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{aliasPath},
+			Rule:    "symlink",
+			Inputs:  []string{target},
+			Variables: map[string]string{
+				"symlink_target": filepath.Base(target),
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, aliasPath)
+	}
+
 	symlinks := mod.GetStringList("symlinks")
 	if mod.GetBool("symlink_preferred_arch") {
 		// e.g. "app_process64" -> stem "app_process"
-		if strings.HasSuffix(mod.Name, "64") {
-			stem := strings.TrimSuffix(mod.Name, "64")
+		if strings.HasSuffix(binName, "64") {
+			stem := strings.TrimSuffix(binName, "64")
 			already := false
 			for _, s := range symlinks {
 				if s == stem {
@@ -316,7 +345,47 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 
 	if buildStatic {
 		staticTarget := filepath.Join(g.libDir(), libBaseName+".a")
-		if len(staticObjs) > 0 {
+		wholeLibs := staticMod.GetStringList("whole_static_libs")
+
+		if len(wholeLibs) > 0 {
+			// Composite or mixed archive: merge whole_static_libs (and staticObjs if present) via MRI script
+			var archiveInputs []string
+			for _, wl := range wholeLibs {
+				archivePath := g.resolveStaticLibPath(wl)
+				if g.opts.AllowMissingDeps {
+					g.emitPhonyIfNeeded(archivePath)
+				}
+				archiveInputs = append(archiveInputs, archivePath)
+			}
+			mriScript := g.buildMRICommand(staticTarget, staticObjs, archiveInputs)
+			implicits := g.collectLinkImplicits(staticMod)
+			allInputs := append(staticObjs, archiveInputs...)
+
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs:   []string{staticTarget},
+				Rule:      "ar_mri",
+				Inputs:    allInputs,
+				Implicits: dedup(implicits),
+				Variables: map[string]string{
+					"cmd": mriScript,
+				},
+			}); err != nil {
+				return nil, err
+			}
+			targets = append(targets, staticTarget)
+
+			if libBaseName != mod.Name {
+				aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
+				if err := g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{aliasTarget},
+					Rule:    "copy",
+					Inputs:  []string{staticTarget},
+				}); err != nil {
+					return nil, err
+				}
+				targets = append(targets, aliasTarget)
+			}
+		} else if len(staticObjs) > 0 {
 			implicits := g.collectLinkImplicits(staticMod)
 
 			if err := g.nw.Build(ninja.BuildEdge{
@@ -425,6 +494,26 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		} else {
 			cppflags = append(cppflags, "-std="+cppStd)
 		}
+	}
+
+	asflags := append(mod.GetStringList("asflags"), g.opts.ExtraAsflags...)
+	hasAssemblyDef := false
+	for _, f := range asflags {
+		if strings.HasPrefix(f, "-D__ASSEMBLY__") {
+			hasAssemblyDef = true
+			break
+		}
+	}
+	if !hasAssemblyDef {
+		asflags = append(asflags, "-D__ASSEMBLY__")
+	}
+	asflags = append(asflags, "-fPIC")
+	asflags = dedup(asflags)
+
+	if g.opts.IncludeRoot != "" {
+		cflags = g.fixupIncludePaths(cflags)
+		cppflags = g.fixupIncludePaths(cppflags)
+		asflags = g.fixupIncludePaths(asflags)
 	}
 
 	cflags = dedup(cflags)
@@ -558,7 +647,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			rule = "cc_compile"
 			flags = append(flags, conlyflags...)
 		case ".s", ".S":
-			rule = "cc_compile"
+			rule = "as_compile"
+			flags = append([]string{}, asflags...)
 		case ".asm":
 			rule = "asm_nasm"
 		default:
@@ -572,10 +662,11 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		objs = append(objs, objFile)
 
 		vars := map[string]string{}
-		if len(flags) > 0 {
-			vars["cflags"] = shellJoin(flags)
-		}
-		if rule == "asm_nasm" {
+		if rule == "as_compile" {
+			if len(flags) > 0 {
+				vars["asflags"] = shellJoin(flags)
+			}
+		} else if rule == "asm_nasm" {
 			af := append([]string{}, mod.GetStringList("asflags")...)
 			af = append(af, "-I"+filepath.Dir(src))
 			for _, inc := range includes {
@@ -587,6 +678,10 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			}
 			if len(af) > 0 {
 				vars["asflags"] = shellJoin(af)
+			}
+		} else {
+			if len(flags) > 0 {
+				vars["cflags"] = shellJoin(flags)
 			}
 		}
 		if len(includes) > 0 {
@@ -633,8 +728,17 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	}
 	for _, dir := range mod.GetStringList("include_dirs") {
 		incPath := dir
-		if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(dir) {
-			incPath = filepath.Join(g.opts.TopDir, dir)
+		if !filepath.IsAbs(dir) {
+			if g.opts.IncludeRoot != "" {
+				candidate := filepath.Join(g.opts.IncludeRoot, dir)
+				if _, err := os.Stat(candidate); err == nil || g.opts.AllowMissingDeps {
+					incPath = candidate
+				} else if g.opts.TopDir != "" && g.opts.TopDir != "." {
+					incPath = filepath.Join(g.opts.TopDir, dir)
+				}
+			} else if g.opts.TopDir != "" && g.opts.TopDir != "." {
+				incPath = filepath.Join(g.opts.TopDir, dir)
+			}
 		}
 		incs = append(incs, "-I"+incPath)
 	}
@@ -851,9 +955,49 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		if e == "-I" || e == "-isystem" || e == "-idirafter" || e == "-iquote" {
 			continue
 		}
+		if g.opts.IncludeRoot != "" && strings.HasPrefix(e, "-I") && !strings.HasPrefix(e, "-I/") {
+			relPath := strings.TrimSpace(strings.TrimPrefix(e, "-I"))
+			candidate := filepath.Join(g.opts.IncludeRoot, relPath)
+			if _, err := os.Stat(relPath); err != nil {
+				if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+					e = "-I" + candidate
+				}
+			}
+		}
 		filtered = append(filtered, e)
 	}
 	return dedup(filtered)
+}
+
+func (g *Generator) fixupIncludePaths(flags []string) []string {
+	if g.opts.IncludeRoot == "" {
+		return flags
+	}
+	root := g.opts.IncludeRoot
+	var out []string
+	for _, f := range flags {
+		if strings.HasPrefix(f, "-I") && !strings.HasPrefix(f, "-I/") {
+			relPath := strings.TrimSpace(strings.TrimPrefix(f, "-I"))
+			candidate := filepath.Join(root, relPath)
+			if _, err := os.Stat(relPath); err != nil {
+				if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+					f = "-I" + candidate
+				}
+			}
+		} else if strings.HasPrefix(f, "-include ") || strings.HasPrefix(f, "-include\t") {
+			hdr := strings.TrimSpace(strings.TrimPrefix(f, "-include"))
+			if !filepath.IsAbs(hdr) {
+				candidate := filepath.Join(root, hdr)
+				if _, err := os.Stat(hdr); err != nil {
+					if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+						f = "-include " + candidate
+					}
+				}
+			}
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 func stripIncludeFlags(flags []string) []string {
@@ -984,6 +1128,50 @@ func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
+	// Version scripts from ldflags
+	for _, f := range mod.GetStringList("ldflags") {
+		if strings.HasPrefix(f, "-Wl,--version-script=") {
+			target := strings.TrimPrefix(f, "-Wl,--version-script=")
+			if strings.HasPrefix(target, ":") {
+				implicits = append(implicits, g.resolveReference(target)...)
+			} else {
+				implicits = append(implicits, target)
+			}
+		}
+	}
+
+	// Version scripts
+	if vs := mod.GetString("version_script"); vs != "" {
+		if strings.HasPrefix(vs, ":") || strings.HasPrefix(vs, "//") {
+			implicits = append(implicits, g.resolveReference(vs)...)
+		} else {
+			vsPath := vs
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(vs) {
+				vsPath = filepath.Clean(filepath.Join(mod.Dir, vs))
+			}
+			implicits = append(implicits, vsPath)
+		}
+	} else {
+		ndkCandidates := []string{mod.Name, strings.TrimPrefix(mod.Name, "lib")}
+		for _, cand := range ndkCandidates {
+			if outs, ok := g.moduleOutputs[cand]; ok {
+				for _, o := range outs {
+					if strings.HasSuffix(o, ".version_script") {
+						implicits = append(implicits, o)
+					}
+				}
+			}
+		}
+	}
+	// Linker scripts
+	for _, ls := range mod.GetStringList("linker_scripts") {
+		lsPath := ls
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(ls) {
+			lsPath = filepath.Clean(filepath.Join(mod.Dir, ls))
+		}
+		implicits = append(implicits, lsPath)
+	}
+
 	return dedup(implicits)
 }
 
@@ -1047,5 +1235,205 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		libs = append(libs, "-Wl,--whole-archive", "-l"+clean, "-Wl,--no-whole-archive")
 	}
 
+	// Version script support
+	for i, f := range ldflags {
+		if strings.HasPrefix(f, "-Wl,--version-script=:") {
+			ref := strings.TrimPrefix(f, "-Wl,--version-script=")
+			resolved := g.resolveReference(ref)
+			if len(resolved) > 0 {
+				ldflags[i] = "-Wl,--version-script=" + resolved[0]
+			}
+		}
+	}
+	hasVersionScript := false
+	for _, f := range ldflags {
+		if strings.HasPrefix(f, "-Wl,--version-script=") {
+			hasVersionScript = true
+			break
+		}
+	}
+	if vs := mod.GetString("version_script"); vs != "" {
+		vsPath := vs
+		if strings.HasPrefix(vs, ":") || strings.HasPrefix(vs, "//") {
+			resolved := g.resolveReference(vs)
+			if len(resolved) > 0 {
+				vsPath = resolved[0]
+			}
+		} else if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(vs) {
+			vsPath = filepath.Clean(filepath.Join(mod.Dir, vs))
+		}
+		ldflags = append(ldflags, "-Wl,--version-script="+vsPath)
+		hasVersionScript = true
+	}
+	if !hasVersionScript {
+		ndkCandidates := []string{mod.Name, strings.TrimPrefix(mod.Name, "lib")}
+		for _, cand := range ndkCandidates {
+			if outs, ok := g.moduleOutputs[cand]; ok {
+				for _, o := range outs {
+					if strings.HasSuffix(o, ".version_script") {
+						ldflags = append(ldflags, "-Wl,--version-script="+o)
+						hasVersionScript = true
+						break
+					}
+				}
+			}
+			if hasVersionScript {
+				break
+			}
+		}
+	}
+
+	// Linker script support (e.g. -T<script>)
+	for _, ls := range mod.GetStringList("linker_scripts") {
+		lsPath := ls
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(ls) {
+			lsPath = filepath.Clean(filepath.Join(mod.Dir, ls))
+		}
+		ldflags = append(ldflags, "-T"+lsPath)
+	}
+
 	return dedup(ldflags), libs
+}
+
+func (g *Generator) buildMRICommand(output string, objects []string, archives []string) string {
+	var parts []string
+	parts = append(parts, "CREATE "+output)
+	for _, o := range objects {
+		parts = append(parts, "ADDMOD "+o)
+	}
+	for _, a := range archives {
+		parts = append(parts, "ADDLIB "+a)
+	}
+	parts = append(parts, "SAVE", "END")
+	script := strings.Join(parts, "\\n")
+	arTool := g.opts.ArPath
+	if arTool == "" {
+		arTool = "ar"
+	}
+	return fmt.Sprintf("rm -f %s && printf '%s\\n' | %s -M", output, script, arTool)
+}
+
+func (g *Generator) resolveStaticLibPath(name string) string {
+	if outs, ok := g.moduleOutputs[name]; ok {
+		for _, o := range outs {
+			if strings.HasSuffix(o, ".a") {
+				return o
+			}
+		}
+	}
+	libName := name
+	if !strings.HasPrefix(libName, "lib") {
+		libName = "lib" + libName
+	}
+	return filepath.Join(g.libDir(), libName+".a")
+}
+
+func (g *Generator) generateCcObject(mod *eval.EvaluatedModule) ([]string, error) {
+	stem := mod.GetString("stem")
+	if stem == "" {
+		stem = mod.Name
+	}
+	if !strings.HasSuffix(stem, ".o") {
+		stem += ".o"
+	}
+	target := filepath.Join(g.objDir(mod.Name), stem)
+
+	objs, err := g.compileCcSourcesWithSuffix(mod, ".src")
+	if err != nil {
+		return nil, err
+	}
+
+	var additionalObjs []string
+	for _, dep := range mod.GetStringList("objs") {
+		if outs, ok := g.moduleOutputs[dep]; ok && len(outs) > 0 {
+			additionalObjs = append(additionalObjs, outs...)
+		} else {
+			depStem := dep
+			if !strings.HasSuffix(depStem, ".o") {
+				depStem += ".o"
+			}
+			objCandidate := filepath.Join(g.objDir(dep), depStem)
+			if g.opts.AllowMissingDeps {
+				g.emitPhonyIfNeeded(objCandidate)
+			}
+			additionalObjs = append(additionalObjs, objCandidate)
+		}
+	}
+	allObjs := append(objs, additionalObjs...)
+
+	if len(allObjs) == 0 {
+		if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(target)
+			return []string{target}, nil
+		}
+		return nil, nil
+	}
+
+	if len(allObjs) == 1 {
+		if allObjs[0] != target {
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{target},
+				Rule:    "copy",
+				Inputs:  []string{allObjs[0]},
+			}); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		vars := map[string]string{}
+		ldflags := mod.GetStringList("ldflags")
+		if len(ldflags) > 0 {
+			vars["ldflags"] = shellJoin(ldflags)
+		}
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{target},
+			Rule:      "partial_link",
+			Inputs:    allObjs,
+			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	targets := []string{target}
+	libTarget := filepath.Join(g.libDir(), stem)
+	if libTarget != target {
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{libTarget},
+			Rule:    "copy",
+			Inputs:  []string{target},
+		})
+		targets = append(targets, libTarget)
+	}
+
+	return targets, nil
+}
+
+func (g *Generator) generateNdkLibrary(mod *eval.EvaluatedModule) ([]string, error) {
+	symbolFile := mod.GetString("symbol_file")
+	if symbolFile == "" {
+		return nil, nil
+	}
+	if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(symbolFile) {
+		symbolFile = filepath.Clean(filepath.Join(mod.Dir, symbolFile))
+	}
+
+	vsOut := filepath.Join(g.opts.OutDir, "gen", mod.Name, mod.Name+".version_script")
+
+	cmd := fmt.Sprintf(
+		"mkdir -p %s && sed -E '/^[[:space:]]*#/d; s/#.*$$//; s/[[:space:]]+$$//; s/[[:space:]]+;[[:space:]]*$$/;/' %s > %s",
+		filepath.Dir(vsOut), symbolFile, vsOut,
+	)
+
+	err := g.nw.Build(ninja.BuildEdge{
+		Outputs:   []string{vsOut},
+		Rule:      "gen_version_script",
+		Inputs:    []string{symbolFile},
+		Variables: map[string]string{"cmd": cmd},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{vsOut}, nil
 }

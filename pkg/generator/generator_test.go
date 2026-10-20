@@ -1682,3 +1682,313 @@ art_cc_library {
 		t.Errorf("Expected compile rule for %s, got:\n%s", expectedA64Obj, content)
 	}
 }
+
+func TestAssemblerPipelineAndAsflags(t *testing.T) {
+	bp := `
+cc_library_static {
+    name: "libbionic_asm",
+    srcs: ["bionic.c", "arch_arm64.S"],
+    cflags: ["-include freebsd-compat.h"],
+    asflags: ["-D__ASSEMBLY__", "-DTEST_ASM_FLAG"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify as_compile rule exists
+	if !strings.Contains(content, "rule as_compile") {
+		t.Fatalf("Expected rule as_compile definition, got:\n%s", content)
+	}
+
+	// 2. Verify bionic.c uses cc_compile and has -include freebsd-compat.h
+	cObj := filepath.Join("out", "obj", "libbionic_asm", "bionic.o")
+	if !strings.Contains(content, "build "+cObj+": cc_compile bionic.c") {
+		t.Errorf("Expected cc_compile for %s, got:\n%s", cObj, content)
+	}
+	if !strings.Contains(content, "-include freebsd-compat.h") {
+		t.Errorf("Expected -include freebsd-compat.h in cflags")
+	}
+
+	// 3. Verify arch_arm64.S uses as_compile and has asflags with -D__ASSEMBLY__ and -DTEST_ASM_FLAG
+	sObj := filepath.Join("out", "obj", "libbionic_asm", "arch_arm64.o")
+	if !strings.Contains(content, "build "+sObj+": as_compile arch_arm64.S") {
+		t.Errorf("Expected as_compile for %s, got:\n%s", sObj, content)
+	}
+	if !strings.Contains(content, "asflags = ") || !strings.Contains(content, "-DTEST_ASM_FLAG") {
+		t.Errorf("Expected -DTEST_ASM_FLAG in asflags, got:\n%s", content)
+	}
+
+	// 4. Verify that .S build edge does NOT contain C-specific -include freebsd-compat.h
+	edgeIdx := strings.Index(content, "build "+sObj+": as_compile")
+	if edgeIdx != -1 {
+		edgeSlice := content[edgeIdx:]
+		nextEdge := strings.Index(edgeSlice[1:], "\nbuild ")
+		if nextEdge != -1 {
+			edgeSlice = edgeSlice[:nextEdge+1]
+		}
+		if strings.Contains(edgeSlice, "freebsd-compat.h") {
+			t.Errorf("Assembly build edge should not contain C headers, got:\n%s", edgeSlice)
+		}
+	}
+}
+
+func TestCcObjectAndPartialLink(t *testing.T) {
+	bp := `
+cc_object {
+    name: "crtbrand",
+    srcs: ["crtbrand.S"],
+}
+
+cc_object {
+    name: "crtbegin_so",
+    srcs: ["crtbegin.c"],
+    objs: ["crtbrand"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify partial_link rule exists
+	if !strings.Contains(content, "rule partial_link") {
+		t.Fatalf("Expected rule partial_link definition, got:\n%s", content)
+	}
+
+	// 2. Verify crtbrand.S is compiled with as_compile
+	brandObjSrc := filepath.Join("out", "obj", "crtbrand.src", "crtbrand.o")
+	if !strings.Contains(content, "build "+brandObjSrc+": as_compile crtbrand.S") {
+		t.Errorf("Expected as_compile for %s, got:\n%s", brandObjSrc, content)
+	}
+
+	// 3. Verify crtbegin_so.o uses partial_link combining crtbegin.o and crtbrand.o
+	crtbeginFinal := filepath.Join("out", "obj", "crtbegin_so", "crtbegin_so.o")
+	if !strings.Contains(content, "build "+crtbeginFinal+": partial_link") {
+		t.Errorf("Expected partial_link for %s, got:\n%s", crtbeginFinal, content)
+	}
+}
+
+func TestCompositeStaticArchiveMRI(t *testing.T) {
+	bp := `
+cc_library_static {
+    name: "libc_bionic",
+    srcs: ["bionic.c"],
+}
+
+cc_library_static {
+    name: "libc_dns",
+    srcs: ["dns.c"],
+}
+
+cc_library_static {
+    name: "libc",
+    whole_static_libs: ["libc_bionic", "libc_dns"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify ar_mri rule exists
+	if !strings.Contains(content, "rule ar_mri") {
+		t.Fatalf("Expected rule ar_mri definition, got:\n%s", content)
+	}
+
+	// 2. Verify libc.a is generated using ar_mri
+	libcArchive := filepath.Join("out", "lib64", "libc.a")
+	if !strings.Contains(content, "build "+libcArchive+": ar_mri") {
+		t.Errorf("Expected ar_mri for %s, got:\n%s", libcArchive, content)
+	}
+
+	// 3. Verify MRI script contains ADDLIB for both sub-archives
+	bionicArchive := filepath.Join("out", "lib64", "libc_bionic.a")
+	dnsArchive := filepath.Join("out", "lib64", "libc_dns.a")
+	if !strings.Contains(content, "ADDLIB "+bionicArchive) {
+		t.Errorf("Expected ADDLIB %s in MRI script, got:\n%s", bionicArchive, content)
+	}
+	if !strings.Contains(content, "ADDLIB "+dnsArchive) {
+		t.Errorf("Expected ADDLIB %s in MRI script, got:\n%s", dnsArchive, content)
+	}
+}
+
+func TestBareMetalLinker64(t *testing.T) {
+	bp := `
+cc_binary {
+    name: "linker",
+    stem: "linker64",
+    srcs: ["linker_main.cpp"],
+    nocrt: true,
+    ldflags: ["-shared", "-Wl,-Bsymbolic", "-Wl,--exclude-libs,ALL", "-Wl,-soname,ld-android.so"],
+    static_libs: ["libc_nomalloc"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Output binary should respect stem "linker64"
+	expectedTarget := filepath.Join("out", "bin", "linker64")
+	if !strings.Contains(content, "build "+expectedTarget+": link_binary") {
+		t.Errorf("Expected link_binary for %s, got:\n%s", expectedTarget, content)
+	}
+
+	// 2. Verify bare-metal ldflags: -nostartfiles and -Wl,-Bsymbolic
+	if !strings.Contains(content, "-nostartfiles") {
+		t.Errorf("Expected -nostartfiles in ldflags due to nocrt: true, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-Wl,-Bsymbolic") {
+		t.Errorf("Expected -Wl,-Bsymbolic in ldflags, got:\n%s", content)
+	}
+}
+
+func TestNdkLibraryVersionScript(t *testing.T) {
+	bp := `
+ndk_library {
+    name: "libc",
+    symbol_file: "libc.map.txt",
+    first_version: "9",
+}
+
+cc_library {
+    name: "libc",
+    srcs: ["libc_dummy.c"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify gen_version_script rule exists
+	if !strings.Contains(content, "rule gen_version_script") {
+		t.Fatalf("Expected rule gen_version_script definition, got:\n%s", content)
+	}
+
+	// 2. Verify version_script output target
+	vsOut := filepath.Join("out", "gen", "libc", "libc.version_script")
+	if !strings.Contains(content, "build "+vsOut+": gen_version_script libc.map.txt") {
+		t.Errorf("Expected gen_version_script for %s, got:\n%s", vsOut, content)
+	}
+
+	// 3. Verify companion cc_library links with -Wl,--version-script
+	if !strings.Contains(content, "-Wl,--version-script="+vsOut) {
+		t.Errorf("Expected companion cc_library to include version script flag, got:\n%s", content)
+	}
+}
+
+func TestIncludeRootPathResolution(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockHdrDir := filepath.Join(tmpDir, "bionic", "libc", "include")
+	if err := os.MkdirAll(mockHdrDir, 0755); err != nil {
+		t.Fatalf("Failed to create mock dir: %v", err)
+	}
+
+	bp := `
+cc_library_static {
+    name: "libwith_root_includes",
+    srcs: ["test.c"],
+    include_dirs: ["bionic/libc/include"],
+    cflags: ["-Ibionic/libc/include"],
+}
+`
+	ctx := eval.NewContext(nil, "arm64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.IncludeRoot = tmpDir
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Verify that the include path was resolved to the mock root directory
+	expectedInc := "-I" + mockHdrDir
+	if !strings.Contains(content, expectedInc) {
+		t.Errorf("Expected %s in include paths, got:\n%s", expectedInc, content)
+	}
+}

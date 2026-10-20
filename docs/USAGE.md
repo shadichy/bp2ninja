@@ -110,15 +110,21 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   C compiler executable. If `-ndk` is specified, defaults to the NDK target Clang binary.
 - **`-cxx <path>`** *(default: `clang++`)*:
   C++ compiler executable. If `-ndk` is specified, defaults to the NDK target Clang++ binary.
+- **`-ld <path>`** *(default: `ld.lld`)*:
+  Linker executable path used for partial linking (`ld.lld -r` via `partial_link` rule).
 - **`-cflags <flags>`**:
   Extra C compiler flags (can also be passed via the `$CFLAGS` environment variable).
 - **`-cppflags <flags>`, `-cxxflags <flags>`**:
   Extra C++ compiler flags (can also be passed via `$CXXFLAGS` or `$CPPFLAGS`).
+- **`-asflags <flags>`**:
+  Extra assembler flags (can also be passed via the `$ASFLAGS` environment variable).
 - **`-ldflags <flags>`**:
   Extra linker flags (can also be passed via `$LDFLAGS`).
+- **`-include-root <dir>`**:
+  Root directory for resolving root-relative include paths (e.g. `-Ibionic/libc/include` or `include_dirs: ["bionic/libc/include"]`) when building subprojects out of tree.
 
 > [!NOTE]
-> The generated Ninja manifest includes dynamic environment variables `$${CFLAGS}`, `$${CXXFLAGS}`, and `$${LDFLAGS}` in its rule definitions. You can change optimization flags or linker settings at Ninja invocation time without re-running `bp2ninja`.
+> The generated Ninja manifest includes dynamic environment variables `$${CFLAGS}`, `$${CXXFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` in its rule definitions. You can change optimization flags or linker settings at Ninja invocation time without re-running `bp2ninja`.
 
 ---
 

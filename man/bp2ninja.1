@@ -41,6 +41,9 @@ Output directory for build artifacts and intermediate files. Defaults to \fBout\
 .BI \-top " DIR"
 Top-level directory of the Android source tree (if building inside or against an AOSP tree). Defaults to the value of \fB$ANDROID_BUILD_TOP\fR or the current directory.
 .TP
+.BI \-include\-root " DIR"
+Root directory used to resolve root-relative include paths (such as \fIbionic/libc\fR or \fIsystem/core/base/include\fR) when compiling isolated subprojects out-of-tree. Defaults to the value of \fB\-top\fR.
+.TP
 .B \-host
 Build for the host operating system and architecture instead of the target device. In host mode, \fBhost: {}\fR property blocks, \fBtarget.host\fR, and \fBtarget.linux\fR are expanded, device-only targets are skipped, and host compilers (\fB$CC\fR, \fB$CXX\fR) are invoked.
 .TP
@@ -78,6 +81,9 @@ C compiler executable path. Defaults to \fBclang\fR, or the NDK toolchain clang 
 .TP
 .BI \-cxx " PATH"
 C++ compiler executable path. Defaults to \fBclang++\fR, or the NDK toolchain clang++ binary if NDK is active.
+.TP
+.BI \-ld " PATH"
+Linker executable path. Defaults to \fBld.lld\fR, or the NDK toolchain ld.lld binary if NDK is active. Used for partial linking (\fBld.lld \-r\fR) of \fBcc_object\fR targets.
 
 .SS Compiler Flags & Configuration
 .TP
@@ -86,6 +92,9 @@ Additional C compiler flags passed to all compilation targets. Can also be set v
 .TP
 .BR \-cppflags " FLAGS, " \-cxxflags " FLAGS"
 Additional C++ compiler flags passed to all compilation targets. Can also be set via \fB$CXXFLAGS\fR or \fB$CPPFLAGS\fR.
+.TP
+.BI \-asflags " FLAGS"
+Additional assembler flags passed to assembly targets (\fB.s\fR, \fB.S\fR). Can also be set via \fB$ASFLAGS\fR. Defaults include \fB\-D__ASSEMBLY__\fR.
 .TP
 .BI \-ldflags " FLAGS"
 Additional linker flags passed to all link actions. Can also be set via \fB$LDFLAGS\fR.
@@ -141,11 +150,17 @@ Default C compiler executable if \fB\-cc\fR is not specified.
 .B CXX
 Default C++ compiler executable if \fB\-cxx\fR is not specified.
 .TP
+.B LD
+Default linker executable if \fB\-ld\fR is not specified.
+.TP
 .B CFLAGS, CCFLAGS
 Flags passed during generation and made available at Ninja run time via \fB$${CFLAGS}\fR.
 .TP
 .B CXXFLAGS, CPPFLAGS
 C++ flags passed during generation and made available at Ninja run time via \fB$${CXXFLAGS}\fR.
+.TP
+.B ASFLAGS
+Assembler flags passed during generation and made available at Ninja run time via \fB$${ASFLAGS}\fR.
 .TP
 .B LDFLAGS
 Linker flags passed during generation and made available at Ninja run time via \fB$${LDFLAGS}\fR.
@@ -172,10 +187,20 @@ Host Java classpath entries appended to Java and Kotlin build edges.
 .B bp2ninja
 natively translates the following Blueprint module types:
 .TP
-.B C/C++ Modules
-\fBcc_binary\fR, \fBcc_binary_host\fR, \fBcc_library\fR, \fBcc_library_shared\fR, \fBcc_library_static\fR, \fBcc_library_headers\fR, \fBcc_library_host\fR, \fBcc_library_host_shared\fR, \fBcc_library_host_static\fR, \fBcc_test\fR, \fBcc_test_host\fR, \fBcc_benchmark\fR, \fBcc_fuzz\fR.
+.B C/C++ Modules & Primitives
+\fBcc_binary\fR, \fBcc_binary_host\fR, \fBcc_library\fR, \fBcc_library_shared\fR, \fBcc_library_static\fR, \fBcc_library_headers\fR, \fBcc_library_host\fR, \fBcc_library_host_shared\fR, \fBcc_library_host_static\fR, \fBcc_test\fR, \fBcc_test_host\fR, \fBcc_benchmark\fR, \fBcc_fuzz\fR, \fBcc_object\fR, \fBndk_library\fR.
 .IP
-For \fBcc_library\fR, both \fB.so\fR (shared) and \fB.a\fR (static) targets are emitted in the same manifest.
+\(bu For \fBcc_library\fR, both \fB.so\fR (shared) and \fB.a\fR (static) targets are emitted in the same manifest.
+.IP
+\(bu For \fBcc_object\fR, intermediate objects are combined via partial linking (\fBld.lld \-r\fR) into CRT startup objects.
+.IP
+\(bu For composite static archives (\fBwhole_static_libs\fR), archives are merged via MRI scripts (\fBar \-M\fR).
+.IP
+\(bu For assembly sources (\fB.s\fR, \fB.S\fR), a dedicated assembler pipeline (\fBas_compile\fR) isolates assembly from C-only headers.
+.IP
+\(bu For bare-metal / self-relocating executables (e.g. \fBlinker64\fR), \fBnocrt\fR, \fBstatic_executable\fR, \fBstem\fR, \fBversion_script\fR, and \fBlinker_scripts\fR are fully supported.
+.IP
+\(bu For \fBndk_library\fR, NDK symbol definition maps (\fB.map.txt\fR) are transformed into linker version scripts.
 .TP
 .B Java & Kotlin Modules
 \fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR.
@@ -228,6 +253,14 @@ ninja \-f core.ninja
 .RS
 .nf
 CFLAGS="\-O3 \-flto" ninja \-f build.ninja
+.fi
+.RE
+.PP
+.B 6. Compiling Bionic C library components out-of-tree:
+.RS
+.nf
+bp2ninja \-bp bionic/libc \-include\-root bionic \-arch arm64 \-api 34 \-o libc.ninja
+ninja \-f libc.ninja out/lib64/libc.a out/lib64/crtbegin_so.o
 .fi
 .RE
 

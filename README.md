@@ -26,6 +26,7 @@ It enables building individual Android platform components, native libraries, HA
   - [5. Kotlin and Java Compilation](#5-kotlin-and-java-compilation)
   - [6. AConfig Code Generation (cc_aconfig_library)](#6-aconfig-code-generation-cc_aconfig_library)
   - [7. Recursive Multi-Module Discovery](#7-recursive-multi-module-discovery)
+  - [8. Compiling Bionic Runtime Primitives](#8-compiling-bionic-runtime-primitives)
 - [Documentation & Man Pages](#documentation--man-pages)
 - [License](#license)
 
@@ -49,11 +50,18 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
 
 - **100% Native Pure-Go Engine**: Self-contained Blueprint AST parser, evaluator, and Ninja emitter without Python dependencies or runtime CGo requirements.
 - **Dual-Variant Compilation**: Automatically emits build rules for **both dynamic (`.so`) and static (`.a`)** libraries for `cc_library` modules. Objects are compiled once when flags and sources match, or cleanly partitioned (`.shared` / `.static`) when differentiated variants are declared.
+- **Bionic & Low-Level Runtime Primitives**:
+  - **Dedicated Assembler Pipeline**: Isolates `.s` and `.S` sources via `as_compile` rules with distinct `$asflags` (`-D__ASSEMBLY__`, `-fPIC`), eliminating C-only include errors.
+  - **Android CRT Startup Objects (`cc_object`)**: Direct support for CRT objects (`crtbegin_so.o`, `crtend_so.o`, etc.) with partial linking (`ld.lld -r`) and explicit `-ld` toolchain targeting.
+  - **Composite Static Archives (MRI Scripts)**: Synthesizes multi-component static archives (such as `libc.a` and `libc_nomalloc.a`) using `ar -M` scripts when `whole_static_libs` is present.
+  - **Bare-Metal & Self-Relocating Linkers**: Full support for self-relocating executables (e.g. `linker64` / `ld-android.so`) configuring `stem`, `nocrt` (`-nostartfiles`), `static_executable` (`-static`), `version_script`, and `linker_scripts`.
+  - **NDK Version Scripts (`ndk_library`)**: Direct generation of symbol version scripts from `.map.txt` ABI manifests via `gen_version_script`.
+  - **Out-of-Tree Monorepo Root Resolution**: `-include-root` resolves root-relative include paths (e.g. `bionic/libc`, `system/core/...`) cleanly in standalone subprojects.
 - **Android NDK Auto-Discovery**: Automatically locates installed Android NDKs across Google Android Studio (`~/Android/Sdk/ndk/*`), Linux distribution packages (`/opt/android-ndk`, `/opt/android-ndk-beta`), and environment paths (`$ANDROID_NDK`).
 - **Target & Host Modes**:
   - Target: Cross-compiles for `arm64`, `arm`, `x86_64`, `x86`, or `riscv64` against specified Android API levels (`-api 34`).
   - Host: `-host` mode switches to host compilers (`$CC`, `$CXX`), expanding `host: {}` blocks, `target.host`, `target.linux`, and `target.linux_glibc`.
-- **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
+- **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
 - **Protobuf (`protoc`) Generator**: Automatically transforms `.proto` files into C++ headers and source files, preserves subpath directory layouts (e.g. `protos/aconfig_storage_metadata.pb.h`), adds output include paths, and links order-only header dependencies (`|| <pbHdr>`). Supports ABI pinning via `$PROTOC`.
 - **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
 - **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
@@ -126,6 +134,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-o` | string | `build.ninja` | Output Ninja build manifest path. |
 | `-out` | string | `out` | Directory for build outputs and generated intermediates. |
 | `-top` | string | `.` | Android source tree root (defaults to `$ANDROID_BUILD_TOP` or current dir). |
+| `-include-root` | string | `""` | Root directory used to resolve root-relative includes out-of-tree (defaults to `-top`). |
 | `-host` | bool | `false` | Build for host environment instead of target (expands `host: {}` properties). |
 | `-subdirs`, `-r` | bool | `true` | Recursively discover nested `Android.bp` files across subdirectories. |
 | `-allow-missing-deps` | bool | `true` | Generate phony targets for missing inputs/dependencies to bypass check failures. |
@@ -143,6 +152,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-prebuilt-libs` | string | `""` | Directory containing prebuilt libraries (`.so` / `.a`) for linker search path. |
 | `-cc` | string | `clang` | C compiler executable path (or via `$CC`). |
 | `-cxx` | string | `clang++` | C++ compiler executable path (or via `$CXX`). |
+| `-ld` | string | `ld.lld` | Linker executable path (or via `$LD`), used for `cc_object` partial linking (`ld.lld -r`). |
 
 ### Flag & Macro Overrides
 
@@ -150,6 +160,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | :--- | :--- | :--- | :--- |
 | `-cflags` | string | `""` | Extra C compiler flags (can also be passed via `$CFLAGS`). |
 | `-cppflags`, `-cxxflags` | string | `""` | Extra C++ compiler flags (can also be passed via `$CXXFLAGS` / `$CPPFLAGS`). |
+| `-asflags` | string | `""` | Extra assembler flags for `.s`/`.S` files (can also be passed via `$ASFLAGS`). |
 | `-ldflags` | string | `""` | Extra linker flags (can also be passed via `$LDFLAGS`). |
 | `-config` | repeated | `[]` | Soong config variable in `key=value` format (e.g. `-config board=sm8450`). |
 
@@ -173,8 +184,10 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | :--- | :--- |
 | `CC` | Default C compiler path when `-cc` is not passed. |
 | `CXX` | Default C++ compiler path when `-cxx` is not passed. |
+| `LD` | Default linker path when `-ld` is not passed (used for `ld.lld -r` partial linking). |
 | `CFLAGS` / `CCFLAGS` | Compiler flags injected at generation time and runtime into `$cflags`. |
 | `CXXFLAGS` / `CPPFLAGS` | C++ flags injected at generation time and runtime into `$cflags`. |
+| `ASFLAGS` | Assembler flags injected at generation time and runtime into `$asflags`. |
 | `LDFLAGS` | Linker flags injected at generation time and runtime into `$ldflags`. |
 | `ANDROID_BUILD_TOP` | Fallback path for `-top`. |
 | `ANDROID_NDK` | Path to Android NDK installation (checked by auto-discovery). |
@@ -289,6 +302,22 @@ Pass a directory containing many subprojects to generate a single consolidated N
 ```bash
 bp2ninja system/core -o system_core.ninja
 ninja -f system_core.ninja
+```
+
+### 8. Compiling Bionic Runtime Primitives
+
+When compiling Bionic components out-of-tree, use `-include-root` to resolve root-relative includes and build CRT startup objects, composite static archives, and bare-metal linkers:
+
+```bash
+bp2ninja -bp bionic/libc \
+         -include-root bionic \
+         -arch arm64 \
+         -api 34 \
+         -ndk auto \
+         -o libc.ninja
+
+# Build composite libc.a (via MRI script) and CRT object (via ld.lld -r):
+ninja -f libc.ninja out/lib64/libc.a out/lib64/crtbegin_so.o
 ```
 
 ---

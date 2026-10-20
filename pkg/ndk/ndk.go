@@ -29,6 +29,7 @@ type ToolchainConfig struct {
 	CC           string
 	CXX          string
 	AR           string
+	LD           string
 	Sysroot      string
 	TargetTriple string
 	APILevel     int
@@ -329,10 +330,16 @@ func (n *NDKInfo) GetToolchain(arch string, apiLevel int) (*ToolchainConfig, err
 		ar = "llvm-ar"
 	}
 
+	ld := filepath.Join(binDir, "ld.lld")
+	if _, err := os.Stat(ld); err != nil {
+		ld = "ld.lld"
+	}
+
 	return &ToolchainConfig{
 		CC:           cc,
 		CXX:          cxx,
 		AR:           ar,
+		LD:           ld,
 		Sysroot:      n.SysrootDir,
 		TargetTriple: triple,
 		APILevel:     apiLevel,

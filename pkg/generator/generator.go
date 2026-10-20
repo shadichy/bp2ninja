@@ -33,9 +33,12 @@ type Options struct {
 	NDKDir           string
 	AllowMissingDeps bool
 	BpDir            string
-	ExtraCflags      []string
+	ExtraCflags         []string
 	ExtraCppflags       []string
 	ExtraLdflags        []string
+	ExtraAsflags        []string
+	LdPath              string
+	IncludeRoot         string
 	IsHost              bool
 	HostCodegenArches   []string
 	TargetCodegenArches []string
@@ -58,6 +61,7 @@ func DefaultOptions(topDir, outDir string) Options {
 		ClangPath:        "clang",
 		ClangCxxPath:     "clang++",
 		ArPath:           "ar",
+		LdPath:           "ld.lld",
 		Aapt2Path:        "aapt2",
 		AndroidJarPath:   "",
 		KotlincPath:      "kotlinc",
@@ -113,6 +117,9 @@ func (g *Generator) GetTopDirModules() map[string]string {
 	}
 	g.topDirModules = make(map[string]string)
 	top := g.opts.TopDir
+	if (top == "" || top == "." || top == "/usr") && g.opts.IncludeRoot != "" {
+		top = g.opts.IncludeRoot
+	}
 	if g.opts.IsHost || top == "" || top == "." || top == "/usr" {
 		return g.topDirModules
 	}
@@ -413,7 +420,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		case "package", "license", "license_kind", "package_metadata",
 			"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 			"soong_config_bool_variable", "soong_config_module_type_import",
-			"filegroup", "phony", "ndk_headers", "ndk_library", "vintf_fragment",
+			"filegroup", "phony", "ndk_headers", "vintf_fragment",
 			"cc_defaults", "java_defaults", "art_cc_defaults", "art_global_defaults":
 			// Declarative meta-modules in generic BP: no direct build action
 			continue
@@ -421,6 +428,10 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateInstallSymlink(mod)
 		case "android_filesystem", "filesystem":
 			targets, err = g.generateFilesystem(mod)
+		case "cc_object":
+			targets, err = g.generateCcObject(mod)
+		case "ndk_library":
+			targets, err = g.generateNdkLibrary(mod)
 		case "cc_binary", "cc_binary_host", "art_cc_binary":
 			targets, err = g.generateCcBinary(mod)
 		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers",
@@ -508,6 +519,10 @@ func (g *Generator) emitHeader() error {
 	ccPath := g.opts.ClangPath
 	cxxPath := g.opts.ClangCxxPath
 	arPath := g.opts.ArPath
+	ldPath := g.opts.LdPath
+	if ldPath == "" {
+		ldPath = "ld.lld"
+	}
 	sysrootVal := g.opts.SysrootDir
 
 	if g.opts.NDKDir != "" {
@@ -525,6 +540,9 @@ func (g *Generator) emitHeader() error {
 		if strings.HasPrefix(arPath, g.opts.NDKDir) {
 			arPath = "$ndk" + strings.TrimPrefix(arPath, g.opts.NDKDir)
 		}
+		if strings.HasPrefix(ldPath, g.opts.NDKDir) {
+			ldPath = "$ndk" + strings.TrimPrefix(ldPath, g.opts.NDKDir)
+		}
 	}
 	if sysrootVal != "" {
 		g.nw.Variable("sysroot", sysrootVal)
@@ -532,6 +550,7 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("cc", ccPath)
 	g.nw.Variable("cxx", cxxPath)
 	g.nw.Variable("ar", arPath)
+	g.nw.Variable("ld", ldPath)
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
 	g.nw.Variable("kotlinc", g.opts.KotlincPath)
 	g.nw.Variable("javac", g.opts.JavacPath)
@@ -548,6 +567,44 @@ func (g *Generator) emitStandardRules() error {
 		DepFile:     "$out.d",
 		Deps:        "gcc",
 		Description: "CC $out",
+	}); err != nil {
+		return err
+	}
+
+	// AS Compile (Assembly pipeline using asflags without C headers)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "as_compile",
+		Command:     "$cc -MD -MF $out.d $includes $asflags $${ASFLAGS} -c $in -o $out",
+		DepFile:     "$out.d",
+		Deps:        "gcc",
+		Description: "AS $out",
+	}); err != nil {
+		return err
+	}
+
+	// Partial Link (Combine object files using ld.lld -r)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "partial_link",
+		Command:     "$ld -r -o $out $in $ldflags $${LDFLAGS}",
+		Description: "PARTIAL_LINK $out",
+	}); err != nil {
+		return err
+	}
+
+	// Archive Static Library via MRI script (Composite archives)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "ar_mri",
+		Command:     "bash -c \"$cmd\"",
+		Description: "AR_MRI $out",
+	}); err != nil {
+		return err
+	}
+
+	// Generate Linker Version Script
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "gen_version_script",
+		Command:     "bash -c \"$cmd\"",
+		Description: "VERSION_SCRIPT $out",
 	}); err != nil {
 		return err
 	}

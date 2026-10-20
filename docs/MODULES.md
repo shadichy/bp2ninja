@@ -45,10 +45,32 @@ Compiles C/C++ sources, assembles static archives, and links an executable binar
 - **`cc_library`, `art_cc_library`**: Dual-variant target. By default, generates **both dynamic (`out/lib64/lib<name>.so`) and static (`out/lib64/lib<name>.a`)** targets in the same Ninja manifest.
 - **`cc_library_shared`**: Generates only the shared dynamic library (`.so`).
 - **`cc_library_static`, `art_cc_library_static`**: Generates only the static library archive (`.a`).
+  - **Composite Static Archives (MRI / `ar -M`)**: When a static library defines `whole_static_libs` (e.g. Bionic's `libc.a`, `libc_nomalloc.a`, `libc_common.a`), bp2ninja uses an MRI script (`ar_mri` rule) to combine sub-archives into a single composite `.a` static library.
 - **`cc_library_headers`**: Header-only library. Emits include directories and an optional phony target. Does not compile object files.
+
+### Startup Objects & Partial Linking (`cc_object`)
+Compiles bare-metal startup objects (such as Android CRT objects `crtbegin_so`, `crtend_so`, `crtbegin_dynamic`, `crtbegin_static`, `crtend_android`, `crtbrand`):
+- Compiles C and assembly files with `cc_compile` and `as_compile`.
+- Combines multiple object files and referenced object dependencies (`objs: [...]`) via partial linking (`ld.lld -r` using the `partial_link` rule).
+- Outputs `.o` files to `out/obj/<name>/<stem>.o` and copies to `out/lib64/<stem>.o` for linker resolution.
+
+### NDK ABI Libraries (`ndk_library`)
+Processes NDK public ABI symbol definitions (`symbol_file: "<name>.map.txt"`):
+- Generates GNU/LLVM linker version scripts using the `gen_version_script` rule in `out/gen/<name>/<name>.version_script`.
+- Automatically injects `-Wl,--version-script=<path>` and dependency edges into companion `cc_library` targets.
+
+### Dedicated Assembler Pipeline (`as_compile`)
+- Assembly sources (`.s`, `.S`) are compiled through a dedicated `as_compile` rule using `asflags` and `-D__ASSEMBLY__`.
+- C-specific header options (e.g. `-include freebsd-compat.h`) and type-checking flags in `cflags` are strictly excluded from assembly compilation, avoiding Clang assembler errors in Bionic.
 
 ### Tests & Benchmarks (`cc_test`, `cc_test_host`, `art_cc_test`, `art_cc_test_library`, `cc_benchmark`, `cc_fuzz`)
 Compiles test binaries. These targets are omitted from the default Ninja build target to prevent tests from bloating production builds, but can be built explicitly via `ninja out/bin/<name>`.
+
+### Bare-Metal & Self-Relocating Linkers (`linker64`)
+- **`nocrt: true` / `no_default_compiler_flags: true`**: Injects `-nostartfiles` to permit custom entry points (`begin.o`).
+- **`static_executable: true` / `force_static_executable: true`**: Injects `-static`.
+- **`stem: "..."`**: Allows custom binary stems such as `linker64` with unadorned symlink aliases.
+- **`version_script` & `linker_scripts`**: Directly passed as `-Wl,--version-script=...` and `-T...` linker options.
 
 ### ART Soong Schema & Codegen Properties
 Modules in the ART compiler ecosystem and VIXL use domain-specific types and the `codegen:` property block:

@@ -38,6 +38,7 @@ type Options struct {
 	ExtraLdflags        []string
 	ExtraAsflags        []string
 	LdPath              string
+	StripPath           string
 	IncludeRoot         string
 	IsHost              bool
 	HostCodegenArches   []string
@@ -441,6 +442,10 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateFilesystem(mod)
 		case "cc_object":
 			targets, err = g.generateCcObject(mod)
+		case "bpf":
+			targets, err = g.generateBpf(mod)
+		case "sysprop_library":
+			targets, err = g.generateSyspropLibrary(mod)
 		case "ndk_library":
 			targets, err = g.generateNdkLibrary(mod)
 		case "cc_binary", "cc_binary_host", "art_cc_binary":
@@ -562,6 +567,14 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("cxx", cxxPath)
 	g.nw.Variable("ar", arPath)
 	g.nw.Variable("ld", ldPath)
+	stripPath := g.opts.StripPath
+	if stripPath == "" {
+		stripPath = "llvm-strip"
+	}
+	if g.opts.NDKDir != "" && strings.HasPrefix(stripPath, g.opts.NDKDir) {
+		stripPath = "$ndk" + strings.TrimPrefix(stripPath, g.opts.NDKDir)
+	}
+	g.nw.Variable("strip", stripPath)
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
 	g.nw.Variable("kotlinc", g.opts.KotlincPath)
 	g.nw.Variable("javac", g.opts.JavacPath)
@@ -764,6 +777,39 @@ func (g *Generator) emitStandardRules() error {
 		Command:       "mkdir -p $$(dirname $out) && rm -f $out && ln -sf $symlink_target $out",
 		Description:   "SYMLINK $out",
 		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// BPF program compile (upstream `bpf` module: clang --target=bpf)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "bpf_compile",
+		Command:       "$cc --target=bpf -MD -MF $out.d $cflags -c $in -o $out",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "BPF $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// BPF strip: remove BTF relocation sections like upstream llvm-strip rule
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "bpf_strip",
+		Command:       "$strip --strip-unneeded --remove-section=.rel.BTF --remove-section=.rel.BTF.ext --remove-section=.BTF.ext $in -o $out",
+		Description:   "BPF_STRIP $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Sysprop C++ codegen (platform sysprop tool; pin via $SYSPROP_CLI)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "sysprop_cpp",
+		Command:         "mkdir -p $$(dirname $out) && $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$(dirname $out)",
+		Description:     "SYSPROP $in",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}

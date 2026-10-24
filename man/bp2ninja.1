@@ -200,7 +200,7 @@ Host Java classpath entries appended to Java and Kotlin build edges.
 natively translates the following Blueprint module types:
 .TP
 .B C/C++ Modules & Primitives
-\fBcc_binary\fR, \fBcc_binary_host\fR, \fBcc_library\fR, \fBcc_library_shared\fR, \fBcc_library_static\fR, \fBcc_library_headers\fR, \fBcc_library_host\fR, \fBcc_library_host_shared\fR, \fBcc_library_host_static\fR, \fBcc_test\fR, \fBcc_test_host\fR, \fBcc_benchmark\fR, \fBcc_fuzz\fR, \fBcc_object\fR, \fBndk_library\fR.
+\fBcc_binary\fR, \fBcc_binary_host\fR, \fBcc_library\fR, \fBcc_library_shared\fR, \fBcc_library_static\fR, \fBcc_library_headers\fR, \fBcc_library_host\fR, \fBcc_library_host_shared\fR, \fBcc_library_host_static\fR, \fBcc_test\fR, \fBcc_test_host\fR, \fBcc_benchmark\fR, \fBcc_fuzz\fR, \fBcc_object\fR, \fBndk_library\fR, \fBbpf\fR (BPF programs via clang \-\-target=bpf, staged under out/etc/bpf), \fBsysprop_library\fR (system\-property codegen via sysprop\-cli, pinnable with $SYSPROP_CLI; .sysprop sources are also accepted directly in cc module srcs).
 .IP
 \(bu For \fBcc_library\fR, both \fB.so\fR (shared) and \fB.a\fR (static) targets are emitted in the same manifest.
 .IP

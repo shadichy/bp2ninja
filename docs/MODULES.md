@@ -54,6 +54,31 @@ Compiles bare-metal startup objects (such as Android CRT objects `crtbegin_so`, 
 - Combines multiple object files and referenced object dependencies (`objs: [...]`) via partial linking (`ld.lld -r` using the `partial_link` rule).
 - Outputs `.o` files to `out/obj/<name>/<stem>.o` and copies to `out/lib64/<stem>.o` for linker resolution.
 
+### BPF Programs (`bpf`)
+
+Upstream `bpf` module type (build/soong/bpf): each source is compiled to a
+BPF ELF object with `clang --target=bpf` using the canonical Bionic UAPI
+include set, then stripped of BTF relocation sections (`llvm-strip`) by
+default (`btf: false` disables both `-g` generation and stripping) and staged
+under `out/etc/bpf/<sub_dir>/`. Supported properties: `srcs`, `cflags`,
+`include_dirs`, `local_include_dirs`, `sub_dir`, `btf`, `vendor`. Objects are
+registered as module outputs for APEX payload consumption (Connectivity,
+tethering, netd BPF programs). Source basenames containing `_` are rejected
+upstream; bp2ninja warns and continues.
+
+### System Properties (`sysprop_library`, `.sysprop` sources)
+
+- **`sysprop_library`**: each `.sysprop` description file is converted to C++
+  (`sysprop-cli --cpp`, pinnable via `$SYSPROP_CLI`) and compiled into
+  `lib<name>.so` / `lib<name>.a` with implicit runtime deps `-lbase -llog`.
+  Dependents referencing the module by name in `shared_libs`/`static_libs`/
+  `header_libs` automatically receive `-Iout/gen/<name>` for the generated
+  headers and the matching `-l` link flag.
+- **`.sysprop` sources in `cc_*` modules**: upstream Soong lets cc modules
+  take `.sysprop` files in `srcs` directly; bp2ninja now generates the C++
+  via the same `sysprop_cpp` rule and compiles it (order-only on the
+  generated header).
+
 ### NDK ABI Libraries (`ndk_library`)
 Processes NDK public ABI symbol definitions (`symbol_file: "<name>.map.txt"`):
 - Generates GNU/LLVM linker version scripts using the `gen_version_script` rule in `out/gen/<name>/<name>.version_script`.

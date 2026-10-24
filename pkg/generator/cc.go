@@ -607,6 +607,21 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 				return nil, fmt.Errorf("proto edge: %w", err)
 			}
 			effectiveSrcs = append(effectiveSrcs, pbSrc)
+		} else if ext == ".sysprop" {
+			// .sysprop sources in cc modules generate C++ via the sysprop
+			// tool (upstream cc sysprop source provider).
+			base := strings.TrimSuffix(filepath.Base(src), ".sysprop")
+			spCpp := filepath.Join(protoGenDir, base+".cpp")
+			spHdr := filepath.Join(protoGenDir, base+".h")
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{spCpp, spHdr},
+				Rule:    "sysprop_cpp",
+				Inputs:  []string{src},
+			}); err != nil {
+				return nil, fmt.Errorf("sysprop edge: %w", err)
+			}
+			modProtoHeaders = append(modProtoHeaders, spHdr)
+			effectiveSrcs = append(effectiveSrcs, spCpp)
 		} else {
 			effectiveSrcs = append(effectiveSrcs, src)
 		}
@@ -664,6 +679,13 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		flags = dedup(flags)
 
 		baseName := strings.TrimSuffix(src, ext)
+		// Generated sources (out/gen/<mod>/...) keep their layout relative
+		// to the module's gen dir instead of nesting out/obj/<mod>/out/gen/...
+		if rel, ok := strings.CutPrefix(baseName, filepath.Join(g.opts.OutDir, "gen")+"/"); ok {
+			if i := strings.Index(rel, "/"); i >= 0 {
+				baseName = rel[i+1:]
+			}
+		}
 		objFile := filepath.Join(objDir, baseName+".o")
 		objs = append(objs, objFile)
 
@@ -749,6 +771,15 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		incs = append(incs, "-I"+incPath)
 	}
 
+	// Dependents of sysprop_library compile against its generated headers.
+	syspropRefs := append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...)
+	syspropRefs = append(syspropRefs, mod.GetAllStringList("header_libs")...)
+	for _, lib := range syspropRefs {
+		if libMod, ok := g.moduleMap[lib]; ok && libMod.Type == "sysprop_library" {
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name))
+		}
+	}
+
 	// Pull include dirs from referenced header_libs in moduleMap (including transitive export_header_lib_headers)
 	visitedHl := make(map[string]bool)
 	var queueHl []string
@@ -763,6 +794,10 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		if hlMod, ok := g.moduleMap[hl]; ok {
 			if hlMod.Type == "cc_aconfig_library" {
 				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hlMod.Name, "include"))
+			}
+			if hlMod.Type == "sysprop_library" {
+				// Dependents compile against the sysprop-generated headers.
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hlMod.Name))
 			}
 			for _, dir := range hlMod.GetStringList("export_include_dirs") {
 				incPath := dir

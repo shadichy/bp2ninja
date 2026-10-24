@@ -2238,7 +2238,7 @@ func TestTargetTripleInjectionForPlainCompilers(t *testing.T) {
 		o.ClangCxxPath = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang++"
 		o.SysrootDir = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 	})
-	if strings.Contains(out, "--target=") {
+	if strings.Contains(out, "--target=aarch64-linux-android") {
 		t.Errorf("Ninja wrapper compiler must not receive redundant -target flags")
 	}
 	if strings.Contains(out, "--sysroot=") {
@@ -2260,5 +2260,171 @@ func TestTargetTripleInjectionForPlainCompilers(t *testing.T) {
 	}
 	if !strings.Contains(out[linkIdx:], "--target=aarch64-linux-android") {
 		t.Errorf("Expected -target in link flags")
+	}
+}
+
+func TestBpfModule(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "bpf",
+		Name: "test_progs",
+		Properties: map[string]interface{}{
+			"name":  "test_progs",
+			"srcs":  []interface{}{"progs.c"},
+			"cflags": []interface{}{"-DBPF_TEST"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	out := buf.String()
+
+	// Compile rule targets the BPF backend; edge carries canonical flags
+	if !strings.Contains(out, "command = $cc --target=bpf -MD -MF $out.d $cflags -c $in -o $out") {
+		t.Errorf("Expected bpf_compile rule with --target=bpf")
+	}
+	compileIdx := strings.Index(out, "build out/obj/test_progs.bpf/progs.o: bpf_compile")
+	if compileIdx < 0 {
+		t.Fatalf("Expected bpf_compile edge")
+	}
+	sectionEnd := compileIdx + 600
+	if sectionEnd > len(out) {
+		sectionEnd = len(out)
+	}
+	section := out[compileIdx:sectionEnd]
+	for _, flag := range []string{"-nostdlibinc", "-DBPF_TEST", "-g", "bionic/libc/kernel/uapi"} {
+		if !strings.Contains(section, flag) {
+			t.Errorf("Expected %q in bpf cflags", flag)
+		}
+	}
+
+	// Default btf=true strips and stages under etc/bpf
+	stripIdx := strings.Index(out, "build out/etc/bpf/progs.o: bpf_strip")
+	if stripIdx < 0 {
+		t.Fatalf("Expected bpf_strip edge to out/etc/bpf/")
+	}
+	if !strings.Contains(out, "--remove-section=.rel.BTF") {
+		t.Errorf("Expected BTF section removal in strip rule")
+	}
+
+	// btf: false keeps unstripped objects under obj dir only
+	buf.Reset()
+	gen2 := New(opts, ninja.NewWriter(&buf), nil)
+	mod2 := &eval.EvaluatedModule{
+		Type: "bpf",
+		Name: "nobtf",
+		Properties: map[string]interface{}{
+			"name": "nobtf",
+			"srcs": []interface{}{"x.c"},
+			"btf":  false,
+			"sub_dir": "overlay",
+		},
+	}
+	if err := gen2.Generate([]*eval.EvaluatedModule{mod2}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	out2 := buf.String()
+	if strings.Contains(out2, ": bpf_strip ") {
+		t.Errorf("btf: false must not strip")
+	}
+	if strings.Contains(out2, " -g") && strings.Contains(out2, "nobtf") {
+		// -g only emitted with btf enabled; check the cflags line specifically
+		if cIdx := strings.Index(out2, "cflags ="); cIdx >= 0 && strings.Contains(out2[cIdx:cIdx+400], " -g") {
+			t.Errorf("btf: false must not add -g")
+		}
+	}
+	if !strings.Contains(out2, "out/etc/bpf/overlay") {
+		t.Errorf("Expected sub_dir staging under out/etc/bpf/overlay")
+	}
+}
+
+func TestSyspropLibrary(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	sysprop := &eval.EvaluatedModule{
+		Type: "sysprop_library",
+		Name: "SurfaceFlingerProperties",
+		Properties: map[string]interface{}{
+			"name": "SurfaceFlingerProperties",
+			"srcs": []interface{}{"SurfaceFlingerProperties.sysprop"},
+		},
+	}
+	consumer := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libsurface",
+		Properties: map[string]interface{}{
+			"name":        "libsurface",
+			"srcs":        []interface{}{"surface.cpp"},
+			"shared_libs": []interface{}{"SurfaceFlingerProperties"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{sysprop, consumer}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	out := buf.String()
+
+	// Codegen via sysprop-cli with env override
+	if !strings.Contains(out, "build out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.cpp out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.h: sysprop_cpp SurfaceFlingerProperties.sysprop") {
+		t.Errorf("Expected sysprop_cpp codegen edge")
+	}
+	if !strings.Contains(out, "${SYSPROP_CLI:-sysprop-cli} --cpp") {
+		t.Errorf("Expected sysprop-cli invocation with env override")
+	}
+
+	// Compiled into lib<name>.so/.a with implicit runtime deps
+	if !strings.Contains(out, "out/lib64/libSurfaceFlingerProperties.so: link_shared") {
+		t.Errorf("Expected libSurfaceFlingerProperties.so link edge")
+	}
+	if !strings.Contains(out, "-lSurfaceFlingerProperties") {
+		t.Errorf("Expected consumer -lSurfaceFlingerProperties link flag")
+	}
+	if !strings.Contains(out, "-lbase") {
+		t.Errorf("Expected implicit -lbase runtime link")
+	}
+
+	// Consumer receives the generated header dir on its include path
+	ccIdx := strings.Index(out, "build out/obj/libsurface/surface.o: cxx_compile")
+	if ccIdx < 0 {
+		t.Fatalf("Expected consumer compile edge")
+	}
+	if !strings.Contains(out[ccIdx:], "-Iout/gen/SurfaceFlingerProperties") {
+		t.Errorf("Expected sysprop gen dir on consumer include path")
+	}
+}
+
+func TestSyspropSourcesInCcModules(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libsysprop_user",
+		Properties: map[string]interface{}{
+			"name": "libsysprop_user",
+			"srcs": []interface{}{"MyProps.sysprop", "impl.cpp"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "build out/gen/libsysprop_user/MyProps.cpp out/gen/libsysprop_user/MyProps.h: sysprop_cpp MyProps.sysprop") {
+		t.Errorf("Expected inline sysprop codegen edge")
+	}
+	if !strings.Contains(out, "build out/obj/libsysprop_user/MyProps.o: cxx_compile out/gen/libsysprop_user/MyProps.cpp") {
+		t.Errorf("Expected generated source compilation")
 	}
 }

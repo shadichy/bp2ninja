@@ -75,6 +75,7 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   - `arm` (armv7-a)
   - `x86_64` (AMD64)
   - `x86` (i686)
+  - `x32` (x32 ABI: x86-64 ISA with 32-bit pointers; injects `-mx32` into C, C++, assembly, and linker flags and routes outputs to `out/libx32/`. Host/glibc multilib environments only — Android has no x32 target, so this is not combinable with `-ndk`)
   - `riscv64` (RISC-V 64-bit)
 - **`-api <level>`** *(default: `34`)*:
   Android API level for Bionic C library linking and platform SDK jar resolution (e.g. `30`, `32`, `34`).
@@ -90,6 +91,23 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Space-delimited list of target codegen architectures for ART compiler and VIXL modules (e.g. `"arm arm64 x86 x86_64"` for BlissOS / translation runtimes). Can also be supplied via `$ART_TARGET_CODEGEN_ARCHS`.
 - **`-art-host-codegen-archs "<arch-list>"`**:
   Space-delimited list of host codegen architectures (defaults to all supported arches: `arm arm64 riscv64 x86 x86_64`). Can also be supplied via `$ART_HOST_CODEGEN_ARCHS`.
+
+### Siso Execution (`-siso`)
+
+- **`-siso`** *(default: `false`)*:
+  Emits [Siso](https://go.chromium.org/build/siso)-specific ninja rule bindings and writes a companion `siso.star` next to the output ninja file. Siso is Google's drop-in Ninja replacement with native REAPI/RBE support. With `-siso`:
+  - Deterministic rules (`protoc`, `genrule_cmd`, `ar_mri`, `gen_version_script`, `archive_static`, `symlink`, `copy`, `python_binary`) gain `restat_content = 1` — content-digest cleanliness instead of mtime, preventing rebuild cascades when generated files are re-touched with identical content.
+  - Host-tool `bash -c` rules (`javac_compile`, `kotlinc_compile`, `kotlin_java_compile`, `genrule_cmd`, `ar_mri`, `gen_version_script`, `python_binary`) gain `sandbox_disabled = true` since they need host filesystem access.
+  - The generated `siso.star` handles what ninja bindings cannot: `input_root_absolute_path` for compile actions (bp2ninja graphs build against sysroots outside the workspace, so depfiles legitimately contain absolute header paths) and `output_local` for link/archive steps consuming prebuilt libraries.
+  - Install and run:
+    ```bash
+    bp2ninja -siso <dir> -o build.ninja
+    mkdir -p build/config/siso && cp siso.star build/config/siso/main.star
+    siso ninja -C .
+    ```
+  - Note: upstream `ninja` rejects these extra bindings, so a `-siso` graph must be executed by `siso` (or the Android ninja fork).
+- **`-siso-remote`** *(default: `false`)*:
+  With `-siso`, additionally marks pure compile actions `remote_enabled = true` for RBE offloading. Requires a REAPI backend configured on the siso side; extend the generated `siso.star` toolchain/sysroot input hooks (commented examples included) so remote actions upload the compiler context.
 
 ---
 

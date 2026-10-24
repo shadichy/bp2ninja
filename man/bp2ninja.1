@@ -50,13 +50,19 @@ Build for the host operating system and architecture instead of the target devic
 .BR \-subdirs ", " \-r
 Recursively discover all nested \fBAndroid.bp\fR files in subdirectories and consolidate their build edges into the generated Ninja file. Enabled by default.
 .TP
+.B \-siso
+Emit Siso\-specific ninja rule bindings (\fBrestat_content\fR on deterministic codegen rules, \fBsandbox_disabled\fR on host\-tool rules) and write a companion \fIsiso.star\fR Starlark config next to the output file so the graph runs under \fBsiso ninja\fR as a drop\-in Ninja replacement. Install it with \fBmkdir \-p build/config/siso && cp siso.star build/config/siso/main.star\fR, then run \fBsiso ninja \-C .\fR. Upstream ninja rejects the extra bindings, so the graph must be executed by siso.
+.TP
+.B \-siso\-remote
+With \-siso: additionally mark pure compile actions (cc_compile, cxx_compile, as_compile) \fBremote_enabled = true\fR for RBE offloading. Requires a REAPI backend configured on the siso side.
+.TP
 .B \-allow\-missing\-deps
 Generate phony targets for missing dependencies or inputs, permitting standalone compilation of isolated modules without requiring all prerequisite source repositories. Enabled by default.
 
 .SS Target Architecture & NDK Toolchain Options
 .TP
 .BI \-arch " ARCH"
-Target device processor architecture. Supported values: \fBarm64\fR (default), \fBarm\fR, \fBx86_64\fR, \fBx86\fR, \fBriscv64\fR.
+Target device processor architecture. Supported values: \fBarm64\fR (default), \fBarm\fR, \fBx86_64\fR, \fBx86\fR, \fBx32\fR, \fBriscv64\fR. \fBx32\fR selects the x32 ABI (x86\-64 ISA with 32\-bit pointers): \-mx32 is injected into C, C++, assembly and linker flags and outputs are routed to \fIout/libx32\fR. Host/glibc multilib environments only; not combinable with \-ndk.
 .TP
 .BI \-api " LEVEL"
 Target Android API level for NDK cross-compilation. Defaults to \fB34\fR (Android 14).

@@ -59,13 +59,14 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
   - **Out-of-Tree Monorepo Root Resolution**: `-include-root` resolves root-relative include paths (e.g. `bionic/libc`, `system/core/...`) cleanly in standalone subprojects.
 - **Android NDK Auto-Discovery**: Automatically locates installed Android NDKs across Google Android Studio (`~/Android/Sdk/ndk/*`), Linux distribution packages (`/opt/android-ndk`, `/opt/android-ndk-beta`), and environment paths (`$ANDROID_NDK`).
 - **Target & Host Modes**:
-  - Target: Cross-compiles for `arm64`, `arm`, `x86_64`, `x86`, or `riscv64` against specified Android API levels (`-api 34`).
+  - Target: Cross-compiles for `arm64`, `arm`, `x86_64`, `x86`, `x32`, or `riscv64` against specified Android API levels (`-api 34`). `x32` selects the x32 ABI (`-mx32`, host/glibc multilib environments).
   - Host: `-host` mode switches to host compilers (`$CC`, `$CXX`), expanding `host: {}` blocks, `target.host`, `target.linux`, and `target.linux_glibc`.
 - **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
 - **Protobuf (`protoc`) Generator**: Automatically transforms `.proto` files into C++ headers and source files, preserves subpath directory layouts (e.g. `protos/aconfig_storage_metadata.pb.h`), adds output include paths, and links order-only header dependencies (`|| <pbHdr>`). Supports ABI pinning via `$PROTOC`.
 - **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
 - **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
 - **Platform `android.jar` Resolution**: Dynamic resolution of `:current_android_jar` and `:system_android_jar` to `<SDK>/platforms/android-<API>/android.jar` matching target API level.
+- **Siso Backend Support (`-siso`)**: Emits Siso-compatible ninja bindings (`restat_content` on deterministic codegen rules, `sandbox_disabled` on host-tool rules) plus a generated `siso.star` Starlark config, so the graph executes under Google's [Siso](https://go.chromium.org/build/siso) (`siso ninja`) as a drop-in Ninja replacement with native REAPI/RBE offloading (`-siso-remote` marks compile actions `remote_enabled`).
 - **Granular Codegen (`genrule`, `gensrcs`)**: Per-source edge generation for `gensrcs`, `export_include_dirs`, consumer wiring (`generated_sources`, `generated_headers`), and `data: [...]` dependency tracking.
 - **Recursive Subdirectory Discovery**: Discovers nested `Android.bp` trees automatically via `-subdirs` (`-r`), unifying multi-module checkouts into a single cohesive Ninja graph.
 - **Pure-Go Modular Plugins**: In-tree Go converter (`convert-plugin`) and workspace orchestrator (`gowork`) to convert custom Soong rules into dynamically loaded `.so` plugins, with auto-discovery in `/usr/lib/bp2ninja/plugins/`.
@@ -143,7 +144,9 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-arch` | string | `arm64` | Target architecture: `arm64`, `arm`, `x86_64`, `x86`, `riscv64`. |
+| `-arch` | string | `arm64` | Target architecture: `arm64`, `arm`, `x86_64`, `x86`, `x32` (x32 ABI, `-mx32`, host/glibc only), `riscv64`. |
+| `-siso` | bool | `false` | Emit Siso-specific ninja bindings (`restat_content`, `sandbox_disabled`) plus a companion `siso.star` config so the graph runs under `siso ninja`. |
+| `-siso-remote` | bool | `false` | With `-siso`: additionally mark pure compile actions (`cc_compile`, `cxx_compile`, `as_compile`) `remote_enabled` for RBE offloading. |
 | `-api` | int | `34` | Target Android API level for NDK compilation. |
 | `-ndk` | string | `""` | Path to Android NDK, or `'auto'` for automatic discovery. |
 | `-ndk-version` | string | `""` | Preferred NDK version (e.g. `'latest'`, `'beta'`, `'r27'`, `'30'`). |

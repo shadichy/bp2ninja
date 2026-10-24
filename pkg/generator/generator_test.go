@@ -2174,15 +2174,25 @@ func TestWriteSisoConfig(t *testing.T) {
 		t.Fatalf("WriteSisoConfig failed: %v", err)
 	}
 	content := star.String()
-	for _, fn := range []string{"def init(ctx):", "def input_deps(ctx):", "def rules(ctx):"} {
-		if !strings.Contains(content, fn) {
-			t.Errorf("Expected %s in generated siso.star", fn)
+	for _, fragment := range []string{
+		"def init(ctx):",
+		`load("@builtin//encoding.star", "json")`,
+		`load("@builtin//struct.star", "module")`,
+		"step_config = json.encode(step_config)",
+		"handlers = {},",
+		"filegroups = {},",
+		`"action": "^(link_shared|link_binary|partial_link|archive_static|ar_mri)$"`,
+		`"action": "^(cc_compile|cxx_compile|as_compile)$"`,
+		`"input_root_absolute_path": True,`,
+	} {
+		if !strings.Contains(content, fragment) {
+			t.Errorf("Expected %q in generated siso.star", fragment)
 		}
 	}
-	if !strings.Contains(content, `deps["/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"]`) {
-		t.Errorf("Expected NDK toolchain input_deps entry")
+	if !strings.Contains(content, "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin") {
+		t.Errorf("Expected NDK toolchain hook comment")
 	}
 	if !strings.Contains(content, "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot") {
-		t.Errorf("Expected sysroot in input_deps")
+		t.Errorf("Expected sysroot in toolchain hook")
 	}
 }

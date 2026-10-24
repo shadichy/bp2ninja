@@ -747,8 +747,8 @@ func main() {
 			os.Exit(1)
 		}
 		starF.Close()
-		fmt.Printf("[bp2ninja] Wrote siso config %s (run: siso ninja -f %s -C . --config siso.star)\n",
-			starPath, outFile)
+		fmt.Printf("[bp2ninja] Wrote siso config %s (install: mkdir -p build/config/siso && cp %s build/config/siso/main.star; run: siso ninja -C .)\n",
+			starPath, starPath)
 	}
 
 	fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",

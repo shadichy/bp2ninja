@@ -1005,11 +1005,20 @@ func (g *Generator) fixupIncludePaths(flags []string) []string {
 		} else if strings.HasPrefix(f, "-include ") || strings.HasPrefix(f, "-include\t") {
 			hdr := strings.TrimSpace(strings.TrimPrefix(f, "-include"))
 			if !filepath.IsAbs(hdr) {
-				candidate := filepath.Join(root, hdr)
-				if _, err := os.Stat(hdr); err != nil {
-					if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
-						f = "-include " + candidate
+				if _, err := os.Stat(hdr); err == nil {
+					out = append(out, f)
+					continue
+				}
+				if g.opts.TopDir != "" {
+					topCandidate := filepath.Join(g.opts.TopDir, hdr)
+					if _, err := os.Stat(topCandidate); err == nil {
+						out = append(out, "-include "+topCandidate)
+						continue
 					}
+				}
+				candidate := filepath.Join(root, hdr)
+				if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+					f = "-include " + candidate
 				}
 			}
 		}

@@ -120,6 +120,13 @@ func handleGoWork(args []string) {
 	os.Exit(0)
 }
 
+// isBp2SisoInvocation reports whether the binary was invoked as bp2siso
+// (e.g. through a symlink), which enables -siso by default.
+func isBp2SisoInvocation(argv0 string) bool {
+	name := strings.TrimSuffix(filepath.Base(argv0), ".exe")
+	return name == "bp2siso" || name == "bp2ninja-siso"
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -134,6 +141,9 @@ func main() {
 			return
 		}
 	}
+
+	// Invocation alias: a bp2siso symlink behaves as bp2ninja -siso.
+	sisoDefault := isBp2SisoInvocation(os.Args[0])
 
 	var (
 		bpFile              string
@@ -185,7 +195,7 @@ func main() {
 	flag.BoolVar(&isHost, "host", false, "Build for host instead of target (uses host compiler and host libraries)")
 	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
 	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
-	flag.BoolVar(&siso, "siso", false, "Emit Siso-specific ninja bindings (restat_content, sandbox_disabled) and a companion siso.star config for running the graph with siso")
+	flag.BoolVar(&siso, "siso", sisoDefault, "Emit Siso-specific ninja bindings (restat_content, sandbox_disabled) and a companion siso.star config for running the graph with siso (default: on when invoked as bp2siso)")
 	flag.BoolVar(&sisoRemote, "siso-remote", false, "With -siso: additionally mark pure compile actions remote_enabled for RBE offloading (requires a REAPI backend)")
 
 	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS, ASFLAGS)

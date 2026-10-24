@@ -66,7 +66,7 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
 - **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
 - **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
 - **Platform `android.jar` Resolution**: Dynamic resolution of `:current_android_jar` and `:system_android_jar` to `<SDK>/platforms/android-<API>/android.jar` matching target API level.
-- **Siso Backend Support (`-siso`)**: Emits Siso-compatible ninja bindings (`restat_content` on deterministic codegen rules, `sandbox_disabled` on host-tool rules) plus a generated `siso.star` Starlark config, so the graph executes under Google's [Siso](https://go.chromium.org/build/siso) (`siso ninja`) as a drop-in Ninja replacement with native REAPI/RBE offloading (`-siso-remote` marks compile actions `remote_enabled`).
+- **Siso Backend Support (`-siso` / `bp2siso` alias)**: A `bp2siso` symlink to the binary turns `-siso` on by default (`bp2siso <dir> -o build.ninja` ≡ `bp2ninja -siso ...`). Emits Siso-compatible ninja bindings (`restat_content` on deterministic codegen rules, `sandbox_disabled` on host-tool rules) plus a generated `siso.star` Starlark config, so the graph executes under Google's [Siso](https://go.chromium.org/build/siso) (`siso ninja`) as a drop-in Ninja replacement with native REAPI/RBE offloading (`-siso-remote` marks compile actions `remote_enabled`).
 - **Granular Codegen (`genrule`, `gensrcs`)**: Per-source edge generation for `gensrcs`, `export_include_dirs`, consumer wiring (`generated_sources`, `generated_headers`), and `data: [...]` dependency tracking.
 - **Recursive Subdirectory Discovery**: Discovers nested `Android.bp` trees automatically via `-subdirs` (`-r`), unifying multi-module checkouts into a single cohesive Ninja graph.
 - **Pure-Go Modular Plugins**: In-tree Go converter (`convert-plugin`) and workspace orchestrator (`gowork`) to convert custom Soong rules into dynamically loaded `.so` plugins, with auto-discovery in `/usr/lib/bp2ninja/plugins/`.
@@ -145,7 +145,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `-arch` | string | `arm64` | Target architecture: `arm64`, `arm`, `x86_64`, `x86`, `x32` (x32 ABI, `-mx32`, host/glibc only), `riscv64`. |
-| `-siso` | bool | `false` | Emit Siso-specific ninja bindings (`restat_content`, `sandbox_disabled`) plus a companion `siso.star` config so the graph runs under `siso ninja`. |
+| `-siso` | bool | `false` (`true` when invoked as `bp2siso`) | Emit Siso-specific ninja bindings (`restat_content`, `sandbox_disabled`) plus a companion `siso.star` config so the graph runs under `siso ninja`. |
 | `-siso-remote` | bool | `false` | With `-siso`: additionally mark pure compile actions (`cc_compile`, `cxx_compile`, `as_compile`) `remote_enabled` for RBE offloading. |
 | `-api` | int | `34` | Target Android API level for NDK compilation. |
 | `-ndk` | string | `""` | Path to Android NDK, or `'auto'` for automatic discovery. |

@@ -30,6 +30,7 @@ DOCDIR ?= $(PREFIX)/share/doc/bp2ninja
 
 install: build
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/bp2ninja
+	ln -sf bp2ninja $(DESTDIR)$(BINDIR)/bp2siso
 	install -Dm644 man/bp2ninja.1 $(DESTDIR)$(MANDIR)/bp2ninja.1
 	install -d $(DESTDIR)$(DOCDIR)
 	install -Dm644 README.md $(DESTDIR)$(DOCDIR)/README.md

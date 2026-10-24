@@ -94,6 +94,8 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
 
 ### Siso Execution (`-siso`)
 
+- **`bp2siso` invocation alias**:
+  The `make install` target installs a `bp2siso` symlink next to `bp2ninja`. Invoking the binary through it (`bp2siso <dir> -o build.ninja ...`) is equivalent to `bp2ninja -siso ...` — the flag defaults to on and can still be disabled explicitly with `-siso=false`.
 - **`-siso`** *(default: `false`)*:
   Emits [Siso](https://go.chromium.org/build/siso)-specific ninja rule bindings and writes a companion `siso.star` next to the output ninja file. Siso is Google's drop-in Ninja replacement with native REAPI/RBE support. With `-siso`:
   - Deterministic rules (`protoc`, `genrule_cmd`, `ar_mri`, `gen_version_script`, `archive_static`, `symlink`, `copy`, `python_binary`) gain `restat_content = 1` — content-digest cleanliness instead of mtime, preventing rebuild cascades when generated files are re-touched with identical content.

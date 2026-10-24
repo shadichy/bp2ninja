@@ -957,11 +957,20 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 		if g.opts.IncludeRoot != "" && strings.HasPrefix(e, "-I") && !strings.HasPrefix(e, "-I/") {
 			relPath := strings.TrimSpace(strings.TrimPrefix(e, "-I"))
-			candidate := filepath.Join(g.opts.IncludeRoot, relPath)
-			if _, err := os.Stat(relPath); err != nil {
-				if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
-					e = "-I" + candidate
+			if _, err := os.Stat(relPath); err == nil {
+				filtered = append(filtered, e)
+				continue
+			}
+			if g.opts.TopDir != "" {
+				topCandidate := filepath.Join(g.opts.TopDir, relPath)
+				if _, err := os.Stat(topCandidate); err == nil {
+					filtered = append(filtered, "-I"+topCandidate)
+					continue
 				}
+			}
+			candidate := filepath.Join(g.opts.IncludeRoot, relPath)
+			if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+				e = "-I" + candidate
 			}
 		}
 		filtered = append(filtered, e)
@@ -978,11 +987,20 @@ func (g *Generator) fixupIncludePaths(flags []string) []string {
 	for _, f := range flags {
 		if strings.HasPrefix(f, "-I") && !strings.HasPrefix(f, "-I/") {
 			relPath := strings.TrimSpace(strings.TrimPrefix(f, "-I"))
-			candidate := filepath.Join(root, relPath)
-			if _, err := os.Stat(relPath); err != nil {
-				if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
-					f = "-I" + candidate
+			if _, err := os.Stat(relPath); err == nil {
+				out = append(out, f)
+				continue
+			}
+			if g.opts.TopDir != "" {
+				topCandidate := filepath.Join(g.opts.TopDir, relPath)
+				if _, err := os.Stat(topCandidate); err == nil {
+					out = append(out, "-I"+topCandidate)
+					continue
 				}
+			}
+			candidate := filepath.Join(root, relPath)
+			if _, err2 := os.Stat(candidate); err2 == nil || g.opts.AllowMissingDeps {
+				f = "-I" + candidate
 			}
 		} else if strings.HasPrefix(f, "-include ") || strings.HasPrefix(f, "-include\t") {
 			hdr := strings.TrimSpace(strings.TrimPrefix(f, "-include"))

@@ -281,6 +281,9 @@ func ArchitectureToTriple(arch string) string {
 		return "x86_64-linux-android"
 	case "x86", "i686":
 		return "i686-linux-android"
+	case "x32":
+		// x32 ABI (ILP32 on x86-64). Host/glibc only — Android has no x32 target.
+		return "x86_64-linux-gnux32"
 	case "riscv64":
 		return "riscv64-linux-android"
 	default:

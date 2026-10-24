@@ -166,6 +166,8 @@ func main() {
 		bp2ninjaDir         string
 		isHost              bool
 		traceSubdirs        bool
+		siso                bool
+		sisoRemote          bool
 	)
 
 	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
@@ -178,11 +180,13 @@ func main() {
 	flag.StringVar(&clangPath, "cc", "clang", "C compiler executable path")
 	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
 	flag.StringVar(&ldPath, "ld", "ld.lld", "Linker executable path")
-	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, riscv64)")
+	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, x32, riscv64). x32 selects the x32 ABI (-mx32, host/glibc only)")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
 	flag.BoolVar(&isHost, "host", false, "Build for host instead of target (uses host compiler and host libraries)")
 	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
 	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
+	flag.BoolVar(&siso, "siso", false, "Emit Siso-specific ninja bindings (restat_content, sandbox_disabled) and a companion siso.star config for running the graph with siso")
+	flag.BoolVar(&sisoRemote, "siso-remote", false, "With -siso: additionally mark pure compile actions remote_enabled for RBE offloading (requires a REAPI backend)")
 
 	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS, ASFLAGS)
 	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS)")
@@ -654,6 +658,8 @@ func main() {
 	opts.LdPath = ldPath
 	opts.IncludeRoot = includeRoot
 	opts.AllowMissingDeps = allowMissing
+	opts.Siso = siso
+	opts.SisoRemote = sisoRemote
 	opts.HostCodegenArches = evalCtx.HostCodegenArches
 	opts.TargetCodegenArches = evalCtx.TargetCodegenArches
 	if activeNDK != nil {
@@ -726,6 +732,23 @@ func main() {
 	if err := gen.Generate(evalCtx.Modules); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating Ninja: %v\n", err)
 		os.Exit(1)
+	}
+
+	if siso {
+		starPath := filepath.Join(filepath.Dir(outFile), "siso.star")
+		starF, err := os.Create(starPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", starPath, err)
+			os.Exit(1)
+		}
+		if err := gen.WriteSisoConfig(starF); err != nil {
+			starF.Close()
+			fmt.Fprintf(os.Stderr, "Error writing siso config: %v\n", err)
+			os.Exit(1)
+		}
+		starF.Close()
+		fmt.Printf("[bp2ninja] Wrote siso config %s (run: siso ninja -f %s -C . --config siso.star)\n",
+			starPath, outFile)
 	}
 
 	fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",

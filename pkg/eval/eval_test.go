@@ -744,3 +744,31 @@ art_cc_library {
 	}
 }
 
+
+func TestMultilibX32UsesLib32(t *testing.T) {
+	bp := `
+cc_library {
+    name: "mlib_x32",
+    multilib: {
+        lib32: { cflags: ["-DILP32"] },
+        lib64: { cflags: ["-DLP64"] },
+    },
+}
+`
+	ctx := NewContext(nil, "x32")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+	mod := ctx.Modules[0]
+	flags := strings.Join(mod.GetStringList("cflags"), " ")
+	if !strings.Contains(flags, "-DILP32") {
+		t.Errorf("Expected multilib.lib32 flags applied for x32, got: %s", flags)
+	}
+	if strings.Contains(flags, "-DLP64") {
+		t.Errorf("multilib.lib64 flags must not apply for x32, got: %s", flags)
+	}
+}

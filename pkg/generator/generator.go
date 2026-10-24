@@ -42,6 +42,14 @@ type Options struct {
 	IsHost              bool
 	HostCodegenArches   []string
 	TargetCodegenArches []string
+
+	// Siso emits Siso-specific ninja bindings (restat_content, remote_enabled,
+	// sandbox_disabled, ...) so the graph runs under `siso ninja` as a drop-in
+	// Ninja replacement. Upstream Ninja rejects those bindings, hence opt-in.
+	Siso bool
+	// SisoRemote additionally marks pure compile actions remote_enabled for
+	// RBE offloading (requires a REAPI backend configured in siso.star).
+	SisoRemote bool
 }
 
 // DefaultOptions provides sensible defaults for standalone Android builds.
@@ -327,6 +335,9 @@ func (g *Generator) resolveReference(ref string) []string {
 
 // Generate emits global variables, standard rules, and module build edges.
 func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
+	if g.opts.Siso {
+		g.nw.EnableSiso()
+	}
 	if err := g.emitHeader(); err != nil {
 		return err
 	}
@@ -562,22 +573,24 @@ func (g *Generator) emitHeader() error {
 func (g *Generator) emitStandardRules() error {
 	// CC Compile
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "cc_compile",
-		Command:     "$cc -MD -MF $out.d $includes $cflags $${CFLAGS} $${CCFLAGS} -c $in -o $out",
-		DepFile:     "$out.d",
-		Deps:        "gcc",
-		Description: "CC $out",
+		Name:          "cc_compile",
+		Command:       "$cc -MD -MF $out.d $includes $cflags $${CFLAGS} $${CCFLAGS} -c $in -o $out",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "CC $out",
+		RemoteEnabled: g.opts.SisoRemote,
 	}); err != nil {
 		return err
 	}
 
 	// AS Compile (Assembly pipeline using asflags without C headers)
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "as_compile",
-		Command:     "$cc -MD -MF $out.d $includes $asflags $${ASFLAGS} -c $in -o $out",
-		DepFile:     "$out.d",
-		Deps:        "gcc",
-		Description: "AS $out",
+		Name:          "as_compile",
+		Command:       "$cc -MD -MF $out.d $includes $asflags $${ASFLAGS} -c $in -o $out",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "AS $out",
+		RemoteEnabled: g.opts.SisoRemote,
 	}); err != nil {
 		return err
 	}
@@ -593,29 +606,34 @@ func (g *Generator) emitStandardRules() error {
 
 	// Archive Static Library via MRI script (Composite archives)
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "ar_mri",
-		Command:     "bash -c \"$cmd\"",
-		Description: "AR_MRI $out",
+		Name:            "ar_mri",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "AR_MRI $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Generate Linker Version Script
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "gen_version_script",
-		Command:     "bash -c \"$cmd\"",
-		Description: "VERSION_SCRIPT $out",
+		Name:            "gen_version_script",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "VERSION_SCRIPT $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// CXX Compile
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "cxx_compile",
-		Command:     "$cxx -MD -MF $out.d $includes $cflags $${CXXFLAGS} $${CPPFLAGS} -c $in -o $out",
-		DepFile:     "$out.d",
-		Deps:        "gcc",
-		Description: "CXX $out",
+		Name:          "cxx_compile",
+		Command:       "$cxx -MD -MF $out.d $includes $cflags $${CXXFLAGS} $${CPPFLAGS} -c $in -o $out",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "CXX $out",
+		RemoteEnabled: g.opts.SisoRemote,
 	}); err != nil {
 		return err
 	}
@@ -649,72 +667,82 @@ func (g *Generator) emitStandardRules() error {
 
 	// Java Compile
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "javac_compile",
-		Command:     "bash -c \"$cmd\"",
-		Description: "JAVAC $out",
+		Name:            "javac_compile",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "JAVAC $out",
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Kotlin Compile
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "kotlinc_compile",
-		Command:     "bash -c \"$cmd\"",
-		Description: "KOTLINC $out",
+		Name:            "kotlinc_compile",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "KOTLINC $out",
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Kotlin + Java Compile
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "kotlin_java_compile",
-		Command:     "bash -c \"$cmd\"",
-		Description: "KOTLINC/JAVAC $out",
+		Name:            "kotlin_java_compile",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "KOTLINC/JAVAC $out",
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Archive Static Library
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "archive_static",
-		Command:     "rm -f $out && $ar rcs $out $in",
-		Description: "AR $out",
+		Name:          "archive_static",
+		Command:       "rm -f $out && $ar rcs $out $in",
+		Description:   "AR $out",
+		RestatContent: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Copy file
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "copy",
-		Command:     "cp -f $in $out",
-		Description: "COPY $out",
+		Name:          "copy",
+		Command:       "cp -f $in $out",
+		Description:   "COPY $out",
+		RestatContent: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Copy executable binary/script
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "copy_executable",
-		Command:     "cp -f $in $out && chmod +x $out",
-		Description: "COPY_BIN $out",
+		Name:          "copy_executable",
+		Command:       "cp -f $in $out && chmod +x $out",
+		Description:   "COPY_BIN $out",
+		RestatContent: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Python executable binary wrapper
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "python_binary",
-		Command:     "mkdir -p $$(dirname $out) && printf '#!/bin/sh\\nexport PYTHONPATH=\"$$PWD\":$$PYTHONPATH\\nexec python3 \"$in\" \"$$@\"\\n' > $out && chmod +x $out",
-		Description: "PY_BIN $out",
+		Name:            "python_binary",
+		Command:         "mkdir -p $$(dirname $out) && printf '#!/bin/sh\\nexport PYTHONPATH=\"$$PWD\":$$PYTHONPATH\\nexec python3 \"$in\" \"$$@\"\\n' > $out && chmod +x $out",
+		Description:     "PY_BIN $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Custom Genrule
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "genrule_cmd",
-		Command:     "bash -c \"$cmd\"",
-		Description: "GEN $out",
+		Name:            "genrule_cmd",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "GEN $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
@@ -722,18 +750,20 @@ func (g *Generator) emitStandardRules() error {
 	// Protoc: emit C++ from .proto. Recipe build env pins /tmp/pbc/protoc321
 	// via $PROTOC (ABI-matched to the fleet runtime); fall back to system protoc.
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "protoc",
-		Command:     "mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args",
-		Description: "PROTOC $in",
+		Name:          "protoc",
+		Command:       "mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args",
+		Description:   "PROTOC $in",
+		RestatContent: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
 
 	// Symlink
 	if err := g.nw.Rule(ninja.Rule{
-		Name:        "symlink",
-		Command:     "mkdir -p $$(dirname $out) && rm -f $out && ln -sf $symlink_target $out",
-		Description: "SYMLINK $out",
+		Name:          "symlink",
+		Command:       "mkdir -p $$(dirname $out) && rm -f $out && ln -sf $symlink_target $out",
+		Description:   "SYMLINK $out",
+		RestatContent: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
@@ -750,10 +780,25 @@ func (g *Generator) binDir() string {
 }
 
 func (g *Generator) libDir() string {
-	if !strings.Contains(g.opts.TargetArch, "64") {
+	switch {
+	case g.opts.TargetArch == "x32":
+		// x32 ABI (ILP32 on x86-64) follows the glibc multilib layout.
+		return filepath.Join(g.opts.OutDir, "libx32")
+	case strings.Contains(g.opts.TargetArch, "64"):
+		return filepath.Join(g.opts.OutDir, "lib64")
+	default:
 		return filepath.Join(g.opts.OutDir, "lib")
 	}
-	return filepath.Join(g.opts.OutDir, "lib64")
+}
+
+// archCodegenFlags returns ABI-selection flags for the target architecture.
+// NDK wrapper compilers already encode the triple in their name, so this only
+// covers ABIs plain host compilers cannot infer from the target: x32 (-mx32).
+func (g *Generator) archCodegenFlags() []string {
+	if g.opts.TargetArch == "x32" {
+		return []string{"-mx32"}
+	}
+	return nil
 }
 
 // resolveCurrentAndroidJar locates the platform SDK android.jar matching APILevel or best available.

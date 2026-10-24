@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"bp2ninja/pkg/eval"
+	"bp2ninja/pkg/ndk"
 	"bp2ninja/pkg/ninja"
 	"bp2ninja/pkg/parser"
 )
@@ -2013,5 +2014,175 @@ func TestLibDir32Vs64Bit(t *testing.T) {
 	genArm := New(optsArm, nil, nil)
 	if genArm.libDir() != filepath.Join("out", "lib") {
 		t.Errorf("Expected out/lib for arm, got %s", genArm.libDir())
+	}
+}
+
+func TestX32ArchSupport(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.TargetArch = "x32"
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libx32test",
+		Properties: map[string]interface{}{
+			"name": "libx32test",
+			"srcs": []interface{}{"a.c", "b.S", "c.cpp"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	ninjaContent := buf.String()
+
+	// -mx32 must reach C, C++ and assembly compile flags
+	ccIdx := strings.Index(ninjaContent, "build out/obj/libx32test/a.o: cc_compile")
+	if ccIdx < 0 {
+		t.Fatalf("Expected cc_compile edge for a.c")
+	}
+	if !strings.Contains(ninjaContent[ccIdx:], "-mx32") {
+		t.Errorf("Expected -mx32 in C compile flags")
+	}
+	cxxIdx := strings.Index(ninjaContent, "build out/obj/libx32test/c.o: cxx_compile")
+	if cxxIdx < 0 {
+		t.Fatalf("Expected cxx_compile edge for c.cpp")
+	}
+	if !strings.Contains(ninjaContent[cxxIdx:], "-mx32") {
+		t.Errorf("Expected -mx32 in C++ compile flags")
+	}
+	asIdx := strings.Index(ninjaContent, "build out/obj/libx32test/b.o: as_compile")
+	if asIdx < 0 {
+		t.Fatalf("Expected as_compile edge for b.S")
+	}
+	if !strings.Contains(ninjaContent[asIdx:], "-mx32") {
+		t.Errorf("Expected -mx32 in assembly flags")
+	}
+
+	// Link flags and glibc multilib layout
+	if !strings.Contains(ninjaContent, "out/libx32/libx32test.so") {
+		t.Errorf("Expected out/libx32/ output layout for x32")
+	}
+	linkIdx := strings.Index(ninjaContent, "out/libx32/libx32test.so: link_shared")
+	if linkIdx < 0 {
+		t.Fatalf("Expected link_shared edge for libx32test.so")
+	}
+	if !strings.Contains(ninjaContent[linkIdx:], "-mx32") {
+		t.Errorf("Expected -mx32 in link flags")
+	}
+
+	// Triple mapping for the x32 ABI
+	if got := ndk.ArchitectureToTriple("x32"); got != "x86_64-linux-gnux32" {
+		t.Errorf("Expected x86_64-linux-gnux32 triple for x32, got %s", got)
+	}
+}
+
+func TestSisoRuleBindings(t *testing.T) {
+	newOutput := func(siso, sisoRemote bool) string {
+		var buf bytes.Buffer
+		nw := ninja.NewWriter(&buf)
+		opts := DefaultOptions(".", "out")
+		opts.AllowMissingDeps = true
+		opts.Siso = siso
+		opts.SisoRemote = sisoRemote
+		gen := New(opts, nw, nil)
+		mod := &eval.EvaluatedModule{
+			Type: "cc_library",
+			Name: "libsiso",
+			Properties: map[string]interface{}{
+				"name": "libsiso",
+				"srcs": []interface{}{"a.c"},
+			},
+		}
+		if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+			t.Fatalf("Generate failed: %v", err)
+		}
+		return buf.String()
+	}
+
+	// Without -siso: no Siso bindings anywhere (upstream ninja compat)
+	plain := newOutput(false, false)
+	for _, binding := range []string{"restat_content", "remote_enabled", "sandbox_disabled", "cache_disabled", "phony_output"} {
+		if strings.Contains(plain, binding) {
+			t.Errorf("Expected no %s binding without -siso", binding)
+		}
+	}
+
+	// With -siso: deterministic rules get restat_content, host-tool bash rules
+	// get sandbox_disabled, link rules stay local
+	sisoOut := newOutput(true, false)
+	if !strings.Contains(sisoOut, "restat_content = 1") {
+		t.Errorf("Expected restat_content bindings with -siso")
+	}
+	if !strings.Contains(sisoOut, "sandbox_disabled = true") {
+		t.Errorf("Expected sandbox_disabled bindings with -siso")
+	}
+	if strings.Contains(sisoOut, "remote_enabled") {
+		t.Errorf("remote_enabled must not be emitted without -siso-remote")
+	}
+	for _, rule := range []string{"protoc", "genrule_cmd", "ar_mri", "gen_version_script", "archive_static", "symlink", "copy\n"} {
+		ruleIdx := strings.Index(sisoOut, "rule "+strings.TrimSpace(rule))
+		if ruleIdx < 0 {
+			continue // rule not emitted for this module set
+		}
+		nextRule := strings.Index(sisoOut[ruleIdx+1:], "\nrule ")
+		section := sisoOut[ruleIdx:]
+		if nextRule >= 0 {
+			section = sisoOut[ruleIdx : ruleIdx+1+nextRule]
+		}
+		if !strings.Contains(section, "restat_content = 1") {
+			t.Errorf("Expected restat_content on rule %s", strings.TrimSpace(rule))
+		}
+	}
+
+	// With -siso-remote: pure compile actions are remote_enabled
+	remoteOut := newOutput(true, true)
+	for _, rule := range []string{"cc_compile", "cxx_compile", "as_compile"} {
+		ruleIdx := strings.Index(remoteOut, "rule "+rule+"\n")
+		if ruleIdx < 0 {
+			t.Fatalf("Expected rule %s emitted", rule)
+		}
+		nextRule := strings.Index(remoteOut[ruleIdx+1:], "\nrule ")
+		section := remoteOut[ruleIdx:]
+		if nextRule >= 0 {
+			section = remoteOut[ruleIdx : ruleIdx+1+nextRule]
+		}
+		if !strings.Contains(section, "remote_enabled = true") {
+			t.Errorf("Expected remote_enabled on rule %s with -siso-remote", rule)
+		}
+	}
+	linkIdx := strings.Index(remoteOut, "rule link_shared")
+	if linkIdx >= 0 && strings.Contains(remoteOut[linkIdx:linkIdx+400], "remote_enabled") {
+		t.Errorf("link_shared must stay local")
+	}
+}
+
+func TestWriteSisoConfig(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.Siso = true
+	opts.NDKDir = "/opt/android-ndk"
+	opts.ClangPath = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang"
+	opts.SysrootDir = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+	gen := New(opts, nw, nil)
+
+	var star bytes.Buffer
+	if err := gen.WriteSisoConfig(&star); err != nil {
+		t.Fatalf("WriteSisoConfig failed: %v", err)
+	}
+	content := star.String()
+	for _, fn := range []string{"def init(ctx):", "def input_deps(ctx):", "def rules(ctx):"} {
+		if !strings.Contains(content, fn) {
+			t.Errorf("Expected %s in generated siso.star", fn)
+		}
+	}
+	if !strings.Contains(content, `deps["/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"]`) {
+		t.Errorf("Expected NDK toolchain input_deps entry")
+	}
+	if !strings.Contains(content, "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot") {
+		t.Errorf("Expected sysroot in input_deps")
 	}
 }

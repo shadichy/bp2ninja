@@ -382,7 +382,8 @@ func (c *Context) applyMultilib(mod *EvaluatedModule) {
 	}
 
 	key := "lib64"
-	if c.TargetArch == "arm" || c.TargetArch == "x86" {
+	// x32 is ILP32 (32-bit pointers) even though it runs x86-64 code.
+	if c.TargetArch == "arm" || c.TargetArch == "x86" || c.TargetArch == "x32" {
 		key = "lib32"
 	}
 

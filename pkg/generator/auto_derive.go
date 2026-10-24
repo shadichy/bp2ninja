@@ -81,9 +81,10 @@ func (g *Generator) autoDeriveDirCollector(mod *eval.EvaluatedModule, srcDir str
 	}
 
 	_ = g.nw.Rule(ninja.Rule{
-		Name:        "auto_copy_dir",
-		Command:     "mkdir -p $$(dirname $out) && cp -f $in $out",
-		Description: "COPY $out",
+		Name:          "auto_copy_dir",
+		Command:       "mkdir -p $$(dirname $out) && cp -f $in $out",
+		Description:   "COPY $out",
+		RestatContent: g.opts.Siso,
 	})
 
 	effectiveSrcDir := srcDir

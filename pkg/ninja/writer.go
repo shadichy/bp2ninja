@@ -12,6 +12,7 @@ type Writer struct {
 	w              *bufio.Writer
 	definedRules   map[string]bool
 	definedTargets map[string]bool
+	siso           bool
 }
 
 // NewWriter creates a new Ninja writer wrapping the provided io.Writer.
@@ -22,6 +23,15 @@ func NewWriter(w io.Writer) *Writer {
 		definedTargets: make(map[string]bool),
 	}
 }
+
+// EnableSiso switches the writer into Siso mode: Siso-specific rule and build
+// bindings (restat_content, remote_enabled, sandbox_disabled, cache_disabled,
+// phony_output) are emitted. Upstream Ninja rejects these extra bindings, so
+// they are only written when this is enabled.
+func (n *Writer) EnableSiso() { n.siso = true }
+
+// SisoEnabled reports whether Siso-specific bindings are being emitted.
+func (n *Writer) SisoEnabled() bool { return n.siso }
 
 // Flush flushes buffered data to the underlying io.Writer.
 func (n *Writer) Flush() error {
@@ -64,6 +74,15 @@ type Rule struct {
 	Pool        string
 	Restat      bool
 	Generator   bool
+
+	// Siso-specific bindings (only emitted in Siso mode; see EnableSiso).
+	RestatContent   bool     // restat_content: content-digest cleanliness instead of mtime
+	RemoteEnabled   bool     // remote_enabled: allow RBE offloading of this action
+	RemoteTimeout   string   // remote_timeout: duration for remote execution
+	SandboxDisabled bool     // sandbox_disabled: run without local action sandbox
+	CacheDisabled   bool     // cache_disabled: never look up / populate the action cache
+	PhonyOutput     bool     // phony_output: Android ninja-fork phony outputs
+	ExtraSisoVars   []string // raw additional Siso bindings, each "name = value"
 }
 
 func sanitizeRuleName(name string) string {
@@ -125,7 +144,57 @@ func (n *Writer) Rule(r Rule) error {
 			return err
 		}
 	}
+	if n.siso {
+		if err := n.writeSisoBindings(r.SisoBindings()); err != nil {
+			return err
+		}
+	}
 	return n.BlankLine()
+}
+
+// SisoVar is a single Siso-specific ninja variable assignment.
+type SisoVar struct {
+	Name  string
+	Value string
+}
+
+// SisoBindings returns the Siso-specific variable assignments configured on
+// this rule. Only meaningful when the writer is in Siso mode.
+func (r Rule) SisoBindings() []SisoVar {
+	var out []SisoVar
+	if r.RestatContent {
+		out = append(out, SisoVar{"restat_content", "1"})
+	}
+	if r.RemoteEnabled {
+		out = append(out, SisoVar{"remote_enabled", "true"})
+	}
+	if r.RemoteTimeout != "" {
+		out = append(out, SisoVar{"remote_timeout", r.RemoteTimeout})
+	}
+	if r.SandboxDisabled {
+		out = append(out, SisoVar{"sandbox_disabled", "true"})
+	}
+	if r.CacheDisabled {
+		out = append(out, SisoVar{"cache_disabled", "true"})
+	}
+	if r.PhonyOutput {
+		out = append(out, SisoVar{"phony_output", "1"})
+	}
+	for _, kv := range r.ExtraSisoVars {
+		if i := strings.Index(kv, "="); i > 0 {
+			out = append(out, SisoVar{strings.TrimSpace(kv[:i]), strings.TrimSpace(kv[i+1:])})
+		}
+	}
+	return out
+}
+
+func (n *Writer) writeSisoBindings(bindings []SisoVar) error {
+	for _, b := range bindings {
+		if err := n.ScopedVariable(b.Name, b.Value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BuildEdge defines a Ninja build statement.
@@ -136,6 +205,41 @@ type BuildEdge struct {
 	Implicits []string
 	OrderOnly []string
 	Variables map[string]string
+
+	// Siso-specific bindings (only emitted in Siso mode; see EnableSiso).
+	RestatContent   bool
+	RemoteEnabled   bool
+	RemoteTimeout   string
+	SandboxDisabled bool
+	CacheDisabled   bool
+	ExtraSisoVars   []string
+}
+
+// SisoBindings returns the Siso-specific variable assignments configured on
+// this build edge. Only meaningful when the writer is in Siso mode.
+func (b BuildEdge) SisoBindings() []SisoVar {
+	var out []SisoVar
+	if b.RestatContent {
+		out = append(out, SisoVar{"restat_content", "1"})
+	}
+	if b.RemoteEnabled {
+		out = append(out, SisoVar{"remote_enabled", "true"})
+	}
+	if b.RemoteTimeout != "" {
+		out = append(out, SisoVar{"remote_timeout", b.RemoteTimeout})
+	}
+	if b.SandboxDisabled {
+		out = append(out, SisoVar{"sandbox_disabled", "true"})
+	}
+	if b.CacheDisabled {
+		out = append(out, SisoVar{"cache_disabled", "true"})
+	}
+	for _, kv := range b.ExtraSisoVars {
+		if i := strings.Index(kv, "="); i > 0 {
+			out = append(out, SisoVar{strings.TrimSpace(kv[:i]), strings.TrimSpace(kv[i+1:])})
+		}
+	}
+	return out
 }
 
 // Build writes a Ninja build statement.
@@ -185,6 +289,11 @@ func (n *Writer) Build(b BuildEdge) error {
 
 	for k, v := range b.Variables {
 		if err := n.ScopedVariable(k, v); err != nil {
+			return err
+		}
+	}
+	if n.siso {
+		if err := n.writeSisoBindings(b.SisoBindings()); err != nil {
 			return err
 		}
 	}

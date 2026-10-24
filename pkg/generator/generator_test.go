@@ -1992,3 +1992,26 @@ cc_library_static {
 		t.Errorf("Expected %s in include paths, got:\n%s", expectedInc, content)
 	}
 }
+
+func TestLibDir32Vs64Bit(t *testing.T) {
+	opts64 := DefaultOptions(".", "out")
+	opts64.TargetArch = "x86_64"
+	gen64 := New(opts64, nil, nil)
+	if gen64.libDir() != filepath.Join("out", "lib64") {
+		t.Errorf("Expected out/lib64 for x86_64, got %s", gen64.libDir())
+	}
+
+	opts32 := DefaultOptions(".", "out")
+	opts32.TargetArch = "x86"
+	gen32 := New(opts32, nil, nil)
+	if gen32.libDir() != filepath.Join("out", "lib") {
+		t.Errorf("Expected out/lib for x86, got %s", gen32.libDir())
+	}
+
+	optsArm := DefaultOptions(".", "out")
+	optsArm.TargetArch = "arm"
+	genArm := New(optsArm, nil, nil)
+	if genArm.libDir() != filepath.Join("out", "lib") {
+		t.Errorf("Expected out/lib for arm, got %s", genArm.libDir())
+	}
+}

@@ -750,6 +750,9 @@ func (g *Generator) binDir() string {
 }
 
 func (g *Generator) libDir() string {
+	if !strings.Contains(g.opts.TargetArch, "64") {
+		return filepath.Join(g.opts.OutDir, "lib")
+	}
 	return filepath.Join(g.opts.OutDir, "lib64")
 }
 

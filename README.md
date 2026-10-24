@@ -57,6 +57,7 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
   - **Bare-Metal & Self-Relocating Linkers**: Full support for self-relocating executables (e.g. `linker64` / `ld-android.so`) configuring `stem`, `nocrt` (`-nostartfiles`), `static_executable` (`-static`), `version_script`, and `linker_scripts`.
   - **NDK Version Scripts (`ndk_library`)**: Direct generation of symbol version scripts from `.map.txt` ABI manifests via `gen_version_script`.
   - **Out-of-Tree Monorepo Root Resolution**: `-include-root` resolves root-relative include paths (e.g. `bionic/libc`, `system/core/...`) cleanly in standalone subprojects.
+- **arm64 & Embedded Deployment (musl / bionic)**: `make build-linux-arm64` produces a fully static arm64 binary (runs natively on arm64 headless servers and under qemu); `make build-android-arm64` produces an on-device Android build (`adb push` to `/data/local/tmp`, pairs with Termux clang); `make build-android-arm64-bionic` links against bionic via the NDK toolchain; `make build-musl-{amd64,arm64}` builds true musl-linked binaries via `musl-gcc` (static builds already run on musl hosts). Plain compilers in target mode automatically receive `--target=<triple>` / `--sysroot=<dir>` so arm64 servers cross-target Android correctly without NDK wrappers.
 - **Android NDK Auto-Discovery**: Automatically locates installed Android NDKs across Google Android Studio (`~/Android/Sdk/ndk/*`), Linux distribution packages (`/opt/android-ndk`, `/opt/android-ndk-beta`), and environment paths (`$ANDROID_NDK`).
 - **Target & Host Modes**:
   - Target: Cross-compiles for `arm64`, `arm`, `x86_64`, `x86`, `x32`, or `riscv64` against specified Android API levels (`-api 34`). `x32` selects the x32 ABI (`-mx32`, host/glibc multilib environments).
@@ -112,6 +113,38 @@ The compiled binary will be placed at `bin/bp2ninja`. You can copy or link it to
 ```bash
 install -Dm755 bin/bp2ninja ~/.local/bin/bp2ninja
 ```
+
+### Cross-Builds: arm64 Servers, musl & bionic (Android On-Device)
+
+Static builds (`CGO_ENABLED=0`) link no libc at all — one binary runs on glibc,
+musl, and Android hosts of the same instruction set. Go plugins (`.so` blueprint
+modules) are unavailable in static builds; build natively with `make build`
+(CGO enabled) when plugins are needed.
+
+| Target | Command | Artifact |
+| :--- | :-- | :-- |
+| linux amd64 (static, any libc) | `make build-linux-amd64` | `bin/release/bp2ninja-linux-amd64` |
+| linux arm64 (static, headless servers / Termux) | `make build-linux-arm64` | `bin/release/bp2ninja-linux-arm64` |
+| Android arm64 (static, on-device) | `make build-android-arm64` | `bin/release/bp2ninja-android-arm64` |
+| Android arm64 (bionic-linked via NDK) | `make build-android-arm64-bionic ANDROID_NDK=<ndk>` | `bin/release/bp2ninja-android-arm64-bionic` |
+| musl amd64/arm64 (dynamic, via `musl-gcc`) | `make build-musl-arm64` | `bin/release/bp2ninja-musl-arm64` |
+| Release tarballs + `bp2siso` symlinks + checksums | `make release` | `bin/release/*.tar.gz` |
+
+On-device usage (Termux or `adb push` to `/data/local/tmp`):
+
+```bash
+make build-android-arm64
+adb push bin/release/bp2ninja-android-arm64 /data/local/tmp/bp2ninja
+adb shell '/data/local/tmp/bp2ninja -arch arm64 -host /path/to/module -o build.ninja'
+```
+
+Termux's `clang` already targets the device's bionic, so plain target/host
+builds work without an NDK. On arm64 Linux servers, bp2ninja automatically
+injects `--target=<triple>` (plus `--sysroot=<dir>` when `-sysroot` is given)
+into compile/link flags whenever the compiler is a plain `clang` — NDK wrapper
+compilers are detected and left untouched. NDK toolchains that only ship
+`linux-x86_64` host prebuilts are still discovered on arm64 hosts (usable with
+qemu-user binfmt).
 
 ### Arch Linux / CachyOS (AUR)
 

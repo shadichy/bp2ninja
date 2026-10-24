@@ -475,6 +475,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 
 	includes := dedup(g.resolveIncludeDirs(mod))
 	archFlags := g.archCodegenFlags()
+	archFlags = append(archFlags, g.crossTargetFlags()...)
 	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
 	cflags = stripIncludeFlags(cflags)
@@ -1216,6 +1217,7 @@ func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
 func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []string, libs []string) {
 	ldflags = append(mod.GetStringList("ldflags"), g.opts.ExtraLdflags...)
 	ldflags = append(ldflags, g.archCodegenFlags()...)
+	ldflags = append(ldflags, g.crossTargetFlags()...)
 
 	if g.opts.PrebuiltLibDir != "" {
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)

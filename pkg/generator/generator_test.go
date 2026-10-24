@@ -2196,3 +2196,69 @@ func TestWriteSisoConfig(t *testing.T) {
 		t.Errorf("Expected sysroot in toolchain hook")
 	}
 }
+
+func TestTargetTripleInjectionForPlainCompilers(t *testing.T) {
+	genOutput := func(mutate func(*Options)) string {
+		var buf bytes.Buffer
+		nw := ninja.NewWriter(&buf)
+		opts := DefaultOptions(".", "out")
+		opts.AllowMissingDeps = true
+		mutate(&opts)
+		gen := New(opts, nw, nil)
+		mod := &eval.EvaluatedModule{
+			Type: "cc_library",
+			Name: "libtriple",
+			Properties: map[string]interface{}{
+				"name": "libtriple",
+				"srcs": []interface{}{"a.c"},
+			},
+		}
+		if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+			t.Fatalf("Generate failed: %v", err)
+		}
+		return buf.String()
+	}
+
+	// Plain clang in target mode: -target triple must be injected so arm64
+	// servers / Termux cross-target Android instead of the build host ABI.
+	out := genOutput(func(o *Options) {})
+	if !strings.Contains(out, "--target=aarch64-linux-android") {
+		t.Errorf("Expected -target injection for plain clang in target mode")
+	}
+
+	// Explicit sysroot: --sysroot must accompany the triple.
+	out = genOutput(func(o *Options) { o.SysrootDir = "/opt/android-sysroot" })
+	if !strings.Contains(out, "--sysroot=/opt/android-sysroot") {
+		t.Errorf("Expected --sysroot injection when SysrootDir set")
+	}
+
+	// NDK wrapper compilers already encode the target: no injection.
+	out = genOutput(func(o *Options) {
+		o.ClangPath = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang"
+		o.ClangCxxPath = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang++"
+		o.SysrootDir = "/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+	})
+	if strings.Contains(out, "--target=") {
+		t.Errorf("Ninja wrapper compiler must not receive redundant -target flags")
+	}
+	if strings.Contains(out, "--sysroot=") {
+		t.Errorf("NDK wrapper must not receive redundant --sysroot flags")
+	}
+
+	// Host mode: no Android triple injection.
+	out = genOutput(func(o *Options) { o.IsHost = true })
+	if strings.Contains(out, "--target=aarch64-linux-android") {
+		t.Errorf("Host mode must not inject Android target triple")
+	}
+
+	// Injection must reach linker flags too, and dedup with module cflags
+	// carrying the same pair must not duplicate it.
+	out = genOutput(func(o *Options) {})
+	linkIdx := strings.Index(out, "out/lib64/libtriple.so: link_shared")
+	if linkIdx < 0 {
+		t.Fatalf("Expected link_shared edge")
+	}
+	if !strings.Contains(out[linkIdx:], "--target=aarch64-linux-android") {
+		t.Errorf("Expected -target in link flags")
+	}
+}

@@ -140,6 +140,8 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Extra assembler flags (can also be passed via the `$ASFLAGS` environment variable).
 - **`-ldflags <flags>`**:
   Extra linker flags (can also be passed via `$LDFLAGS`).
+- **Plain-compiler cross-targeting (arm64 servers / Termux)**:
+  In target mode, when the compiler is a plain `clang`/`gcc` (not an NDK wrapper such as `aarch64-linux-android34-clang`), bp2ninja injects `--target=<triple>` — and `--sysroot=<dir>` when `-sysroot` is set — into all compile and link flags. This makes `clang` on an arm64 headless server or a Termux device cross-target Android (`-arch arm64 -api 34`) instead of the build host ABI. NDK wrapper compilers already encode the target and receive no redundant flags.
 - **`-include-root <dir>`**:
   Root directory for resolving root-relative include paths (e.g. `-Ibionic/libc/include` or `include_dirs: ["bionic/libc/include"]`) when building subprojects out of tree.
 
@@ -147,6 +149,36 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
 > The generated Ninja manifest includes dynamic environment variables `$${CFLAGS}`, `$${CXXFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` in its rule definitions. You can change optimization flags or linker settings at Ninja invocation time without re-running `bp2ninja`.
 
 ---
+
+### Cross-Building bp2ninja Itself (arm64, musl, bionic)
+
+Static builds (`CGO_ENABLED=0`) link no libc — a single binary runs on glibc, musl,
+and Android hosts of the same instruction set. Go plugins (`.so` blueprint modules)
+are unavailable in static builds; build natively with `make build` when plugins
+are required.
+
+```bash
+make build-linux-arm64        # static arm64: headless servers, qemu, Termux
+make build-android-arm64      # static GOOS=android: adb push to /data/local/tmp
+make build-android-arm64-bionic ANDROID_NDK=/opt/android-ndk   # bionic-linked
+make build-musl-arm64         # true musl dynamic link (needs musl-gcc)
+make release                  # tarballs + bp2siso symlinks + sha256sums
+```
+
+**arm64 headless servers**: the static arm64 binary builds arm64 Android targets
+natively (no emulated generation pass). Use `-ndk auto` (an x86_64-host NDK works
+via qemu binfmt) or a plain `clang` plus `-sysroot <android sysroot>` — the triple
+is injected automatically.
+
+**Android self-replication (on-device builds)**: push the static android-arm64
+binary to the device. On Termux, `clang` targets the device's own bionic, and
+`$PREFIX`-relative NDK installations (`$PREFIX/opt/android-ndk`) are discovered
+automatically. The bionic-linked variant (`build-android-arm64-bionic`) requires
+matching NDK runtime libraries on the device when the API level differs.
+
+**musl / embedded**: static builds already run on musl (Alpine) hosts; use
+`make build-musl-{amd64,arm64}` when a true musl dynamic link is required
+(`pacman -S musl` / `apt install musl-tools` provides `musl-gcc`).
 
 ### Soong Config Variables
 

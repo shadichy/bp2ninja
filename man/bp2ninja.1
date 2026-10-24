@@ -276,6 +276,36 @@ ninja \-f libc.ninja out/lib64/libc.a out/lib64/crtbegin_so.o
 .fi
 .RE
 
+.SH CROSS-BUILDS & EMBEDDED DEPLOYMENT
+Static builds (\fBCGO_ENABLED=0\fR) link no libc: one binary runs on glibc, musl,
+and Android hosts of the same instruction set. Go plugins (\fI.so\fR blueprint
+modules) are unavailable in static builds; build natively with \fBmake build\fR
+when plugins are required.
+.TP
+.B make\ build\-linux\-arm64
+Static arm64 binary for headless servers, qemu, and Termux. Builds arm64 Android
+targets natively; plain \fBclang\fR receives \fB\-\-target=<triple>\fR (and
+\fB\-\-sysroot=<dir>\fR when \fB\-sysroot\fR is set) automatically, while NDK
+wrapper compilers are left untouched. NDKs shipping only \fIlinux\-x86_64\fR
+host prebuilts are still discovered on arm64 hosts (usable via qemu\ binfmt).
+.TP
+.B make\ build\-android\-arm64
+Static \fBGOOS=android\fR binary for on-device execution ("self\-replication"):
+\fBadb push\fR to \fI/data/local/tmp\fR and run against on\-device toolchains
+(Termux clang targets the device's own bionic).
+.TP
+.B make\ build\-android\-arm64\-bionic\ ANDROID_NDK=<ndk>
+Bionic\-linked dynamic binary built with the NDK Clang (\fBNEEDED\fR libc.so,
+libdl.so, liblog.so; interpreter \fI/system/bin/linker64\fR).
+.TP
+.B make\ build\-musl\-amd64\ |\ make\ build\-musl\-arm64
+True musl\-linked dynamic builds via \fBmusl\-gcc\fR (packages \fImusl\fR /
+\fImusl\-tools\fR). Static builds already run on musl hosts without this.
+.TP
+.B make\ release
+Tarballs for the default matrix plus \fBbp2siso\fR symlinks and SHA\-256
+checksums under \fIbin/release/\fR.
+
 .SH EXIT STATUS
 .TP
 .B 0

@@ -91,6 +91,19 @@ func DiscoverAll() []NDKInfo {
 		{"/usr/lib/android-ndk", "distro:system"},
 		{"/usr/local/lib/android-ndk", "distro:local"},
 	}
+	// Termux / on-device Android ($PREFIX, e.g. /data/data/com.termux/files/usr)
+	if prefix := os.Getenv("PREFIX"); prefix != "" {
+		distroPaths = append(distroPaths,
+			struct {
+				path   string
+				source string
+			}{filepath.Join(prefix, "opt/android-ndk"), "termux:$PREFIX/opt/android-ndk"},
+			struct {
+				path   string
+				source string
+			}{filepath.Join(prefix, "lib/android-ndk"), "termux:$PREFIX/lib/android-ndk"},
+		)
+	}
 	for _, dp := range distroPaths {
 		addCandidate(dp.path, dp.source)
 	}
@@ -111,6 +124,9 @@ func DiscoverAll() []NDKInfo {
 		)
 	}
 	sdkRoots = append(sdkRoots, "/opt/android-sdk")
+	if prefix := os.Getenv("PREFIX"); prefix != "" {
+		sdkRoots = append(sdkRoots, prefix)
+	}
 
 	for _, sdk := range sdkRoots {
 		ndkDir := filepath.Join(sdk, "ndk")

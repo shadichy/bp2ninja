@@ -801,6 +801,48 @@ func (g *Generator) archCodegenFlags() []string {
 	return nil
 }
 
+// plainCompilerUsesDefaultTarget reports whether the configured compiler
+// targets its build host by default (plain clang/gcc) as opposed to NDK
+// wrapper compilers (aarch64-linux-android34-clang) that already encode the
+// Android target triple in their name.
+func (g *Generator) plainCompilerUsesDefaultTarget() bool {
+	cc := filepath.Base(g.opts.ClangPath)
+	triple := g.opts.TargetTriple
+	if triple == "" {
+		triple = "-linux-android"
+	}
+	if strings.Contains(cc, "-linux-android") || strings.Contains(cc, triple) {
+		return false
+	}
+	// android-clang wrappers from newer NDK layouts
+	if strings.HasPrefix(cc, "android") && strings.HasSuffix(cc, "-clang") {
+		return false
+	}
+	return true
+}
+
+// crossTargetFlags returns the target-selection flags (-target <triple>,
+// --sysroot=<dir>) that must be passed explicitly to plain compilers in
+// target mode. NDK wrappers resolve these themselves, so nothing is injected
+// for them. This is what makes plain `clang` on arm64 servers (or Termux on
+// a device) cross-target Android correctly instead of compiling for the
+// build host.
+func (g *Generator) crossTargetFlags() []string {
+	if g.opts.IsHost || g.opts.TargetTriple == "" {
+		return nil
+	}
+	if !g.plainCompilerUsesDefaultTarget() {
+		return nil
+	}
+	// Single-token forms survive shellJoin's bare-flag-prefix filter and
+	// dedup as opaque strings; clang/gcc accept both --target= / --sysroot=.
+	flags := []string{"--target=" + g.opts.TargetTriple}
+	if g.opts.SysrootDir != "" {
+		flags = append(flags, "--sysroot="+g.opts.SysrootDir)
+	}
+	return flags
+}
+
 // resolveCurrentAndroidJar locates the platform SDK android.jar matching APILevel or best available.
 func (g *Generator) resolveCurrentAndroidJar() string {
 	if g.opts.AndroidJarPath != "" {

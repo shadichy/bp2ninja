@@ -507,6 +507,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	if !hasAssemblyDef {
 		asflags = append(asflags, "-D__ASSEMBLY__")
 	}
+	asflags = append(asflags, fmt.Sprintf("-DPLATFORM_SDK_VERSION=%d", g.opts.APILevel))
 	asflags = append(asflags, "-fPIC")
 	asflags = dedup(asflags)
 

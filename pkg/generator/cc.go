@@ -474,11 +474,14 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	}
 
 	includes := dedup(g.resolveIncludeDirs(mod))
+	archFlags := g.archCodegenFlags()
 	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
 	cflags = stripIncludeFlags(cflags)
 	cppflags = stripIncludeFlags(cppflags)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
+	cflags = append(cflags, archFlags...)
+	cppflags = append(cppflags, archFlags...)
 	cflags = append(cflags, "-fPIC")
 	if g.opts.AllowMissingDeps {
 		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion")
@@ -507,6 +510,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	if !hasAssemblyDef {
 		asflags = append(asflags, "-D__ASSEMBLY__")
 	}
+	asflags = append(asflags, archFlags...)
 	asflags = append(asflags, fmt.Sprintf("-DPLATFORM_SDK_VERSION=%d", g.opts.APILevel))
 	asflags = append(asflags, "-fPIC")
 	asflags = dedup(asflags)
@@ -1006,6 +1010,10 @@ func (g *Generator) fixupIncludePaths(flags []string) []string {
 		} else if strings.HasPrefix(f, "-include ") || strings.HasPrefix(f, "-include\t") {
 			hdr := strings.TrimSpace(strings.TrimPrefix(f, "-include"))
 			if !filepath.IsAbs(hdr) {
+				if !strings.Contains(hdr, "/") {
+					out = append(out, f)
+					continue
+				}
 				if _, err := os.Stat(hdr); err == nil {
 					out = append(out, f)
 					continue
@@ -1207,6 +1215,7 @@ func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
 // shared_libs and static_libs are mapped directly to -l flags and prebuilt paths.
 func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []string, libs []string) {
 	ldflags = append(mod.GetStringList("ldflags"), g.opts.ExtraLdflags...)
+	ldflags = append(ldflags, g.archCodegenFlags()...)
 
 	if g.opts.PrebuiltLibDir != "" {
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)
@@ -1223,7 +1232,10 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		for _, cand := range candidates {
 			if dir, ok := topModules[cand]; ok {
 				subDirs := []string{"lib64", "out/lib64"}
-				if !strings.Contains(g.opts.TargetArch, "64") {
+				switch {
+				case g.opts.TargetArch == "x32":
+					subDirs = []string{"libx32", "out/libx32"}
+				case !strings.Contains(g.opts.TargetArch, "64"):
 					subDirs = []string{"lib", "out/lib"}
 				}
 				for _, sub := range subDirs {

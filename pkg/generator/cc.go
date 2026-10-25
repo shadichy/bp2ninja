@@ -55,24 +55,6 @@ func shellJoin(args []string) string {
 	return strings.Join(out, " ")
 }
 
-// stageCcArtifact emits a copy edge staging a built artifact into the install
-// prefix (<prefix>/<sub>/<filename>); the build output itself stays in out/.
-// No-op in relative mode. Returns the staged path ("" in relative mode).
-func (g *Generator) stageCcArtifact(buildOut, sub, rule string) (string, error) {
-	if !g.prefixMode() {
-		return "", nil
-	}
-	stage := filepath.Join(g.opts.Prefix, sub, filepath.Base(buildOut))
-	if err := g.nw.Build(ninja.BuildEdge{
-		Outputs: []string{stage},
-		Rule:    rule,
-		Inputs:  []string{buildOut},
-	}); err != nil {
-		return "", err
-	}
-	return stage, nil
-}
-
 func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error) {
 	objs, err := g.compileCcSources(mod)
 	if err != nil || len(objs) == 0 {
@@ -116,17 +98,6 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 		return nil, err
 	}
 	targets := []string{target}
-	var staged []string
-
-	// Prefix mode: stage the binary into the install prefix (extra output
-	// after the build-local outputs).
-	stage, err := g.stageCcArtifact(target, "bin", "copy_executable")
-	if err != nil {
-		return nil, err
-	}
-	if stage != "" {
-		staged = append(staged, stage)
-	}
 
 	if binName != mod.Name {
 		aliasPath := filepath.Join(g.binDir(), mod.Name)
@@ -181,7 +152,6 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 		targets = append(targets, symPath)
 	}
 
-	targets = append(targets, staged...)
 	return targets, nil
 }
 
@@ -320,7 +290,6 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 	}
 
 	var targets []string
-	var staged []string
 
 	libBaseName := mod.Name
 	if !strings.HasPrefix(libBaseName, "lib") {
@@ -351,14 +320,6 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 				return nil, err
 			}
 			targets = append(targets, sharedTarget)
-
-			stage, err := g.stageCcArtifact(sharedTarget, g.prefixLibSub(), "copy")
-			if err != nil {
-				return nil, err
-			}
-			if stage != "" {
-				staged = append(staged, stage)
-			}
 
 			if libBaseName != mod.Name {
 				aliasTarget := filepath.Join(g.libDir(), mod.Name+".so")
@@ -413,14 +374,6 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 			}
 			targets = append(targets, staticTarget)
 
-			stage, err := g.stageCcArtifact(staticTarget, g.prefixLibSub(), "copy")
-			if err != nil {
-				return nil, err
-			}
-			if stage != "" {
-				staged = append(staged, stage)
-			}
-
 			if libBaseName != mod.Name {
 				aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
 				if err := g.nw.Build(ninja.BuildEdge{
@@ -445,14 +398,6 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 			}
 			targets = append(targets, staticTarget)
 
-			stage, err := g.stageCcArtifact(staticTarget, g.prefixLibSub(), "copy")
-			if err != nil {
-				return nil, err
-			}
-			if stage != "" {
-				staged = append(staged, stage)
-			}
-
 			if libBaseName != mod.Name {
 				aliasTarget := filepath.Join(g.libDir(), mod.Name+".a")
 				if err := g.nw.Build(ninja.BuildEdge{
@@ -475,7 +420,6 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		}
 	}
 
-	targets = append(targets, staged...)
 	return targets, nil
 }
 
@@ -1192,10 +1136,10 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 				}
 			}
 			if len(matched) > 0 {
-				return g.nonStagedTargets(matched)
+				return matched
 			}
 		}
-		return g.nonStagedTargets(outs)
+		return outs
 	}
 
 	// Predict target output from moduleMap if dependency module is not yet emitted
@@ -1310,16 +1254,17 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 	ldflags = append(ldflags, g.archCodegenFlags()...)
 	ldflags = append(ldflags, g.crossTargetFlags()...)
 
-	// Prefix mode: the install prefix library directory is searched first, so
-	// staged/prebuilt artifacts resolve before the build-local out/ layout.
-	if g.prefixMode() {
-		ldflags = append(ldflags, "-L"+filepath.Join(g.opts.Prefix, g.prefixLibSub()))
-	}
-
 	if g.opts.PrebuiltLibDir != "" {
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)
 	} else {
 		ldflags = append(ldflags, "-L"+g.libDir())
+	}
+
+	// Prefix mode: -L<prefix>/<libsub> is an additional linker library search
+	// directory, searched after the build-local/prebuilt dir above. Nothing is
+	// staged or installed: build outputs always stay in out/.
+	if g.prefixMode() {
+		ldflags = append(ldflags, "-L"+filepath.Join(g.opts.Prefix, g.prefixLibSub()))
 	}
 
 	// Auto-detect library paths for dependencies from TopDir (ANDROID_BUILD_TOP)
@@ -1424,17 +1369,6 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 			lsPath = filepath.Clean(filepath.Join(mod.Dir, ls))
 		}
 		ldflags = append(ldflags, "-T"+lsPath)
-	}
-
-	// Runtime discovery in prefix mode: search the staged library directory
-	// and the location relative to the artifact's own install directory.
-	// $$ORIGIN is ninja-escaped so the shell receives $ORIGIN and the dynamic
-	// linker resolves it per binary.
-	if g.prefixMode() {
-		ldflags = append(ldflags,
-			"-Wl,-rpath,"+filepath.Join(g.opts.Prefix, g.prefixLibSub()),
-			"-Wl,-rpath,$$ORIGIN/../"+g.prefixLibSub(),
-		)
 	}
 
 	return dedup(ldflags), libs

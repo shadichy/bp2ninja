@@ -17,10 +17,10 @@ import (
 type Options struct {
 	TopDir string
 	OutDir string
-	// Prefix is the artifact install prefix: where binaries and libraries are
-	// found / will be installed (/usr, /system, /vendor, /product,
-	// /apex/<name>...). "", "." and "/" select relative mode: artifacts find
-	// each other via the build-local out/ layout.
+	// Prefix is the linker library search prefix: an additional
+	// -L<prefix>/<libsub> directory for ld/clang when resolving -l flags
+	// (/system, /apex/<name>...). Build outputs always stay in the
+	// build-local out/ layout. "", "." and "/" select relative mode.
 	Prefix              string
 	SysrootDir          string
 	PrebuiltLibDir      string
@@ -413,14 +413,13 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				return fmt.Errorf("plugin failed for module %s (%s): %w", mod.Name, mod.Type, err)
 			}
 			g.moduleOutputs[mod.Name] = targets
-			emit := g.nonStagedTargets(targets)
 			if mod.Dir == "" || mod.Dir == "." {
-				anyRootTargets = append(anyRootTargets, emit...)
+				anyRootTargets = append(anyRootTargets, targets...)
 			}
 			if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
-				allTargets = append(allTargets, emit...)
+				allTargets = append(allTargets, targets...)
 				if mod.Dir == "" || mod.Dir == "." {
-					rootTargets = append(rootTargets, emit...)
+					rootTargets = append(rootTargets, targets...)
 				}
 			}
 			continue
@@ -495,14 +494,13 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			return fmt.Errorf("failed generating module %s: %w", mod.Name, err)
 		}
 		g.moduleOutputs[mod.Name] = targets
-		emit := g.nonStagedTargets(targets)
 		if mod.Dir == "" || mod.Dir == "." {
-			anyRootTargets = append(anyRootTargets, emit...)
+			anyRootTargets = append(anyRootTargets, targets...)
 		}
 		if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
-			allTargets = append(allTargets, emit...)
+			allTargets = append(allTargets, targets...)
 			if mod.Dir == "" || mod.Dir == "." {
-				rootTargets = append(rootTargets, emit...)
+				rootTargets = append(rootTargets, targets...)
 			}
 		}
 	}
@@ -516,7 +514,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	}
 	if len(defaultTargets) == 0 {
 		for _, outs := range g.moduleOutputs {
-			defaultTargets = append(defaultTargets, g.nonStagedTargets(outs)...)
+			defaultTargets = append(defaultTargets, outs...)
 		}
 	}
 
@@ -834,7 +832,7 @@ func (g *Generator) binDir() string {
 
 // archLibSub maps a target architecture to its library subdirectory name:
 // lib64, lib, or libx32 (x32 ABI, ILP32 on x86-64, follows the glibc multilib
-// layout). Single source of truth for libDir() and prefix staging/link paths.
+// layout). Single source of truth for libDir() and the prefix link-search path.
 func archLibSub(arch string) string {
 	switch {
 	case arch == "x32":
@@ -850,36 +848,18 @@ func (g *Generator) libDir() string {
 	return filepath.Join(g.opts.OutDir, archLibSub(g.opts.TargetArch))
 }
 
-// prefixMode reports whether -prefix selected an install prefix. Relative
-// mode ("" default, "." or "/") finds artifacts via the build-local out/
-// layout instead.
+// prefixMode reports whether -prefix selected a linker library search
+// prefix. Relative mode ("" default, "." or "/") keeps the build-local
+// out/ search behavior instead.
 func (g *Generator) prefixMode() bool {
 	p := g.opts.Prefix
 	return p != "" && p != "." && p != "/"
 }
 
-// prefixLibSub returns the library subdirectory under the install prefix
+// prefixLibSub returns the library subdirectory under the prefix
 // (lib64/lib/libx32 by target arch).
 func (g *Generator) prefixLibSub() string {
 	return archLibSub(g.opts.TargetArch)
-}
-
-// nonStagedTargets drops prefix-staging paths from a target list so default
-// targets and link implicits keep referencing the build-local outputs;
-// staging edges are extra outputs only.
-func (g *Generator) nonStagedTargets(targets []string) []string {
-	if !g.prefixMode() {
-		return targets
-	}
-	staged := g.opts.Prefix + string(filepath.Separator)
-	var out []string
-	for _, t := range targets {
-		if strings.HasPrefix(t, staged) {
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
 }
 
 // archCodegenFlags returns ABI-selection flags for the target architecture.

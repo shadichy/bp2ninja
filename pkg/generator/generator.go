@@ -17,10 +17,12 @@ import (
 type Options struct {
 	TopDir string
 	OutDir string
-	// Prefix is the linker library search prefix: an additional
-	// -L<prefix>/<libsub> directory for ld/clang when resolving -l flags
-	// (/system, /apex/<name>...). Build outputs always stay in the
-	// build-local out/ layout. "", "." and "/" select relative mode.
+	// Prefix is the runtime install prefix: link edges gain rpath flags for
+	// <prefix>/<libsub> (and a deploy-relative $$ORIGIN form) so linked
+	// artifacts find their shared libraries — and libc — once deployed
+	// (/system, /apex/<name>...). Build outputs always stay in the build-local
+	// out/ layout and the link-time -L search is unchanged. "", "." and "/"
+	// select relative mode (no rpath flags).
 	Prefix              string
 	SysrootDir          string
 	PrebuiltLibDir      string
@@ -832,7 +834,7 @@ func (g *Generator) binDir() string {
 
 // archLibSub maps a target architecture to its library subdirectory name:
 // lib64, lib, or libx32 (x32 ABI, ILP32 on x86-64, follows the glibc multilib
-// layout). Single source of truth for libDir() and the prefix link-search path.
+// layout). Single source of truth for libDir() and the prefix rpath location.
 func archLibSub(arch string) string {
 	switch {
 	case arch == "x32":
@@ -848,9 +850,9 @@ func (g *Generator) libDir() string {
 	return filepath.Join(g.opts.OutDir, archLibSub(g.opts.TargetArch))
 }
 
-// prefixMode reports whether -prefix selected a linker library search
-// prefix. Relative mode ("" default, "." or "/") keeps the build-local
-// out/ search behavior instead.
+// prefixMode reports whether -prefix selected a runtime install prefix whose
+// libsub receives rpath flags on link edges. Relative mode ("" default, "."
+// or "/") keeps the exact pre--prefix behavior (no rpath flags) instead.
 func (g *Generator) prefixMode() bool {
 	p := g.opts.Prefix
 	return p != "" && p != "." && p != "/"

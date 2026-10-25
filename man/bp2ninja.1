@@ -45,7 +45,7 @@ Output Ninja build file path. Defaults to \fBbuild.ninja\fR.
 Output directory for build artifacts and intermediate files. Defaults to \fBout\fR.
 .TP
 .BI \-prefix " DIR"
-Linker library search prefix: adds \fB\-L<prefix>/<libsub>\fR (\fBlib64\fR, \fBlib\fR or \fBlibx32\fR by target arch) as an additional library search directory when resolving \fB\-l\fR flags (\fI/system\fR, \fI/apex/<name>\fR...). Ninja always builds and outputs artifacts under \fIout/\fR; nothing is staged, installed or copied into the prefix. Sysroot, NDK paths, include dirs, the TopDir dependency scan and \fB\-prebuilt\-libs\fR are unaffected. \fB.\fR or \fB/\fR (and omission of the flag) keep the relative behavior (no prefix search directory).
+Runtime install prefix: link edges gain \fB\-Wl,\-rpath,<prefix>/<libsub>\fR (\fBlib64\fR, \fBlib\fR or \fBlibx32\fR by target arch) and a deploy\-relative \fB\-Wl,\-rpath,$$ORIGIN/../<libsub>\fR (ninja\-escaped; the shell receives \fB$ORIGIN\fR) so linked artifacts find their shared libraries once deployed (\fI/system\fR, \fI/apex/<name>\fR...). Ninja always builds and outputs artifacts under \fIout/\fR; nothing is staged, installed or copied into the prefix, and the link\-time \fB\-L\fR search is unchanged. \fB.\fR or \fB/\fR (and omission of the flag) keep the relative behavior (no rpath flags).
 .TP
 .BI \-top " DIR"
 Top-level directory of the Android source tree (if building inside or against an AOSP tree). Defaults to the value of \fB$ANDROID_BUILD_TOP\fR or the current directory.

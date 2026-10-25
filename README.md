@@ -168,7 +168,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-bp` | string | `Android.bp` | Path to target `Android.bp` file or directory (or positional arg). |
 | `-o` | string | `build.ninja` | Output Ninja build manifest path. |
 | `-out` | string | `out` | Directory for build outputs and generated intermediates. |
-| `-prefix` | string | `""` | Linker library search prefix: adds `-L<prefix>/<libsub>` (`lib64`, `lib` or `libx32` by target arch) as an additional search directory when resolving `-l` flags (`/system`, `/apex/<name>`...). Build artifacts always build into `out/`; nothing is staged or installed. `.` or `/` (and empty) keep the relative behavior. |
+| `-prefix` | string | `""` | Runtime install prefix: link edges gain `-Wl,-rpath,<prefix>/<libsub>` (`lib64`, `lib` or `libx32` by target arch) and a deploy-relative `-Wl,-rpath,$$ORIGIN/../<libsub>` so linked artifacts find their shared libraries once deployed (`/system`, `/apex/<name>`...). Artifacts always build into `out/`; nothing is staged or installed; the link-time `-L` search is unchanged. `.` or `/` (and empty) keep the relative behavior. |
 | `-top` | string | `.` | Android source tree root (defaults to `$ANDROID_BUILD_TOP` or current dir). |
 | `-include-root` | string | `""` | Root directory used to resolve root-relative includes out-of-tree (defaults to `-top`). |
 | `-host` | bool | `false` | Build for host environment instead of target (expands `host: {}` properties). |

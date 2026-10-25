@@ -1260,13 +1260,6 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		ldflags = append(ldflags, "-L"+g.libDir())
 	}
 
-	// Prefix mode: -L<prefix>/<libsub> is an additional linker library search
-	// directory, searched after the build-local/prebuilt dir above. Nothing is
-	// staged or installed: build outputs always stay in out/.
-	if g.prefixMode() {
-		ldflags = append(ldflags, "-L"+filepath.Join(g.opts.Prefix, g.prefixLibSub()))
-	}
-
 	// Auto-detect library paths for dependencies from TopDir (ANDROID_BUILD_TOP)
 	topModules := g.GetTopDirModules()
 	allLibs := append(mod.GetStringList("shared_libs"), mod.GetStringList("static_libs")...)
@@ -1369,6 +1362,21 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 			lsPath = filepath.Clean(filepath.Join(mod.Dir, ls))
 		}
 		ldflags = append(ldflags, "-T"+lsPath)
+	}
+
+	// Prefix mode injects RUNTIME library discovery only: link edges gain
+	// rpath flags so the linked artifacts find their shared libraries — and
+	// libc — once deployed under the prefix. <prefix>/<libsub> is the global
+	// runtime install location; $$ORIGIN/../<libsub> (ninja-escaped so the
+	// shell receives $ORIGIN; shellJoin single-quotes the token) works
+	// wherever the bin/+lib<sub>/ pair sits. Build-time -L search above is
+	// exactly the pre--prefix behavior, and nothing is staged or installed:
+	// build outputs always stay in out/.
+	if g.prefixMode() {
+		ldflags = append(ldflags,
+			"-Wl,-rpath,"+filepath.Join(g.opts.Prefix, g.prefixLibSub()),
+			"-Wl,-rpath,$$ORIGIN/../"+g.prefixLibSub(),
+		)
 	}
 
 	return dedup(ldflags), libs

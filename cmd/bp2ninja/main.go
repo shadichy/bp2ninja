@@ -184,7 +184,7 @@ func main() {
 	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
 	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
 	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
-	flag.StringVar(&prefix, "prefix", "", "Linker library search prefix: adds -L<prefix>/<libsub> (lib64, lib or libx32 by target arch) when resolving -l flags (/system, /apex/<name>...); build artifacts always build into out/. '.' or '/' keeps the relative behavior")
+	flag.StringVar(&prefix, "prefix", "", "Runtime install prefix: link edges gain -Wl,-rpath,<prefix>/<libsub> (lib64, lib or libx32 by target arch) plus a deploy-relative -Wl,-rpath,$$ORIGIN/../<libsub> so linked artifacts find their shared libraries once deployed (/system, /apex/<name>...); artifacts always build into out/ and the link-time -L search is unchanged. '.' or '/' keeps the relative behavior")
 	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
 	flag.StringVar(&includeRoot, "include-root", "", "Root directory for resolving root-relative include paths in cflags and include_dirs")
 	flag.StringVar(&sysrootDir, "sysroot", "", "Path to Android sysroot / NDK (optional)")

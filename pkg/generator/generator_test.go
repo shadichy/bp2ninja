@@ -2497,7 +2497,7 @@ func TestPrefixRelativeDefaultUnchanged(t *testing.T) {
 	}
 }
 
-func TestPrefixLinkSearchPath(t *testing.T) {
+func TestPrefixRuntimeRpath(t *testing.T) {
 	var buf strings.Builder
 	nw := ninja.NewWriter(&buf)
 	opts := DefaultOptions(".", "out")
@@ -2516,23 +2516,34 @@ func TestPrefixLinkSearchPath(t *testing.T) {
 	if strings.Contains(content, "build /system/") {
 		t.Errorf("Prefix mode must not emit build edges under the prefix, got:\n%s", content)
 	}
-	if strings.Contains(content, "-Wl,-rpath") {
-		t.Errorf("Prefix mode must not emit rpath flags, got:\n%s", content)
+	// The prefix is a RUNTIME location only: link-time -L search stays exactly
+	// as the pre--prefix behavior.
+	if strings.Contains(content, "-L/system/lib64") {
+		t.Errorf("Prefix mode must not emit -L search directories for the prefix, got:\n%s", content)
 	}
 
-	// Link search order: the build-local -Lout/lib64 stays first; the prefix
-	// directory is an additional search directory after it.
+	// Link edges (link_shared and link_binary) gain runtime library discovery
+	// rpath flags: the global install location and the deploy-relative one.
+	for _, edge := range []string{
+		"build out/lib64/libstage.so: link_shared",
+		"build out/bin/stagebin: link_binary",
+	} {
+		section := linkEdgeSection(content, edge)
+		if section == "" {
+			t.Fatalf("Expected edge %q", edge)
+		}
+		if !strings.Contains(section, "-Wl,-rpath,/system/lib64") {
+			t.Errorf("Expected -Wl,-rpath,/system/lib64 on %q, got:\n%s", edge, section)
+		}
+		if !strings.Contains(section, "-Wl,-rpath,$$ORIGIN/../lib64") {
+			t.Errorf("Expected -Wl,-rpath,$$ORIGIN/../lib64 on %q, got:\n%s", edge, section)
+		}
+	}
+
+	// Build-time -L search is unchanged by prefix mode.
 	section := linkEdgeSection(content, "build out/lib64/libstage.so: link_shared")
-	if section == "" {
-		t.Fatalf("Expected link_shared edge for out/lib64/libstage.so")
-	}
-	sysIdx := strings.Index(section, "-L/system/lib64")
-	outIdx := strings.Index(section, "-Lout/lib64")
-	if sysIdx < 0 || outIdx < 0 {
-		t.Fatalf("Expected -Lout/lib64 and -L/system/lib64 on link edge, got:\n%s", section)
-	}
-	if sysIdx < outIdx {
-		t.Errorf("Expected -Lout/lib64 before -L/system/lib64, got:\n%s", section)
+	if !strings.Contains(section, "-Lout/lib64") {
+		t.Errorf("Expected unchanged -Lout/lib64 search dir on link edge, got:\n%s", section)
 	}
 
 	// Module target lists reference only build-local out/ outputs.
@@ -2599,27 +2610,26 @@ func TestPrefixX32(t *testing.T) {
 
 	content := buf.String()
 
-	// No staging edges into the APEX prefix; no runtime rpath flags.
+	// No staging edges into the APEX prefix; no link-time prefix search
+	// directory either — the prefix is a RUNTIME location only.
 	if strings.Contains(content, "build /apex/") {
 		t.Errorf("Prefix mode must not emit build edges under the prefix, got:\n%s", content)
 	}
-	if strings.Contains(content, "-Wl,-rpath") {
-		t.Errorf("Prefix mode must not emit rpath flags, got:\n%s", content)
+	if strings.Contains(content, "-L/apex/com.android.art/libx32") {
+		t.Errorf("Prefix mode must not emit -L search directories for the prefix, got:\n%s", content)
 	}
 
-	// -Lout/libx32 comes first; -L/apex/com.android.art/libx32 is the
-	// additional search directory emitted after it.
+	// Runtime rpath flags use the x32 libsub: the global APEX install
+	// location and the deploy-relative $$ORIGIN form.
 	section := linkEdgeSection(content, "build out/libx32/libx32test.so: link_shared")
 	if section == "" {
 		t.Fatalf("Expected link_shared edge for out/libx32/libx32test.so")
 	}
-	pxIdx := strings.Index(section, "-L/apex/com.android.art/libx32")
-	outIdx := strings.Index(section, "-Lout/libx32")
-	if pxIdx < 0 || outIdx < 0 {
-		t.Fatalf("Expected -Lout/libx32 and -L/apex/com.android.art/libx32 on link edge, got:\n%s", section)
+	if !strings.Contains(section, "-Wl,-rpath,/apex/com.android.art/libx32") {
+		t.Errorf("Expected -Wl,-rpath,/apex/com.android.art/libx32 on link edge, got:\n%s", section)
 	}
-	if pxIdx < outIdx {
-		t.Errorf("Expected -Lout/libx32 before -L/apex/com.android.art/libx32, got:\n%s", section)
+	if !strings.Contains(section, "-Wl,-rpath,$$ORIGIN/../libx32") {
+		t.Errorf("Expected -Wl,-rpath,$$ORIGIN/../libx32 on link edge, got:\n%s", section)
 	}
 }
 
@@ -2655,8 +2665,10 @@ func TestPrefixRelativeDotAndSlash(t *testing.T) {
 }
 
 // TestPrefixNinjaDryRun feeds the generated manifest to a real ninja dry run:
-// the run succeeds and the expanded link command carries the prefix library
-// search directory (-L/system/lib64) without any $ORIGIN runtime flags.
+// the run succeeds and the expanded link command carries the runtime rpath
+// flags — -Wl,-rpath,/system/lib64 and the ninja-escaped $$ORIGIN form that
+// reaches the shell as $ORIGIN exactly once — without any prefix -L search
+// directory.
 func TestPrefixNinjaDryRun(t *testing.T) {
 	ninjaBin, err := exec.LookPath("ninja")
 	if err != nil {
@@ -2722,10 +2734,13 @@ func TestPrefixNinjaDryRun(t *testing.T) {
 	if linkCmd == "" {
 		t.Fatalf("Expected link command for out/bin/drybin in dry-run output, got:\n%s", out.String())
 	}
-	if !strings.Contains(linkCmd, "-L/system/lib64") {
-		t.Errorf("Expected -L/system/lib64 in expanded link command, got:\n%s", linkCmd)
+	if !strings.Contains(linkCmd, "-Wl,-rpath,/system/lib64") {
+		t.Errorf("Expected -Wl,-rpath,/system/lib64 in expanded link command, got:\n%s", linkCmd)
 	}
-	if strings.Contains(out.String(), "$ORIGIN") {
-		t.Errorf("Expanded dry-run output must not contain $ORIGIN, got:\n%s", out.String())
+	if n := strings.Count(linkCmd, "$ORIGIN"); n != 1 {
+		t.Errorf("Expected $ORIGIN exactly once in expanded link command, got %d:\n%s", n, linkCmd)
+	}
+	if strings.Contains(out.String(), "-L/system/lib64") {
+		t.Errorf("Expanded dry-run output must not contain -L/system/lib64, got:\n%s", out.String())
 	}
 }

@@ -44,6 +44,9 @@ Output Ninja build file path. Defaults to \fBbuild.ninja\fR.
 .BI \-out " DIR"
 Output directory for build artifacts and intermediate files. Defaults to \fBout\fR.
 .TP
+.BI \-prefix " DIR"
+Artifact install prefix: where binaries and libraries are found or will be installed (\fI/usr\fR, \fI/system\fR, \fI/vendor\fR, \fI/product\fR, \fI/apex/<name>\fR...). Build outputs stay under \fIout/\fR; extra staging edges copy each linked binary to \fI<prefix>/bin/<name>\fR and each shared/static library to \fI<prefix>/<libsub>/<filename>\fR (\fBlib64\fR, \fBlib\fR or \fBlibx32\fR by target arch), appended after the build outputs in each module's target list. Link edges search \fI<prefix>/<libsub>\fR first (\fB\-L\fR) and receive runtime discovery flags \fB\-Wl,\-rpath,<prefix>/<libsub>\fR and \fB\-Wl,\-rpath,$$ORIGIN/../<libsub>\fR (ninja-escaped so the shell receives \fB$ORIGIN\fR). Sysroot, NDK paths, include dirs, the TopDir dependency scan and \fB\-prebuilt\-libs\fR are unaffected. \fB.\fR or \fB/\fR (and omission of the flag) keep the build-local relative \fIout/\fR layout.
+.TP
 .BI \-top " DIR"
 Top-level directory of the Android source tree (if building inside or against an AOSP tree). Defaults to the value of \fB$ANDROID_BUILD_TOP\fR or the current directory.
 .TP

@@ -149,6 +149,7 @@ func main() {
 		bpFile              string
 		outFile             string
 		outDir              string
+		prefix              string
 		topDir              string
 		sysrootDir          string
 		prebuiltLibs        string
@@ -183,6 +184,7 @@ func main() {
 	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
 	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
 	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
+	flag.StringVar(&prefix, "prefix", "", "Artifact install prefix where binaries/libraries are found or will be installed (/usr, /system, /vendor, /product, /apex/<name>...); '.' or '/' keeps the build-local relative out/ layout")
 	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
 	flag.StringVar(&includeRoot, "include-root", "", "Root directory for resolving root-relative include paths in cflags and include_dirs")
 	flag.StringVar(&sysrootDir, "sysroot", "", "Path to Android sysroot / NDK (optional)")
@@ -313,6 +315,11 @@ func main() {
 		}
 	} else {
 		topDir = filepath.Clean(topDir)
+	}
+
+	// Normalize -prefix: "", "." and "/" (after Clean) select relative mode.
+	if prefix != "" {
+		prefix = filepath.Clean(prefix)
 	}
 
 	// Parse config variables (e.g. target_board_platform=sm8450)
@@ -682,6 +689,7 @@ func main() {
 	if prebuiltLibs != "" {
 		opts.PrebuiltLibDir = prebuiltLibs
 	}
+	opts.Prefix = prefix
 
 	// Merge environment variables and CLI extra flags (per-project configuration)
 	var combinedCflags []string

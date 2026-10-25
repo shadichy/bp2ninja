@@ -168,6 +168,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-bp` | string | `Android.bp` | Path to target `Android.bp` file or directory (or positional arg). |
 | `-o` | string | `build.ninja` | Output Ninja build manifest path. |
 | `-out` | string | `out` | Directory for build outputs and generated intermediates. |
+| `-prefix` | string | `""` | Artifact install prefix where binaries/libraries are found or will be installed (`/usr`, `/system`, `/vendor`, `/product`, `/apex/<name>`...). `.` or `/` (and empty) keep the build-local relative `out/` layout. |
 | `-top` | string | `.` | Android source tree root (defaults to `$ANDROID_BUILD_TOP` or current dir). |
 | `-include-root` | string | `""` | Root directory used to resolve root-relative includes out-of-tree (defaults to `-top`). |
 | `-host` | bool | `false` | Build for host environment instead of target (expands `host: {}` properties). |

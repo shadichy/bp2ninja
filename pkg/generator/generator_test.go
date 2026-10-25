@@ -3,6 +3,7 @@ package generator
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2426,5 +2427,309 @@ func TestSyspropSourcesInCcModules(t *testing.T) {
 	}
 	if !strings.Contains(out, "build out/obj/libsysprop_user/MyProps.o: cxx_compile out/gen/libsysprop_user/MyProps.cpp") {
 		t.Errorf("Expected generated source compilation")
+	}
+}
+
+func prefixTestModules() []*eval.EvaluatedModule {
+	libMod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libstage",
+		Properties: map[string]interface{}{
+			"name": "libstage",
+			"srcs": []interface{}{"stage.cpp"},
+		},
+	}
+	binMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "stagebin",
+		Properties: map[string]interface{}{
+			"name":        "stagebin",
+			"srcs":        []interface{}{"main.cpp"},
+			"shared_libs": []interface{}{"libstage"},
+		},
+	}
+	return []*eval.EvaluatedModule{libMod, binMod}
+}
+
+// linkEdgeSection returns the build edge starting at edgeHead plus its
+// variable assignments (everything up to the next build statement).
+func linkEdgeSection(content, edgeHead string) string {
+	idx := strings.Index(content, edgeHead)
+	if idx < 0 {
+		return ""
+	}
+	section := content[idx:]
+	if next := strings.Index(section[1:], "\nbuild "); next >= 0 {
+		section = section[:next+1]
+	}
+	return section
+}
+
+func TestPrefixRelativeDefaultUnchanged(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	if err := gen.Generate(prefixTestModules()); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if strings.Contains(content, "-Wl,-rpath") {
+		t.Errorf("Relative mode must not emit rpath flags, got:\n%s", content)
+	}
+	if strings.Contains(content, ": copy_executable ") {
+		t.Errorf("Relative mode must not emit staging copy_executable edges, got:\n%s", content)
+	}
+	if strings.Contains(content, ": copy ") {
+		t.Errorf("Relative mode must not emit staging copy edges, got:\n%s", content)
+	}
+	if strings.Contains(content, "-L/") {
+		t.Errorf("Relative mode must not emit absolute -L paths, got:\n%s", content)
+	}
+	if !strings.Contains(content, "build out/bin/stagebin: link_binary") {
+		t.Errorf("Expected unchanged build output layout, got:\n%s", content)
+	}
+	if !strings.Contains(content, "build out/lib64/libstage.so: link_shared") {
+		t.Errorf("Expected unchanged lib64 layout, got:\n%s", content)
+	}
+}
+
+func TestPrefixStagingAndLinkPaths(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.Prefix = "/system"
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	if err := gen.Generate(prefixTestModules()); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Staging edges for binary, shared library and static archive; build
+	// outputs stay in out/.
+	for _, want := range []string{
+		"build /system/bin/stagebin: copy_executable out/bin/stagebin",
+		"build /system/lib64/libstage.so: copy out/lib64/libstage.so",
+		"build /system/lib64/libstage.a: copy out/lib64/libstage.a",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Expected staging edge %q in ninja output, got:\n%s", want, content)
+		}
+	}
+
+	// Link search order: -L/system/lib64 BEFORE -Lout/lib64; rpath flags present.
+	section := linkEdgeSection(content, "build out/lib64/libstage.so: link_shared")
+	if section == "" {
+		t.Fatalf("Expected link_shared edge for out/lib64/libstage.so")
+	}
+	sysIdx := strings.Index(section, "-L/system/lib64")
+	outIdx := strings.Index(section, "-Lout/lib64")
+	if sysIdx < 0 || outIdx < 0 {
+		t.Fatalf("Expected -L/system/lib64 and -Lout/lib64 on link edge, got:\n%s", section)
+	}
+	if sysIdx > outIdx {
+		t.Errorf("Expected -L/system/lib64 before -Lout/lib64, got:\n%s", section)
+	}
+	if !strings.Contains(section, "-Wl,-rpath,/system/lib64") {
+		t.Errorf("Expected absolute rpath on link edge, got:\n%s", section)
+	}
+	if !strings.Contains(section, "-Wl,-rpath,$$ORIGIN/../lib64") {
+		t.Errorf("Expected $$ORIGIN-escaped relative rpath on link edge, got:\n%s", section)
+	}
+
+	// Returned target list: staging paths after the build outputs.
+	gen2 := New(opts, ninja.NewWriter(&bytes.Buffer{}), nil)
+	targets, err := gen2.generateCcBinary(
+		&eval.EvaluatedModule{
+			Type: "cc_binary",
+			Name: "stagebin",
+			Properties: map[string]interface{}{
+				"name":        "stagebin",
+				"srcs":        []interface{}{"main.cpp"},
+				"shared_libs": []interface{}{"libstage"},
+			},
+		})
+	if err != nil {
+		t.Fatalf("generateCcBinary failed: %v", err)
+	}
+	if len(targets) < 2 || targets[0] != filepath.Join("out", "bin", "stagebin") {
+		t.Errorf("Expected build output first in target list, got %v", targets)
+	}
+	if targets[len(targets)-1] != "/system/bin/stagebin" {
+		t.Errorf("Expected staging path after build outputs in target list, got %v", targets)
+	}
+
+	// Default targets keep referencing the build outputs, never staging paths.
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "default ") && strings.Contains(line, "/system/") {
+			t.Errorf("Default targets must not reference staging paths: %s", line)
+		}
+	}
+}
+
+func TestPrefixX32(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.TargetArch = "x32"
+	opts.Prefix = "/apex/com.android.art"
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libx32test",
+		Properties: map[string]interface{}{
+			"name": "libx32test",
+			"srcs": []interface{}{"a.c"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	for _, want := range []string{
+		"build /apex/com.android.art/libx32/libx32test.so: copy out/libx32/libx32test.so",
+		"build /apex/com.android.art/libx32/libx32test.a: copy out/libx32/libx32test.a",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Expected staging edge %q, got:\n%s", want, content)
+		}
+	}
+
+	section := linkEdgeSection(content, "build out/libx32/libx32test.so: link_shared")
+	if section == "" {
+		t.Fatalf("Expected link_shared edge for out/libx32/libx32test.so")
+	}
+	pxIdx := strings.Index(section, "-L/apex/com.android.art/libx32")
+	outIdx := strings.Index(section, "-Lout/libx32")
+	if pxIdx < 0 || outIdx < 0 {
+		t.Fatalf("Expected -L/apex/com.android.art/libx32 and -Lout/libx32 on link edge, got:\n%s", section)
+	}
+	if pxIdx > outIdx {
+		t.Errorf("Expected -L/apex/com.android.art/libx32 before -Lout/libx32, got:\n%s", section)
+	}
+	if !strings.Contains(section, "-Wl,-rpath,/apex/com.android.art/libx32") {
+		t.Errorf("Expected libx32 absolute rpath on link edge, got:\n%s", section)
+	}
+	if !strings.Contains(section, "-Wl,-rpath,$$ORIGIN/../libx32") {
+		t.Errorf("Expected libx32 $$ORIGIN rpath on link edge, got:\n%s", section)
+	}
+}
+
+func TestPrefixRelativeDotAndSlash(t *testing.T) {
+	newContent := func(prefix string) string {
+		var buf strings.Builder
+		nw := ninja.NewWriter(&buf)
+		opts := DefaultOptions(".", "out")
+		opts.Prefix = prefix
+		opts.AllowMissingDeps = true
+		gen := New(opts, nw, nil)
+		if err := gen.Generate(prefixTestModules()); err != nil {
+			t.Fatalf("Generate failed for prefix %q: %v", prefix, err)
+		}
+		return buf.String()
+	}
+
+	for _, prefix := range []string{".", "/"} {
+		content := newContent(prefix)
+		if strings.Contains(content, "-Wl,-rpath") {
+			t.Errorf("prefix %q: relative mode must not emit rpath flags, got:\n%s", prefix, content)
+		}
+		if strings.Contains(content, ": copy_executable ") {
+			t.Errorf("prefix %q: relative mode must not emit staging copy_executable edges, got:\n%s", prefix, content)
+		}
+		if strings.Contains(content, ": copy ") {
+			t.Errorf("prefix %q: relative mode must not emit staging copy edges, got:\n%s", prefix, content)
+		}
+		if strings.Contains(content, "-L/") {
+			t.Errorf("prefix %q: relative mode must not emit absolute -L paths, got:\n%s", prefix, content)
+		}
+	}
+}
+
+// TestPrefixNinjaDryRunRpathEscaping feeds the generated manifest to a real
+// ninja dry run and proves $$ORIGIN survives $-escaping: the expanded link
+// command contains $ORIGIN exactly once and ninja does not error.
+func TestPrefixNinjaDryRunRpathEscaping(t *testing.T) {
+	ninjaBin, err := exec.LookPath("ninja")
+	if err != nil {
+		t.Skip("ninja not available for dry-run check")
+	}
+	tmp := t.TempDir()
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.Prefix = "/system"
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	depMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libdep",
+		Properties: map[string]interface{}{
+			"name": "libdep",
+			"srcs": []interface{}{"dep.c"},
+		},
+	}
+	binMod := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "drybin",
+		Properties: map[string]interface{}{
+			"name":        "drybin",
+			"srcs":        []interface{}{"main.c"},
+			"static_libs": []interface{}{"libdep"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{depMod, binMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	buildFile := filepath.Join(tmp, "build.ninja")
+	if err := os.WriteFile(buildFile, []byte(buf.String()), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	// ninja (>=1.11) errors on missing inputs even with -n, so provide them.
+	for _, src := range []string{"dep.c", "main.c"} {
+		if err := os.WriteFile(filepath.Join(tmp, src), []byte("int impl(void) { return 0; }\n"), 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+	}
+
+	// -v: print expanded commands (plain -n only prints descriptions).
+	cmd := exec.Command(ninjaBin, "-f", buildFile, "-n", "-v")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	cmd.Dir = tmp
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ninja -n dry run failed: %v\n%s", err, out.String())
+	}
+
+	var linkCmd string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "-o out/bin/drybin") {
+			linkCmd = line
+			break
+		}
+	}
+	if linkCmd == "" {
+		t.Fatalf("Expected link command for out/bin/drybin in dry-run output, got:\n%s", out.String())
+	}
+	if n := strings.Count(linkCmd, "$ORIGIN"); n != 1 {
+		t.Errorf("Expected $ORIGIN exactly once in expanded link command, got %d:\n%s", n, linkCmd)
+	}
+	if !strings.Contains(linkCmd, "-Wl,-rpath,$ORIGIN/../lib64") {
+		t.Errorf("Expected shell-visible -Wl,-rpath,$ORIGIN/../lib64, got:\n%s", linkCmd)
+	}
+	if !strings.Contains(linkCmd, "-Wl,-rpath,/system/lib64") {
+		t.Errorf("Expected -Wl,-rpath,/system/lib64 in expanded link command, got:\n%s", linkCmd)
 	}
 }

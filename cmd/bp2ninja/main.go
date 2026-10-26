@@ -220,6 +220,8 @@ func main() {
 	flag.BoolVar(&ndkInfoFlag, "ndk-info", false, "Display discovered Android NDK installations and exit")
 
 	// Built-in tool flags
+	var hidlGenPath string
+	flag.StringVar(&hidlGenPath, "hidl-gen", "hidl-gen", "Path to hidl-gen executable (or via $HIDL_GEN)")
 	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
 	flag.StringVar(&bp2ninjaDir, "bp2ninja-dir", "", "Path to bp2ninja package root (used with -convert-plugin)")
 	flag.BoolVar(&genGoWork, "gen-gowork", false, "Generate go.work resolving android/* packages")
@@ -673,6 +675,21 @@ func main() {
 	opts.ClangCxxPath = clangCxxPath
 	opts.ArPath = arPath
 	opts.LdPath = ldPath
+	if envHidl := os.Getenv("HIDL_GEN"); envHidl != "" && hidlGenPath == "hidl-gen" {
+		hidlGenPath = envHidl
+	} else if hidlGenPath == "hidl-gen" {
+		for _, cand := range []string{
+			filepath.Join(topDir, "prebuilts/build-tools/linux-x86/bin/hidl-gen"),
+			"/los-21/prebuilts/build-tools/linux-x86/bin/hidl-gen",
+			"/opt/android/system/tools/hidl/bin/hidl-gen",
+		} {
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				hidlGenPath = cand
+				break
+			}
+		}
+	}
+	opts.HidlGenPath = hidlGenPath
 	opts.IncludeRoot = includeRoot
 	opts.AllowMissingDeps = allowMissing
 	opts.Siso = siso

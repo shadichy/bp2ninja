@@ -21,6 +21,7 @@ This document provides a comprehensive reference of the Soong and Blueprint modu
   - [`genrule` & `java_genrule`](#genrule--java_genrule)
   - [`gensrcs` & `java_gensrcs`](#gensrcs--java_gensrcs)
   - [`cc_aconfig_library` & `java_aconfig_library`](#cc_aconfig_library--java_aconfig_library)
+  - [`hidl_interface`](#hidl_interface)
 - [Prebuilts & Script Modules](#prebuilts--script-modules)
   - [`prebuilt_etc`, `prebuilt_etc_host`](#prebuilt_etc-prebuilt_etc_host)
   - [`sh_binary`, `sh_binary_host`](#sh_binary-sh_binary_host)
@@ -29,6 +30,7 @@ This document provides a comprehensive reference of the Soong and Blueprint modu
   - [`cc_defaults`, `java_defaults`](#cc_defaults-java_defaults)
   - [`filegroup`](#filegroup)
   - [`soong_config_*`](#soong_config_)
+  - [`hidl_package_root`](#hidl_package_root)
 
 ---
 
@@ -181,6 +183,19 @@ Implements Android 14+ AConfig feature flag library compilation:
 - Invokes `aconfig create-cpp-lib` to generate C++ headers and source code.
 - Compiles generated code into a static library and exports headers under `-Iout/gen/<name>/include`.
 
+### `hidl_interface`
+Compiles Android HIDL (Hardware Interface Definition Language) HAL declarations:
+- Evaluates HIDL interface specifications (`<package>@<major>.<minor>`, e.g. `android.hidl.base@1.0`, `android.hardware.wifi@1.0`) and resolves root options (`-r<root>:<path>`) against in-tree `hidl_package_root` metadata.
+- **C++ Code Generation (`_genc++`, `_genc++_headers`)**:
+  - Automatically synthesizes companion `_genc++` and `_genc++_headers` modules.
+  - Generates C++ source files (`<interface>All.cpp`, `types.cpp`) with `hidl-gen -L c++-sources`.
+  - Generates C++ headers (`I<interface>.h`, `Bs<interface>.h`, `BnHw<interface>.h`, `BpHw<interface>.h`, `IHw<interface>.h`, `types.h`, `hwtypes.h`) with `hidl-gen -L c++-headers`.
+  - Exported headers are routed under `out/gen/<name>/include`, allowing direct dependers (e.g. `libhidlbase`, HAL implementations) to link and include generated headers automatically.
+- **Java Interface Deliverables (`*-java.jar`)**:
+  - Automatically synthesizes Java library targets (`<package>-V<major>.<minor>-java`, e.g. `android.hidl.base-V1.0-java`).
+  - Generates Java source files with `hidl-gen -L java` (or `-L java-constants`).
+  - Compiles Java sources with `javac` against platform stubs (`system/android.jar`, resolving hidden APIs such as `HwParcel` and `HwBinder`) and packages into `out/lib64/<name>.jar` for platform consumption (`frameworks/base`, `services/core`).
+
 ---
 
 ## Prebuilts & Script Modules
@@ -213,4 +228,5 @@ These module types do not produce standalone build artifacts directly, but defin
 - **`cc_defaults`, `java_defaults`**: Template modules holding properties inherited by other modules via `defaults: ["..."]`.
 - **`filegroup`**: Reusable collections of source files referenced via `:filegroup_name`.
 - **`soong_config_module_type`, `soong_config_string_variable`, `soong_config_bool_variable`**: Declarative conditional configuration variables evaluated via `-config <key>=<value>`.
+- **`hidl_package_root`**: Declares a root package prefix and relative path mapping for HIDL interfaces (e.g. `name: "android.hidl", path: "system/libhidl/transport"`), used to construct `-r<package>:<path>` options for `hidl-gen`.
 - **`phony`**: Declares target aliases and virtual milestones.

@@ -25,7 +25,8 @@ func (g *Generator) autoDeriveFallback(mod *eval.EvaluatedModule) ([]string, err
 		"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 		"soong_config_bool_variable", "soong_config_module_type_import",
 		"filegroup", "phony", "ndk_headers", "vintf_fragment",
-		"api_domain", "tree", "aconfig_declarations", "aconfig_values", "aconfig_value_set", "aconfig_declarations_group":
+		"api_domain", "tree", "aconfig_declarations", "aconfig_values", "aconfig_value_set", "aconfig_declarations_group",
+		"hidl_package_root":
 		return nil, nil
 	}
 

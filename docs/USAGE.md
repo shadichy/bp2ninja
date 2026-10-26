@@ -24,6 +24,7 @@ This guide provides comprehensive documentation on running and integrating **bp2
   - [5. Compiling with Protobuf (.proto) Sources](#5-compiling-with-protobuf-proto-sources)
   - [6. Compiling Android Apps & Java/Kotlin Libraries](#6-compiling-android-apps--javakotlin-libraries)
   - [7. Extractive APEX Packaging Workflows](#7-extractive-apex-packaging-workflows)
+  - [8. Compiling HIDL Interfaces & Java Deliverables](#8-compiling-hidl-interfaces--java-deliverables)
 - [Subcommands](#subcommands)
   - [Querying NDKs: `-ndk-info`](#querying-ndks--ndk-info)
   - [Converting In-Tree Plugins: `convert-plugin`](#converting-in-tree-plugins-convert-plugin)
@@ -132,6 +133,8 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   C++ compiler executable. If `-ndk` is specified, defaults to the NDK target Clang++ binary.
 - **`-ld <path>`** *(default: `ld.lld`)*:
   Linker executable path used for partial linking (`ld.lld -r` via `partial_link` rule).
+- **`-hidl-gen <path>`** *(default: `hidl-gen`)*:
+  Path to `hidl-gen` executable. If omitted, `bp2ninja` checks `$HIDL_GEN`, then searches prebuilts directories (e.g. `$top/prebuilts/build-tools/linux-x86/bin/hidl-gen` or `/los-21/...`). Used for code generation on `hidl_interface` modules.
 - **`-cflags <flags>`**:
   Extra C compiler flags (can also be passed via the `$CFLAGS` environment variable).
 - **`-cppflags <flags>`, `-cxxflags <flags>`**:
@@ -226,6 +229,7 @@ matching NDK runtime libraries on the device when the API level differs.
 | `ART_TARGET_CODEGEN_ARCHS` | Space-delimited target codegen architectures for ART/VIXL (e.g. `"arm arm64 x86 x86_64"`). |
 | `ART_HOST_CODEGEN_ARCHS` | Space-delimited host codegen architectures (defaults to all supported architectures). |
 | `BP2NINJA_PLUGINS_DIR` | Directory automatically scanned for `*.so` plugins. |
+| `HIDL_GEN` | Path to `hidl-gen` executable. |
 | `PROTOC` | Path to Protobuf compiler executable (for ABI pinning). |
 | `CLASSPATH` | Host Java classpath search path. |
 
@@ -323,6 +327,25 @@ build() {
   bp2ninja -bp Android.bp -o build.ninja -arch x86_64 -api 34 -ndk "${NDK:-auto}"
   ninja -f build.ninja
 }
+```
+
+### 8. Compiling HIDL Interfaces & Java Deliverables
+
+Compiling HIDL interfaces and libraries (e.g. `system/libhidl`):
+
+```bash
+bp2ninja -bp system/libhidl/transport \
+         -arch x86_64 \
+         -api 34 \
+         -hidl-gen /path/to/hidl-gen \
+         -o hidl.ninja
+
+# Build C++ libraries linked with generated sources & headers:
+ninja -f hidl.ninja out/lib64/libhidlbase.so
+
+# Build Java interface JAR deliverables:
+ninja -f hidl.ninja out/lib64/android.hidl.base-V1.0-java.jar
+ninja -f hidl.ninja out/lib64/android.hidl.manager-V1.0-java.jar
 ```
 
 ---

@@ -34,6 +34,7 @@ type Options struct {
 	KotlincPath         string
 	JavacPath           string
 	JarPath             string
+	HidlGenPath         string
 	TargetArch          string
 	TargetTriple        string
 	APILevel            int
@@ -83,6 +84,7 @@ func DefaultOptions(topDir, outDir string) Options {
 		KotlincPath:      "kotlinc",
 		JavacPath:        "javac",
 		JarPath:          "jar",
+		HidlGenPath:      "hidl-gen",
 		AllowMissingDeps: true,
 	}
 }
@@ -97,8 +99,9 @@ type Generator struct {
 	filegroups     map[string][]string
 	emittedPhonies map[string]bool
 	topDirModules  map[string]string
-	protoHeaders   map[string][]string
-	aconfigHeaders map[string][]string
+	protoHeaders     map[string][]string
+	aconfigHeaders   map[string][]string
+	hidlPackageRoots map[string]string
 
 	// MissingDeps records external dependencies not found in the parsed blueprint set.
 	MissingDeps []string
@@ -120,8 +123,9 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		filegroups:     make(map[string][]string),
 		emittedPhonies: make(map[string]bool),
 		topDirModules:  nil,
-		protoHeaders:   make(map[string][]string),
-		aconfigHeaders: make(map[string][]string),
+		protoHeaders:     make(map[string][]string),
+		aconfigHeaders:   make(map[string][]string),
+		hidlPackageRoots: make(map[string]string),
 	}
 }
 
@@ -353,6 +357,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		return err
 	}
 
+	modules = g.expandHidlInterfaces(modules)
+
 	// Sort modules by internal dependencies and report missing/circular dependencies
 	modules = g.SortModules(modules)
 
@@ -440,7 +446,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 			"soong_config_bool_variable", "soong_config_module_type_import",
 			"filegroup", "phony", "ndk_headers", "vintf_fragment",
-			"cc_defaults", "java_defaults", "art_cc_defaults", "art_global_defaults":
+			"cc_defaults", "java_defaults", "art_cc_defaults", "art_global_defaults",
+			"hidl_package_root":
 			// Declarative meta-modules in generic BP: no direct build action
 			continue
 		case "install_symlink":
@@ -455,6 +462,16 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateSyspropLibrary(mod)
 		case "ndk_library":
 			targets, err = g.generateNdkLibrary(mod)
+		case "hidl_gen_sources":
+			targets, err = g.generateHidlGenSources(mod)
+		case "hidl_gen_headers":
+			targets, err = g.generateHidlGenHeaders(mod)
+		case "hidl_java_library":
+			targets, err = g.generateHidlJavaLibrary(mod)
+		case "hidl_java_constants":
+			targets, err = g.generateHidlJavaConstants(mod)
+		case "hidl_interface":
+			targets, err = g.generateHidlInterface(mod)
 		case "cc_binary", "cc_binary_host", "art_cc_binary":
 			targets, err = g.generateCcBinary(mod)
 		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers",
@@ -586,6 +603,11 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("kotlinc", g.opts.KotlincPath)
 	g.nw.Variable("javac", g.opts.JavacPath)
 	g.nw.Variable("jar", g.opts.JarPath)
+	hidlGenPath := g.opts.HidlGenPath
+	if hidlGenPath == "" {
+		hidlGenPath = "hidl-gen"
+	}
+	g.nw.Variable("hidl_gen", hidlGenPath)
 	g.nw.BlankLine()
 	return nil
 }
@@ -815,6 +837,50 @@ func (g *Generator) emitStandardRules() error {
 		Name:            "sysprop_cpp",
 		Command:         "mkdir -p $$(dirname $out) && $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$(dirname $out)",
 		Description:     "SYSPROP $in",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// HIDL C++ sources codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "hidl_cpp_sources",
+		Command:         "mkdir -p $gen_dir && $${HIDL_GEN:-$hidl_gen} -R -p . -o $gen_dir -L c++-sources $options $fq_name",
+		Description:     "HIDL_CPP_SRCS $fq_name",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// HIDL C++ headers codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "hidl_cpp_headers",
+		Command:         "mkdir -p $gen_dir && $${HIDL_GEN:-$hidl_gen} -R -p . -o $gen_dir -L c++-headers $options $fq_name",
+		Description:     "HIDL_CPP_HDRS $fq_name",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// HIDL Java interface codegen and JAR packaging
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "hidl_java",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "HIDL_JAVA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// HIDL Java constants codegen and JAR packaging
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "hidl_java_constants",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "HIDL_JAVA_CONSTANTS $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {

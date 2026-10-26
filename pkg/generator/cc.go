@@ -538,6 +538,15 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			}
 		}
 	}
+	for _, lib := range append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...) {
+		if libMod, ok := g.moduleMap[lib]; ok {
+			for _, gh := range libMod.GetStringList("export_generated_headers") {
+				if outs, ok := g.moduleOutputs[gh]; ok {
+					orderOnlyDeps = append(orderOnlyDeps, outs...)
+				}
+			}
+		}
+	}
 
 	// 1. Process all .proto sources and emit protoc rules
 	protoGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
@@ -845,6 +854,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 					incPath = filepath.Clean(filepath.Join(libMod.Dir, dir))
 				}
 				incs = append(incs, "-I"+incPath)
+			}
+			for _, gh := range libMod.GetStringList("export_generated_headers") {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh))
 			}
 			hasProto := len(g.protoHeaders[lib]) > 0
 			if !hasProto {

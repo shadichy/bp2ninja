@@ -2744,3 +2744,177 @@ func TestPrefixNinjaDryRun(t *testing.T) {
 		t.Errorf("Expanded dry-run output must not contain -L/system/lib64, got:\n%s", out.String())
 	}
 }
+
+func TestHidlInterfaceCodeGen(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	rootMod := &eval.EvaluatedModule{
+		Type: "hidl_package_root",
+		Name: "android.hidl",
+		Properties: map[string]interface{}{
+			"name": "android.hidl",
+			"path": "transport",
+		},
+	}
+
+	baseMod := &eval.EvaluatedModule{
+		Type: "hidl_interface",
+		Name: "android.hidl.base@1.0",
+		Dir:  "transport/base/1.0",
+		Properties: map[string]interface{}{
+			"name":     "android.hidl.base@1.0",
+			"root":     "android.hidl",
+			"srcs":     []interface{}{"types.hal", "IBase.hal"},
+			"gen_java": true,
+		},
+	}
+
+	hidlbaseMod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libhidlbase",
+		Properties: map[string]interface{}{
+			"name":                     "libhidlbase",
+			"srcs":                     []interface{}{"base/HidlInternal.cpp"},
+			"generated_sources":        []interface{}{"android.hidl.base@1.0_genc++"},
+			"generated_headers":        []interface{}{"android.hidl.base@1.0_genc++_headers"},
+			"export_generated_headers": []interface{}{"android.hidl.base@1.0_genc++_headers"},
+		},
+	}
+
+	javaConsumerMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "libcore_consumer",
+		Properties: map[string]interface{}{
+			"name": "libcore_consumer",
+			"srcs": []interface{}{"Consumer.java"},
+			"libs": []interface{}{"android.hidl.base-V1.0-java"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{rootMod, baseMod, hidlbaseMod, javaConsumerMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	out := buf.String()
+
+	// 1. Missing dependencies check: base _genc++ and _genc++_headers must NOT be flagged as missing
+	for _, missing := range gen.MissingDeps {
+		if strings.Contains(missing, "android.hidl.base@1.0") {
+			t.Errorf("HIDL target %s flagged as missing dependency", missing)
+		}
+	}
+
+	// 2. C++ sources codegen edge
+	if !strings.Contains(out, "build out/gen/android.hidl.base@1.0_genc++/android/hidl/base/1.0/BaseAll.cpp out/gen/android.hidl.base@1.0_genc++/android/hidl/base/1.0/types.cpp: hidl_cpp_sources transport/base/1.0/types.hal transport/base/1.0/IBase.hal") {
+		t.Errorf("Expected hidl_cpp_sources build edge, got:\n%s", out)
+	}
+	if !strings.Contains(out, "options = -randroid.hidl:transport") {
+		t.Errorf("Expected root option -randroid.hidl:transport, got:\n%s", out)
+	}
+
+	// 3. C++ headers codegen edge
+	if !strings.Contains(out, "out/gen/android.hidl.base@1.0_genc++_headers/android/hidl/base/1.0/IBase.h") ||
+		!strings.Contains(out, "out/gen/android.hidl.base@1.0_genc++_headers/android/hidl/base/1.0/types.h") ||
+		!strings.Contains(out, "out/gen/android.hidl.base@1.0_genc++_headers/android/hidl/base/1.0/hwtypes.h") {
+		t.Errorf("Expected hidl_cpp_headers outputs, got:\n%s", out)
+	}
+
+	// 4. Java interface jar deliverables
+	if !strings.Contains(out, "build out/lib64/android.hidl.base-V1.0-java.jar: hidl_java transport/base/1.0/types.hal transport/base/1.0/IBase.hal") {
+		t.Errorf("Expected hidl_java build edge for android.hidl.base-V1.0-java.jar, got:\n%s", out)
+	}
+
+	// 5. libhidlbase compiles the generated sources
+	if !strings.Contains(out, "build out/obj/libhidlbase/android/hidl/base/1.0/BaseAll.o: cxx_compile out/gen/android.hidl.base@1.0_genc++/android/hidl/base/1.0/BaseAll.cpp") {
+		t.Errorf("Expected libhidlbase to compile generated BaseAll.cpp, got:\n%s", out)
+	}
+	if !strings.Contains(out, "build out/obj/libhidlbase/android/hidl/base/1.0/types.o: cxx_compile out/gen/android.hidl.base@1.0_genc++/android/hidl/base/1.0/types.cpp") {
+		t.Errorf("Expected libhidlbase to compile generated types.cpp, got:\n%s", out)
+	}
+
+	// 6. libhidlbase includes generated headers directory
+	if !strings.Contains(out, "-Iout/gen/android.hidl.base@1.0_genc++_headers") {
+		t.Errorf("Expected -Iout/gen/android.hidl.base@1.0_genc++_headers in includes, got:\n%s", out)
+	}
+
+	// 7. Java consumer links against android.hidl.base-V1.0-java.jar
+	if !strings.Contains(out, "out/lib64/android.hidl.base-V1.0-java.jar") {
+		t.Errorf("Expected java consumer to reference android.hidl.base-V1.0-java.jar, got:\n%s", out)
+	}
+}
+
+func TestHidlInterfaceDependentJava(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	rootMod := &eval.EvaluatedModule{
+		Type: "hidl_package_root",
+		Name: "android.hidl",
+		Properties: map[string]interface{}{
+			"name": "android.hidl",
+			"path": "transport",
+		},
+	}
+
+	baseMod := &eval.EvaluatedModule{
+		Type: "hidl_interface",
+		Name: "android.hidl.base@1.0",
+		Dir:  "transport/base/1.0",
+		Properties: map[string]interface{}{
+			"name":     "android.hidl.base@1.0",
+			"root":     "android.hidl",
+			"srcs":     []interface{}{"types.hal", "IBase.hal"},
+			"gen_java": true,
+		},
+	}
+
+	mgrMod := &eval.EvaluatedModule{
+		Type: "hidl_interface",
+		Name: "android.hidl.manager@1.0",
+		Dir:  "transport/manager/1.0",
+		Properties: map[string]interface{}{
+			"name":       "android.hidl.manager@1.0",
+			"root":       "android.hidl",
+			"srcs":       []interface{}{"IServiceManager.hal"},
+			"interfaces": []interface{}{"android.hidl.base@1.0"},
+			"gen_java":   true,
+		},
+	}
+
+	allocMod := &eval.EvaluatedModule{
+		Type: "hidl_interface",
+		Name: "android.hidl.allocator@1.0",
+		Dir:  "transport/allocator/1.0",
+		Properties: map[string]interface{}{
+			"name":       "android.hidl.allocator@1.0",
+			"root":       "android.hidl",
+			"srcs":       []interface{}{"IAllocator.hal"},
+			"interfaces": []interface{}{"android.hidl.base@1.0"},
+			"gen_java":   false,
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{rootMod, baseMod, mgrMod, allocMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	out := buf.String()
+
+	// manager-V1.0-java must have base-V1.0-java.jar as an implicit dependency
+	if !strings.Contains(out, "build out/lib64/android.hidl.manager-V1.0-java.jar: hidl_java") ||
+		!strings.Contains(out, "out/lib64/android.hidl.base-V1.0-java.jar") {
+		t.Errorf("Expected manager Java edge to depend on base-V1.0-java.jar, got:\n%s", out)
+	}
+
+	// allocator has gen_java: false, so android.hidl.allocator-V1.0-java.jar must NOT exist
+	if strings.Contains(out, "android.hidl.allocator-V1.0-java.jar") {
+		t.Errorf("allocator@1.0 with gen_java: false must not emit java jar target")
+	}
+}

@@ -99,6 +99,9 @@ C++ compiler executable path. Defaults to \fBclang++\fR, or the NDK toolchain cl
 .TP
 .BI \-ld " PATH"
 Linker executable path. Defaults to \fBld.lld\fR, or the NDK toolchain ld.lld binary if NDK is active. Used for partial linking (\fBld.lld \-r\fR) of \fBcc_object\fR targets.
+.TP
+.BI \-hidl\-gen " PATH"
+Path to the \fBhidl-gen\fR executable. Used for code generation on \fBhidl_interface\fR targets. If omitted, checks \fB$HIDL_GEN\fR, prebuilts build-tools, or system PATH. Defaults to \fBhidl-gen\fR.
 
 .SS Compiler Flags & Configuration
 .TP
@@ -192,6 +195,9 @@ Root of an Android SDK installation. Used to resolve \fB:current_android_jar\fR 
 .B BP2NINJA_PLUGINS_DIR
 Directory searched automatically for \fB*.so\fR plugins in addition to \fI/usr/lib/bp2ninja/plugins\fR and \fI/usr/local/lib/bp2ninja/plugins\fR.
 .TP
+.B HIDL_GEN
+Path to the \fBhidl-gen\fR executable.
+.TP
 .B PROTOC
 Path to the Protobuf compiler binary. Useful when pinning to a specific fleet ABI (e.g. Protobuf 21.12).
 .TP
@@ -221,13 +227,13 @@ natively translates the following Blueprint module types:
 \fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR.
 .TP
 .B Codegen & Feature Flags
-\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR.
+\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR, \fBhidl_interface\fR.
 .TP
 .B System & Prebuilt Modules
 \fBprebuilt_etc\fR, \fBprebuilt_etc_host\fR, \fBsh_binary\fR, \fBsh_binary_host\fR, \fBpython_binary\fR, \fBpython_binary_host\fR, \fBpython_test_host\fR.
 .TP
 .B Declarative Meta-modules
-\fBcc_defaults\fR, \fBjava_defaults\fR, \fBfilegroup\fR, \fBphony\fR, \fBsoong_config_module_type\fR, \fBsoong_config_string_variable\fR, \fBsoong_config_bool_variable\fR.
+\fBcc_defaults\fR, \fBjava_defaults\fR, \fBfilegroup\fR, \fBphony\fR, \fBsoong_config_module_type\fR, \fBsoong_config_string_variable\fR, \fBsoong_config_bool_variable\fR, \fBhidl_package_root\fR.
 
 .SH EXAMPLES
 .PP

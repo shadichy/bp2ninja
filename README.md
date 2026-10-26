@@ -27,6 +27,7 @@ It enables building individual Android platform components, native libraries, HA
   - [6. AConfig Code Generation (cc_aconfig_library)](#6-aconfig-code-generation-cc_aconfig_library)
   - [7. Recursive Multi-Module Discovery](#7-recursive-multi-module-discovery)
   - [8. Compiling Bionic Runtime Primitives](#8-compiling-bionic-runtime-primitives)
+  - [9. HIDL Interfaces & Java Deliverables](#9-hidl-interfaces--java-deliverables)
 - [Documentation & Man Pages](#documentation--man-pages)
 - [License](#license)
 
@@ -64,6 +65,7 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
   - Host: `-host` mode switches to host compilers (`$CC`, `$CXX`), expanding `host: {}` blocks, `target.host`, `target.linux`, and `target.linux_glibc`.
 - **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
 - **Protobuf (`protoc`) Generator**: Automatically transforms `.proto` files into C++ headers and source files, preserves subpath directory layouts (e.g. `protos/aconfig_storage_metadata.pb.h`), adds output include paths, and links order-only header dependencies (`|| <pbHdr>`). Supports ABI pinning via `$PROTOC`.
+- **HIDL Hardware Interfaces (`hidl_interface`, `hidl_package_root`)**: Full support for Android HIDL code generation via `hidl-gen`. Generates C++ sources (`_genc++`), C++ headers (`_genc++_headers`), and Java interface deliverables (`*-java.jar`, e.g. `android.hidl.base-V1.0-java`). Automatically routes generated headers into dependent C++ libraries (such as `libhidlbase`), and compiles Java interfaces with `javac` against `system/android.jar`.
 - **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
 - **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
 - **BPF & System-Property Primitives**: upstream `bpf` module type (clang `--target=bpf` with the canonical Bionic UAPI includes, BTF strip by default, staged under `out/etc/bpf/<sub_dir>/`) and `sysprop_library` / `.sysprop` sources in cc modules (codegen via `sysprop-cli`, pinnable with `$SYSPROP_CLI`; dependents get the generated header dir and `-l` link automatically).
@@ -191,6 +193,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-cc` | string | `clang` | C compiler executable path (or via `$CC`). |
 | `-cxx` | string | `clang++` | C++ compiler executable path (or via `$CXX`). |
 | `-ld` | string | `ld.lld` | Linker executable path (or via `$LD`), used for `cc_object` partial linking (`ld.lld -r`). |
+| `-hidl-gen` | string | `hidl-gen` | Path to `hidl-gen` executable (or via `$HIDL_GEN`). |
 
 ### Flag & Macro Overrides
 
@@ -231,6 +234,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `ANDROID_NDK` | Path to Android NDK installation (checked by auto-discovery). |
 | `ANDROID_SDK` / `ANDROID_HOME` | Path to Android SDK (used to locate `<SDK>/platforms/android-<API>/android.jar`). |
 | `BP2NINJA_PLUGINS_DIR` | Directory containing dynamic `.so` plugins for auto-loading. |
+| `HIDL_GEN` | Custom path to `hidl-gen` executable. |
 | `PROTOC` | Custom path to Protobuf compiler (useful for ABI pinning to Protobuf 21.12). |
 | `CLASSPATH` | Host Java classpath search path. |
 
@@ -356,6 +360,25 @@ bp2ninja -bp bionic/libc \
 
 # Build composite libc.a (via MRI script) and CRT object (via ld.lld -r):
 ninja -f libc.ninja out/lib64/libc.a out/lib64/crtbegin_so.o
+```
+
+### 9. HIDL Interfaces & Java Deliverables
+
+Compiling HIDL interfaces and libraries (e.g. `system/libhidl`):
+
+```bash
+bp2ninja -bp system/libhidl/transport \
+         -arch x86_64 \
+         -api 34 \
+         -hidl-gen /path/to/hidl-gen \
+         -o hidl.ninja
+
+# Build C++ library with generated sources & headers:
+ninja -f hidl.ninja out/lib64/libhidlbase.so
+
+# Build Java interface JAR deliverables:
+ninja -f hidl.ninja out/lib64/android.hidl.base-V1.0-java.jar
+ninja -f hidl.ninja out/lib64/android.hidl.manager-V1.0-java.jar
 ```
 
 ---

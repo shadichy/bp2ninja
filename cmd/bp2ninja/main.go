@@ -534,7 +534,41 @@ func main() {
 		}
 	}
 
-	// 2) Trace subdirectories
+	// 2) Explicit subdirs from root Android.bp (subdirs = [...], optional_subdirs = [...])
+	for _, sDir := range explicitSubdirs {
+		subBp := filepath.Join(rootDir, sDir, "Android.bp")
+		if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
+			abs, err := filepath.Abs(subBp)
+			if err == nil && !evaluatedFiles[abs] {
+				relDir := sDir
+				depth := strings.Count(relDir, string(filepath.Separator)) + 1
+				childFiles = append(childFiles, childFile{
+					path:   subBp,
+					relDir: relDir,
+					depth:  depth,
+				})
+			}
+		}
+		if traceSubdirs {
+			subDirFullPath := filepath.Join(rootDir, sDir)
+			if dList, err := generator.DiscoverBpFiles(subDirFullPath); err == nil {
+				for _, d := range dList {
+					abs, err := filepath.Abs(d.Path)
+					if err == nil && !evaluatedFiles[abs] {
+						relPath, _ := filepath.Rel(rootDir, d.Path)
+						relDir := filepath.Dir(relPath)
+						childFiles = append(childFiles, childFile{
+							path:   d.Path,
+							relDir: relDir,
+							depth:  strings.Count(relDir, string(filepath.Separator)) + 1,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// 3) Trace subdirectories
 	// If the folder does not have Android.bp, ALWAYS recursively find Android.bp in subfolders.
 	// If it does have Android.bp, recursively find if traceSubdirs is true.
 	if !hasRootBp || traceSubdirs {
@@ -550,23 +584,6 @@ func main() {
 					relDir: d.RelDir,
 					depth:  d.Depth,
 				})
-			}
-		}
-	} else {
-		// Process explicit subdirs if traceSubdirs is disabled
-		for _, sDir := range explicitSubdirs {
-			subBp := filepath.Join(rootDir, sDir, "Android.bp")
-			if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
-				abs, err := filepath.Abs(subBp)
-				if err == nil && !evaluatedFiles[abs] {
-					relDir := sDir
-					depth := strings.Count(relDir, string(filepath.Separator)) + 1
-					childFiles = append(childFiles, childFile{
-						path:   subBp,
-						relDir: relDir,
-						depth:  depth,
-					})
-				}
 			}
 		}
 	}

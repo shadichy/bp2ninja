@@ -174,11 +174,7 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 		protoGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
 		for _, src := range g.ResolveSrcs(mod) {
 			if strings.HasSuffix(src, ".proto") {
-				relSrc := src
-				if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
-					relSrc = strings.TrimPrefix(src, mod.Dir+"/")
-				}
-				pbRel := strings.TrimSuffix(relSrc, ".proto")
+				pbRel := strings.TrimSuffix(src, ".proto")
 				pbSrc := filepath.Join(protoGenDir, pbRel+".pb.cc")
 				pbHdr := filepath.Join(protoGenDir, pbRel+".pb.h")
 				genDeps = append(genDeps, pbHdr)
@@ -556,11 +552,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	for _, src := range srcs {
 		ext := filepath.Ext(src)
 		if ext == ".proto" {
-			relSrc := src
-			if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
-				relSrc = strings.TrimPrefix(src, mod.Dir+"/")
-			}
-			pbRel := strings.TrimSuffix(relSrc, ext)
+			pbRel := strings.TrimSuffix(src, ext)
 			pbSrc := filepath.Join(protoGenDir, pbRel+".pb.cc")
 			pbHdr := filepath.Join(protoGenDir, pbRel+".pb.h")
 			modProtoHeaders = append(modProtoHeaders, pbHdr)

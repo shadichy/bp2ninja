@@ -382,11 +382,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			// Pre-index proto outputs for any module defining .proto sources
 			for _, src := range g.ResolveSrcs(mod) {
 				if strings.HasSuffix(src, ".proto") {
-					rel := src
-					if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
-						rel = strings.TrimPrefix(src, mod.Dir+"/")
-					}
-					pbRel := strings.TrimSuffix(rel, ".proto")
+					pbRel := strings.TrimSuffix(src, ".proto")
 					pbHdr := filepath.Join(g.opts.OutDir, "gen", mod.Name, pbRel+".pb.h")
 					g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
 				}

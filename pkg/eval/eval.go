@@ -401,7 +401,7 @@ func (c *Context) applyMultilib(mod *EvaluatedModule) {
 // applyTarget expands OS/target-specific properties (android vs host/linux).
 func (c *Context) applyTarget(mod *EvaluatedModule) {
 	targetKey := "android"
-	if c.IsHost || strings.HasSuffix(mod.Type, "_host") || (!mod.IsDeviceSupported() && mod.IsHostSupported()) {
+	if c.IsHost || strings.HasSuffix(mod.Type, "_host") || strings.Contains(mod.Type, "_host_") || (!mod.IsDeviceSupported() && mod.IsHostSupported()) {
 		targetKey = "host"
 	}
 
@@ -648,7 +648,7 @@ func (m *EvaluatedModule) IsHostSupported() bool {
 	if m == nil {
 		return false
 	}
-	if strings.HasSuffix(m.Type, "_host") {
+	if strings.HasSuffix(m.Type, "_host") || strings.Contains(m.Type, "_host_") || strings.HasPrefix(m.Type, "host_") {
 		return true
 	}
 	if m.GetBool("host_supported") || m.GetBool("host_available") {
@@ -661,7 +661,7 @@ func (m *EvaluatedModule) IsDeviceSupported() bool {
 	if m == nil {
 		return false
 	}
-	if strings.HasSuffix(m.Type, "_host") {
+	if strings.HasSuffix(m.Type, "_host") || strings.Contains(m.Type, "_host_") || strings.HasPrefix(m.Type, "host_") {
 		return false
 	}
 	if val, ok := m.Properties["device_supported"]; ok {

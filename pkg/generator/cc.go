@@ -1291,6 +1291,15 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		if clean == "sqlite" {
 			clean = "sqlite3"
 		}
+		if g.opts.IsHost {
+			if clean == "protobuf-cpp-full" {
+				clean = "protobuf"
+			} else if clean == "protobuf-cpp-lite" {
+				clean = "protobuf-lite"
+			} else if clean == "c++fs" {
+				continue
+			}
+		}
 		libs = append(libs, "-l"+clean)
 	}
 
@@ -1299,6 +1308,15 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		clean := strings.TrimPrefix(lib, "lib")
 		if clean == "sqlite" {
 			clean = "sqlite3"
+		}
+		if g.opts.IsHost {
+			if clean == "protobuf-cpp-full" {
+				clean = "protobuf"
+			} else if clean == "protobuf-cpp-lite" {
+				clean = "protobuf-lite"
+			} else if clean == "c++fs" {
+				continue
+			}
 		}
 		libs = append(libs, "-l"+clean)
 	}

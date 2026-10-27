@@ -15,17 +15,31 @@ import (
 // escaping is handled by the writer; here we only protect sh syntax.
 func shellJoin(args []string) string {
 	out := make([]string, 0, len(args))
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "" {
 			continue
 		}
-		// Drop dangling flag prefixes (e.g. bare "-I" from an empty include
-		// dir would otherwise swallow the following path argument).
+		// These flags take a following value argument. A bare occurrence is
+		// dangling only when it is the last token (an empty include dir would
+		// otherwise swallow the next path); when a value follows, emit the
+		// flag and its quoted value as a pair.
 		switch a {
-		case "-I", "-isystem", "-idirafter", "-iquote", "-include", "-imacros",
-			"-iprefix", "-iwithprefix", "-iwithprefixbefore", "-isysroot",
-			"--sysroot", "-sysroot", "-target", "--target", "-MF", "-MQ", "-MT",
-			"-Xclang", "-Xlinker", "-install_name":
+		case "-I", "-isystem", "-idirafter", "-iquote", "-include", "-include-pch",
+			"-imacros", "-iprefix", "-iwithprefix", "-iwithprefixbefore",
+			"-isysroot", "--sysroot", "-sysroot", "-target", "--target",
+			"-MF", "-MQ", "-MT", "-Xclang", "-Xlinker", "-install_name":
+			if i+1 >= len(args) || args[i+1] == "" {
+				continue // dangling: nothing to attach
+			}
+			target := args[i+1]
+			i++
+			out = append(out, a)
+			if strings.ContainsAny(target, " \t\n\"'><()$`&|;*?[]{}~#") {
+				out = append(out, "'"+strings.ReplaceAll(target, "'", "'\\''")+"'")
+			} else {
+				out = append(out, target)
+			}
 			continue
 		}
 		handled := false

@@ -212,7 +212,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		}
 		cmd = "mkdir -p " + classesDir +
 			" && $kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") + " " + strings.Join(javaSrcs, " ") +
-			" && $javac -d " + classesDir + " -cp " + javacCp + " " + strings.Join(javaSrcs, " ") +
+			" && $javac -encoding UTF-8 -d " + classesDir + " -cp " + javacCp + " " + strings.Join(javaSrcs, " ") +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	} else {
 		// Pure Java compilation
@@ -222,7 +222,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			cpArg = cpFlag + " "
 		}
 		cmd = "mkdir -p " + classesDir +
-			" && $javac -d " + classesDir + " " + cpArg + strings.Join(javaSrcs, " ") +
+			" && $javac -encoding UTF-8 -d " + classesDir + " " + cpArg + strings.Join(javaSrcs, " ") +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	}
 
@@ -333,9 +333,9 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 	}
 
 	if err := g.nw.Build(ninja.BuildEdge{
-		Outputs:   []string{resApk},
-		Rule:      "genrule_cmd",
-		Inputs:    aaptInputs,
+		Outputs: []string{resApk},
+		Rule:    "genrule_cmd",
+		Inputs:  aaptInputs,
 		Variables: map[string]string{
 			"cmd": aaptCmd,
 		},

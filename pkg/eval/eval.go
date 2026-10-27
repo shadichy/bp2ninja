@@ -263,8 +263,8 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 				continue
 			}
 			valToMerge := cloneProperty(defVal)
-			if defMod.Dir != mod.Dir && (k == "srcs" || k == "local_include_dirs" || k == "export_include_dirs" || k == "arch" || k == "target" || k == "multilib" || k == "codegen") {
-				valToMerge = adjustPathProperty(valToMerge, defMod.Dir, mod.Dir)
+			if defMod.Dir != mod.Dir {
+				valToMerge = adjustPathPropertyKeyed(k, valToMerge, defMod.Dir, mod.Dir)
 			}
 			if existing, exists := mergedDefaults[k]; exists {
 				mergedDefaults[k] = mergeProperties(existing, valToMerge)
@@ -281,6 +281,55 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 		} else {
 			mod.Properties[k] = defVal
 		}
+	}
+}
+
+// adjustPathPropertyKeyed rewrites only the module properties that actually
+// hold source paths. Soong properties such as cflags/cppflags/ldflags or
+// shared_libs are opaque strings and must never be reinterpreted as paths:
+// doing so corrupted defaulted modules (e.g. "-DFOO" became "../-DFOO" and
+// "libvndksupport" became "../libvndksupport") whenever the defaults module
+// lived in a different directory than its consumer.
+func adjustPathPropertyKeyed(key string, val interface{}, fromDir, toDir string) interface{} {
+	switch key {
+	case "srcs", "exclude_srcs", "local_include_dirs", "export_include_dirs":
+		return adjustPathProperty(val, fromDir, toDir)
+	case "arch", "target", "multilib":
+		// Selection maps ("android", "linux_glibc", "arm64", ...) lead to
+		// per-variant property maps; only their path properties need fixing.
+		return adjustNestedPropertyMaps(val, fromDir, toDir)
+	default:
+		return val
+	}
+}
+
+// adjustNestedPropertyMaps walks arch/target/multilib selection maps and
+// applies adjustPathPropertyKeyed at every property leaf.
+func adjustNestedPropertyMaps(val interface{}, fromDir, toDir string) interface{} {
+	switch v := val.(type) {
+	case map[string]interface{}:
+		res := make(map[string]interface{}, len(v))
+		for k, item := range v {
+			switch k {
+			case "srcs", "exclude_srcs", "local_include_dirs", "export_include_dirs":
+				res[k] = adjustPathProperty(item, fromDir, toDir)
+			default:
+				if _, nested := item.(map[string]interface{}); nested {
+					res[k] = adjustNestedPropertyMaps(item, fromDir, toDir)
+				} else {
+					res[k] = item
+				}
+			}
+		}
+		return res
+	case []interface{}:
+		res := make([]interface{}, len(v))
+		for i, item := range v {
+			res[i] = adjustNestedPropertyMaps(item, fromDir, toDir)
+		}
+		return res
+	default:
+		return val
 	}
 }
 

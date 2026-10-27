@@ -447,6 +447,13 @@ func TestDependencyOrderedModuleEmission(t *testing.T) {
 		t.Fatalf("Missing targets in ninja content: leaf=%d, mid=%d, app=%d", leafIdx, midIdx, appIdx)
 	}
 
+	if !strings.Contains(ninjaContent, "-Wl,-soname,$soname") {
+		t.Errorf("link_shared rule must pass -Wl,-soname,$soname, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "soname = libmid.so") {
+		t.Errorf("link_shared edge must set soname to libmid.so, got:\n%s", ninjaContent)
+	}
+
 	if !(leafIdx < midIdx && midIdx < appIdx) {
 		t.Errorf("Expected emission order libleaf < libmid < my_app, but got indices: leaf=%d, mid=%d, app=%d",
 			leafIdx, midIdx, appIdx)
@@ -854,6 +861,9 @@ func TestJavaPureCompilationWithClasspath(t *testing.T) {
 	}
 	if !strings.Contains(content, "out/lib64/some_api.jar") {
 		t.Errorf("Expected some_api.jar in classpath/implicits, got:\n%s", content)
+	}
+	if !strings.Contains(content, "$javac -encoding UTF-8 -d") {
+		t.Errorf("javac invocations must pin -encoding UTF-8, got:\n%s", content)
 	}
 }
 
@@ -2275,8 +2285,8 @@ func TestBpfModule(t *testing.T) {
 		Type: "bpf",
 		Name: "test_progs",
 		Properties: map[string]interface{}{
-			"name":  "test_progs",
-			"srcs":  []interface{}{"progs.c"},
+			"name":   "test_progs",
+			"srcs":   []interface{}{"progs.c"},
 			"cflags": []interface{}{"-DBPF_TEST"},
 		},
 	}
@@ -2320,9 +2330,9 @@ func TestBpfModule(t *testing.T) {
 		Type: "bpf",
 		Name: "nobtf",
 		Properties: map[string]interface{}{
-			"name": "nobtf",
-			"srcs": []interface{}{"x.c"},
-			"btf":  false,
+			"name":    "nobtf",
+			"srcs":    []interface{}{"x.c"},
+			"btf":     false,
 			"sub_dir": "overlay",
 		},
 	}
@@ -2916,5 +2926,55 @@ func TestHidlInterfaceDependentJava(t *testing.T) {
 	// allocator has gen_java: false, so android.hidl.allocator-V1.0-java.jar must NOT exist
 	if strings.Contains(out, "android.hidl.allocator-V1.0-java.jar") {
 		t.Errorf("allocator@1.0 with gen_java: false must not emit java jar target")
+	}
+}
+
+// TestStaticLibsLinkArchives verifies that static_libs entries resolve to an
+// explicit archive (-l:libfoo.a) when Soong would link one, while unresolved
+// entries keep their existing -l fallback.
+func TestStaticLibsLinkArchives(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	bin := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "tool",
+		Properties: map[string]interface{}{
+			"name":        "tool",
+			"srcs":        []interface{}{"main.cpp"},
+			"static_libs": []interface{}{"libboth", "libonlystatic", "missing"},
+		},
+	}
+	both := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libboth",
+		Properties: map[string]interface{}{
+			"name": "libboth",
+			"srcs": []interface{}{"both.cpp"},
+		},
+	}
+	staticOnly := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libonlystatic",
+		Properties: map[string]interface{}{
+			"name": "libonlystatic",
+			"srcs": []interface{}{"static.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{bin, both, staticOnly}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	content := buf.String()
+	if !strings.Contains(content, "-l:libboth.a") {
+		t.Errorf("expected ambiguous static_libs libboth to link as -l:libboth.a, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-l:libonlystatic.a") {
+		t.Errorf("expected static-only libonlystatic to link as -l:libonlystatic.a, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-lmissing") {
+		t.Errorf("expected unresolved static_libs missing to fall back to -lmissing, got:\n%s", content)
 	}
 }

@@ -744,7 +744,6 @@ art_cc_library {
 	}
 }
 
-
 func TestMultilibX32UsesLib32(t *testing.T) {
 	bp := `
 cc_library {
@@ -770,5 +769,102 @@ cc_library {
 	}
 	if strings.Contains(flags, "-DLP64") {
 		t.Errorf("multilib.lib64 flags must not apply for x32, got: %s", flags)
+	}
+}
+
+// TestDefaultsKeepNonPathPropertiesVerbatim guards against the historical
+// path-adjustment bug where every property inherited from a defaults module in
+// another directory was rewritten as a relative path: "-DFOO" became
+// "../-DFOO" and "libvndksupport" became "../libvndksupport".
+func TestDefaultsKeepNonPathPropertiesVerbatim(t *testing.T) {
+	parentBp := `
+cc_defaults {
+    name: "shared_defaults",
+    cflags: ["-DFOO=1", "-fvisibility=protected"],
+    shared_libs: ["libvndksupport"],
+    srcs: ["common.cpp"],
+    target: {
+        android: {
+            cflags: ["-DANDROID_BUILD"],
+            shared_libs: ["liblog"],
+            srcs: ["android_only.cpp"],
+        },
+    },
+}
+`
+	childBp := `
+cc_library_shared {
+    name: "consumer",
+    defaults: ["shared_defaults"],
+    srcs: ["consumer.cpp"],
+}
+`
+	ctx := NewContext(nil, "arm64")
+	parentAst, errs := parser.Parse("Android.bp", strings.NewReader(parentBp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error parent: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(parentAst, ""); err != nil {
+		t.Fatalf("EvalFileInDir parent failed: %v", err)
+	}
+	childAst, errs := parser.Parse("sub/Android.bp", strings.NewReader(childBp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error child: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(childAst, "sub"); err != nil {
+		t.Fatalf("EvalFileInDir child failed: %v", err)
+	}
+
+	mod := ctx.Modules[0]
+	cflags := strings.Join(mod.GetStringList("cflags"), " ")
+	if strings.Contains(cflags, "../-D") || strings.Contains(cflags, "../-fvisibility") {
+		t.Errorf("cflags were corrupted by defaults path adjustment: %v", cflags)
+	}
+	if !strings.Contains(cflags, "-DFOO=1") || !strings.Contains(cflags, "-fvisibility=protected") {
+		t.Errorf("expected cflags preserved verbatim, got %v", cflags)
+	}
+	sharedLibs := strings.Join(mod.GetStringList("shared_libs"), " ")
+	if strings.Contains(sharedLibs, "../") {
+		t.Errorf("shared_libs were corrupted by defaults path adjustment: %v", sharedLibs)
+	}
+	if !strings.Contains(sharedLibs, "libvndksupport") {
+		t.Errorf("expected shared_libs preserved, got %v", sharedLibs)
+	}
+
+	// Path properties must still be rebased into the consumer's directory.
+	srcs := mod.GetStringList("srcs")
+	found := false
+	for _, s := range srcs {
+		if s == "../common.cpp" {
+			found = true
+		}
+		if s == "common.cpp" {
+			t.Errorf("srcs were not rebased for a defaults module in another dir: %v", srcs)
+		}
+	}
+	if !found {
+		t.Errorf("expected ../common.cpp in srcs, got %v", srcs)
+	}
+
+	// And the same applies inside target.android: paths rebased, flags intact.
+	target, ok := mod.Properties["target"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("target property missing or wrong type: %T", mod.Properties["target"])
+	}
+	android, ok := target["android"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("target.android missing or wrong type: %T", target["android"])
+	}
+	androidFlags := strings.Join(toStringList(android["cflags"]), " ")
+	if strings.Contains(androidFlags, "../-D") {
+		t.Errorf("target.android cflags were corrupted: %v", androidFlags)
+	}
+	androidLibs := strings.Join(toStringList(android["shared_libs"]), " ")
+	if strings.Contains(androidLibs, "../") {
+		t.Errorf("target.android shared_libs were corrupted: %v", androidLibs)
+	}
+	androidSrcs := toStringList(android["srcs"])
+	if len(androidSrcs) != 1 || androidSrcs[0] != "../android_only.cpp" {
+		t.Errorf("expected target.android srcs rebased to ../android_only.cpp, got %v", androidSrcs)
 	}
 }

@@ -91,14 +91,14 @@ func DefaultOptions(topDir, outDir string) Options {
 
 // Generator translates evaluated modules into a Ninja build file.
 type Generator struct {
-	opts           Options
-	nw             *ninja.Writer
-	registry       *plugins.Registry
-	moduleMap      map[string]*eval.EvaluatedModule
-	moduleOutputs  map[string][]string
-	filegroups     map[string][]string
-	emittedPhonies map[string]bool
-	topDirModules  map[string]string
+	opts             Options
+	nw               *ninja.Writer
+	registry         *plugins.Registry
+	moduleMap        map[string]*eval.EvaluatedModule
+	moduleOutputs    map[string][]string
+	filegroups       map[string][]string
+	emittedPhonies   map[string]bool
+	topDirModules    map[string]string
 	protoHeaders     map[string][]string
 	aconfigHeaders   map[string][]string
 	hidlPackageRoots map[string]string
@@ -115,14 +115,14 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		reg = plugins.GlobalRegistry
 	}
 	return &Generator{
-		opts:           opts,
-		nw:             nw,
-		registry:       reg,
-		moduleMap:      make(map[string]*eval.EvaluatedModule),
-		moduleOutputs:  make(map[string][]string),
-		filegroups:     make(map[string][]string),
-		emittedPhonies: make(map[string]bool),
-		topDirModules:  nil,
+		opts:             opts,
+		nw:               nw,
+		registry:         reg,
+		moduleMap:        make(map[string]*eval.EvaluatedModule),
+		moduleOutputs:    make(map[string][]string),
+		filegroups:       make(map[string][]string),
+		emittedPhonies:   make(map[string]bool),
+		topDirModules:    nil,
 		protoHeaders:     make(map[string][]string),
 		aconfigHeaders:   make(map[string][]string),
 		hidlPackageRoots: make(map[string]string),
@@ -679,7 +679,7 @@ func (g *Generator) emitStandardRules() error {
 	// Link Shared Library
 	if err := g.nw.Rule(ninja.Rule{
 		Name:        "link_shared",
-		Command:     "$cxx -shared -o $out $in $ldflags $${LDFLAGS} $libs",
+		Command:     "$cxx -shared -Wl,-soname,$soname -o $out $in $ldflags $${LDFLAGS} $libs",
 		Description: "LINK_SHARED $out",
 	}); err != nil {
 		return err

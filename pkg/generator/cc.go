@@ -303,6 +303,7 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 			if len(libs) > 0 {
 				vars["libs"] = shellJoin(libs)
 			}
+			vars["soname"] = libBaseName + ".so"
 
 			implicits := g.collectLinkImplicits(sharedMod)
 
@@ -1251,6 +1252,70 @@ func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
 	return dedup(implicits)
 }
 
+// staticArchiveFor decides whether a static_libs entry can be linked as an
+// explicit archive (-l:libfoo.a). Soong links static_libs as archives; plain
+// -lfoo lets the linker prefer a same-named shared library (possibly from the
+// host system or another -L path) whose version script may hide the symbols
+// the consumer needs. The rewrite only happens when an archive is actually
+// resolvable (in-graph static variant or on a linker search path); otherwise
+// the historical -lfoo fallback is preserved.
+func (g *Generator) staticArchiveFor(lib string, mod *eval.EvaluatedModule) (string, bool) {
+	clean := strings.TrimPrefix(lib, "lib")
+	fileName := "lib" + clean + ".a"
+	candidates := []string{lib, "lib" + lib, clean, strings.TrimSuffix(fileName, ".a")}
+
+	haveArchive := false
+	for _, cand := range candidates {
+		libMod, ok := g.moduleMap[cand]
+		if !ok {
+			continue
+		}
+		switch libMod.Type {
+		case "cc_library", "cc_library_host", "art_cc_library":
+			if libMod.WithVariant("static").IsEnabled() && len(g.ResolveSrcs(libMod.WithVariant("static"))) > 0 {
+				haveArchive = true
+			}
+		case "cc_library_static", "cc_library_host_static", "cc_aconfig_library", "art_cc_library_static":
+			if len(g.ResolveSrcs(libMod.WithVariant("static"))) > 0 {
+				haveArchive = true
+			}
+		}
+	}
+
+	// Prebuilt archive on one of the linker search paths.
+	dirs := []string{g.libDir()}
+	if g.opts.PrebuiltLibDir != "" {
+		dirs = append(dirs, g.opts.PrebuiltLibDir)
+	}
+	dirs = append(dirs, linkerSearchDirs(mod.GetStringList("ldflags"))...)
+	dirs = append(dirs, linkerSearchDirs(g.opts.ExtraLdflags)...)
+	dirs = append(dirs, linkerSearchDirs(strings.Fields(os.Getenv("LDFLAGS")))...)
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(dir, fileName)); err == nil && !fi.IsDir() {
+			haveArchive = true
+		}
+	}
+	if haveArchive {
+		return fileName, true
+	}
+	return "", false
+}
+
+func linkerSearchDirs(flags []string) []string {
+	var dirs []string
+	for _, f := range flags {
+		if strings.HasPrefix(f, "-L") {
+			if d := strings.TrimPrefix(f, "-L"); d != "" {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	return dirs
+}
+
 // resolveLinkerArgs implements the dependency-check bypass:
 // shared_libs and static_libs are mapped directly to -l flags and prebuilt paths.
 func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []string, libs []string) {
@@ -1318,7 +1383,11 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 				continue
 			}
 		}
-		libs = append(libs, "-l"+clean)
+		if archive, ok := g.staticArchiveFor(lib, mod); ok {
+			libs = append(libs, "-l:"+archive)
+		} else {
+			libs = append(libs, "-l"+clean)
+		}
 	}
 
 	for _, lib := range mod.GetStringList("whole_static_libs") {

@@ -137,6 +137,7 @@ Modules in the ART compiler ecosystem and VIXL use domain-specific types and the
 ### Libraries (`java_library`, `java_library_host`, `java_library_static`, `android_library`)
 Compiles Java and Kotlin source files into a JAR archive (`out/lib64/<name>.jar`).
 - Automatically switches between pure `kotlinc`, pure `javac`, or two-stage mixed compilation.
+- `javac` always runs with `-encoding UTF-8` (Android sources are UTF-8 regardless of the host locale).
 
 ### Prebuilts (`java_import`, `android_library_import`)
 Packages existing prebuilt JAR archives into the output library directory.
@@ -225,7 +226,7 @@ Generates self-contained executable Python wrapper scripts in `out/bin/<name>` s
 
 These module types do not produce standalone build artifacts directly, but define metadata evaluated during compilation:
 
-- **`cc_defaults`, `java_defaults`**: Template modules holding properties inherited by other modules via `defaults: ["..."]`.
+- **`cc_defaults`, `java_defaults`**: Template modules holding properties inherited by other modules via `defaults: ["..."]`. Path-valued properties (`srcs`, `local_include_dirs`, `export_include_dirs`, also inside `arch`/`target`/`multilib`) are rebased from the defaults module directory to the consumer directory; flag and library lists (`cflags`, `ldflags`, `shared_libs`, ...) are copied verbatim.
 - **`filegroup`**: Reusable collections of source files referenced via `:filegroup_name`.
 - **`soong_config_module_type`, `soong_config_string_variable`, `soong_config_bool_variable`**: Declarative conditional configuration variables evaluated via `-config <key>=<value>`.
 - **`hidl_package_root`**: Declares a root package prefix and relative path mapping for HIDL interfaces (e.g. `name: "android.hidl", path: "system/libhidl/transport"`), used to construct `-r<package>:<path>` options for `hidl-gen`.

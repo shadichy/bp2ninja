@@ -166,7 +166,9 @@ Handles Java and Kotlin source trees:
 ### Linker Arguments & Dependency Checking Bypass
 
 Instead of requiring 1,500 checked-out repositories:
-- Mapped library references (`shared_libs`, `static_libs`) are translated into direct `-l<lib>` flags.
+- `shared_libs` references are translated into direct `-l<lib>` flags.
+- `static_libs` references link the resolved static archive (`-l:lib<lib>.a`) when one is present in the module graph or on a linker search path, matching Soong semantics; otherwise they fall back to `-l<lib>`. This prevents the linker from silently preferring a same-named shared library whose version script hides internal symbols.
+- Shared libraries are linked with `-Wl,-soname,<basename>` so `DT_SONAME` matches the deployed file name.
 - Linker search paths are pointed to `-Lout/lib64` and `-L<prebuilt-libs>`.
 - Missing internal dependencies receive generated phony rules when `-allow-missing-deps` is true.
 

@@ -59,6 +59,7 @@ func (g *Generator) generateSyspropLibrary(mod *eval.EvaluatedModule) ([]string,
 		Variables: map[string]string{
 			"ldflags": shellJoin(ldflags),
 			"libs":    shellJoin(libs),
+			"soname":  libName + ".so",
 		},
 	})
 	return []string{sharedTarget, staticTarget}, nil

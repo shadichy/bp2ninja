@@ -49,19 +49,29 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	raw = append(raw, mod.GetAllStringList("data_bins")...)
 
 	// Codegen & headers
-	raw = append(raw, mod.GetAllStringList("generated_headers")...)
-	raw = append(raw, mod.GetAllStringList("export_generated_headers")...)
-	raw = append(raw, mod.GetAllStringList("generated_sources")...)
+	for _, s := range append(mod.GetAllStringList("generated_headers"), mod.GetAllStringList("export_generated_headers")...) {
+		baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(s, ":"))
+		raw = append(raw, baseLabel)
+	}
+	for _, s := range mod.GetAllStringList("generated_sources") {
+		baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(s, ":"))
+		raw = append(raw, baseLabel)
+	}
 
 	// Tools
-	raw = append(raw, mod.GetAllStringList("tools")...)
+	for _, t := range mod.GetAllStringList("tools") {
+		baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(t, ":"))
+		raw = append(raw, baseLabel)
+	}
 	for _, tf := range mod.GetAllStringList("tool_files") {
 		if strings.HasPrefix(tf, ":") {
-			raw = append(raw, strings.TrimPrefix(tf, ":"))
+			baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(tf, ":"))
+			raw = append(raw, baseLabel)
 		} else if strings.HasPrefix(tf, "//") {
 			parts := strings.Split(tf, ":")
 			if len(parts) == 2 {
-				raw = append(raw, parts[1])
+				baseLabel, _ := parseTaggedLabel(parts[1])
+				raw = append(raw, baseLabel)
 			}
 		}
 	}
@@ -69,22 +79,26 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	// Srcs references (:label or //path:label)
 	for _, s := range mod.GetAllStringList("srcs") {
 		if strings.HasPrefix(s, ":") {
-			raw = append(raw, strings.TrimPrefix(s, ":"))
+			baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(s, ":"))
+			raw = append(raw, baseLabel)
 		} else if strings.HasPrefix(s, "//") {
 			parts := strings.Split(s, ":")
 			if len(parts) == 2 {
-				raw = append(raw, parts[1])
+				baseLabel, _ := parseTaggedLabel(parts[1])
+				raw = append(raw, baseLabel)
 			}
 		}
 	}
 
 	for _, d := range mod.GetAllStringList("data") {
 		if strings.HasPrefix(d, ":") {
-			raw = append(raw, strings.TrimPrefix(d, ":"))
+			baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(d, ":"))
+			raw = append(raw, baseLabel)
 		} else if strings.HasPrefix(d, "//") {
 			parts := strings.Split(d, ":")
 			if len(parts) == 2 {
-				raw = append(raw, parts[1])
+				baseLabel, _ := parseTaggedLabel(parts[1])
+				raw = append(raw, baseLabel)
 			}
 		}
 	}

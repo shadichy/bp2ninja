@@ -863,7 +863,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				incs = append(incs, "-I"+incPath)
 			}
 			for _, gh := range libMod.GetStringList("export_generated_headers") {
-				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh))
+				if ghMod, ok := g.moduleMap[gh]; ok && ghMod.Type == "xsd_config" {
+					incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh, "cpp", "include"))
+				} else {
+					incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", gh))
+				}
 			}
 			hasProto := len(g.protoHeaders[lib]) > 0
 			if !hasProto {
@@ -933,6 +937,10 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	genHeaders := append(mod.GetStringList("generated_headers"), mod.GetStringList("export_generated_headers")...)
 	for _, gh := range genHeaders {
 		genBase := filepath.Join(g.opts.OutDir, "gen", gh)
+		if ghMod, ok := g.moduleMap[gh]; ok && ghMod.Type == "xsd_config" {
+			incs = append(incs, "-I"+filepath.Join(genBase, "cpp", "include"))
+			continue
+		}
 		incs = append(incs, "-I"+genBase)
 		if ghMod, ok := g.moduleMap[gh]; ok {
 			for _, expDir := range ghMod.GetStringList("export_include_dirs") {
@@ -951,6 +959,58 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	}
 	if fi, err := os.Stat(filepath.Join(g.opts.BpDir, localInc)); err == nil && fi.IsDir() {
 		incs = append(incs, "-I"+localInc)
+	}
+
+	// Partition includes into strict tiered precedence buckets:
+	// Tier 1: Authentic APEX headers & Platform Sysroot (HIGHEST PRECEDENCE)
+	// Extractive APEX header paths must always precede VNDK snapshot paths.
+	var tier1 []string
+	var tier2 []string
+	var tier3 []string
+	var tier4 []string
+
+	for _, apexInc := range []string{
+		"/apex/com.android.ext.framework.base/include",
+		"/apex/include",
+	} {
+		if fi, err := os.Stat(apexInc); err == nil && fi.IsDir() {
+			tier1 = append(tier1, "-I"+apexInc)
+		}
+	}
+	if g.opts.SysrootDir != "" {
+		sysInc := filepath.Join(g.opts.SysrootDir, "include")
+		if fi, err := os.Stat(sysInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
+			tier1 = append(tier1, "-I"+sysInc)
+		}
+		if !strings.Contains(g.opts.ClangPath, "-clang") {
+			sysUsrInc := filepath.Join(g.opts.SysrootDir, "usr", "include")
+			if fi, err := os.Stat(sysUsrInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
+				tier1 = append(tier1, "-isystem "+sysUsrInc)
+			}
+		}
+	}
+
+	// Classify module includes, generated headers, and include_dirs into tiers
+	for _, inc := range incs {
+		if strings.Contains(inc, "/apex/") {
+			tier1 = append(tier1, inc)
+		} else if strings.Contains(inc, "vndk") {
+			tier4 = append(tier4, inc)
+		} else {
+			tier2 = append(tier2, inc)
+		}
+	}
+
+	for _, flag := range append(append(mod.GetStringList("cflags"), mod.GetStringList("cppflags")...), append(g.opts.ExtraCflags, g.opts.ExtraCppflags...)...) {
+		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
+			if strings.Contains(flag, "/apex/") {
+				tier1 = append(tier1, flag)
+			} else if strings.Contains(flag, "vndk") {
+				tier4 = append(tier4, flag)
+			} else {
+				tier2 = append(tier2, flag)
+			}
+		}
 	}
 
 	// Auto-detect include dirs for referenced external dependencies from TopDir (ANDROID_BUILD_TOP)
@@ -982,18 +1042,27 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			if base := filepath.Base(dir); base == "libcxx" || base == "libcxxabi" {
 				continue
 			}
-			for _, sub := range []string{"include", "include_vndk", "header_only_include", "include_jni", "util/include"} {
+			for _, sub := range []string{"include", "header_only_include", "include_jni", "util/include"} {
 				candidate := filepath.Join(dir, sub)
 				if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
-					incs = append(incs, "-I"+candidate)
+					tier3 = append(tier3, "-I"+candidate)
 				}
+			}
+			// VNDK snapshot headers go to Tier 4 (lowest precedence)
+			vndkCandidate := filepath.Join(dir, "include_vndk")
+			if fi, err := os.Stat(vndkCandidate); err == nil && fi.IsDir() {
+				tier4 = append(tier4, "-I"+vndkCandidate)
 			}
 			if entries, err := os.ReadDir(dir); err == nil {
 				for _, e := range entries {
 					if e.IsDir() {
 						subCandidate := filepath.Join(dir, e.Name(), "include")
 						if fi, err := os.Stat(subCandidate); err == nil && fi.IsDir() {
-							incs = append(incs, "-I"+subCandidate)
+							if strings.Contains(e.Name(), "vndk") {
+								tier4 = append(tier4, "-I"+subCandidate)
+							} else {
+								tier3 = append(tier3, "-I"+subCandidate)
+							}
 						}
 					}
 				}
@@ -1001,17 +1070,28 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	for _, flag := range append(append(mod.GetStringList("cflags"), mod.GetStringList("cppflags")...), append(g.opts.ExtraCflags, g.opts.ExtraCppflags...)...) {
-		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
-			incs = append(incs, flag)
+	// Filter Tier 4 VNDK snapshot includes if APEX platform headers are present
+	hasApexHeaders := false
+	for _, inc := range tier1 {
+		if strings.Contains(inc, "/apex/") {
+			hasApexHeaders = true
+			break
 		}
 	}
-
-	if g.opts.SysrootDir != "" && !strings.Contains(g.opts.ClangPath, "-clang") {
-		incs = append(incs, "-isystem "+filepath.Join(g.opts.SysrootDir, "usr", "include"))
+	var filteredTier4 []string
+	for _, inc := range tier4 {
+		if hasApexHeaders && (g.opts.DisableSkipAbis || g.opts.SkipAbiLevel == 0) {
+			if strings.Contains(inc, "vndk") {
+				continue
+			}
+		}
+		filteredTier4 = append(filteredTier4, inc)
 	}
-	filtered := incs[:0]
-	for _, e := range incs {
+
+	combined := append(append(append(tier1, tier2...), tier3...), filteredTier4...)
+
+	filtered := combined[:0]
+	for _, e := range combined {
 		if e == "-I" || e == "-isystem" || e == "-idirafter" || e == "-iquote" {
 			continue
 		}
@@ -1177,6 +1257,8 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			return []string{filepath.Join(g.libDir(), baseName+".so")}
 		case "cc_library_static", "cc_library_host_static", "cc_aconfig_library":
 			return []string{filepath.Join(g.libDir(), baseName+".a")}
+		case "cc_object":
+			return []string{filepath.Join(g.libDir(), baseName+".o")}
 		case "cc_library_headers":
 			return []string{filepath.Join(g.opts.OutDir, "headers", libMod.Name)}
 		case "genrule", "gensrcs":
@@ -1188,6 +1270,23 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 				genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", libMod.Name, out))
 			}
 			return genOuts
+		}
+	}
+
+	// Authentic platform sysroot CRT objects and prebuilts fallback
+	if g.opts.SysrootDir != "" && (preferExt == ".o" || strings.HasSuffix(lib, ".o") || strings.HasPrefix(lib, "crt")) {
+		base := strings.TrimSuffix(lib, ".o")
+		for _, sub := range []string{archLibSub(g.opts.TargetArch), "lib64", "lib"} {
+			candidate := filepath.Join(g.opts.SysrootDir, sub, base+".o")
+			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+				return []string{candidate}
+			}
+		}
+		if strings.HasPrefix(g.opts.SysrootDir, "/apex/") {
+			candidate := filepath.Join("/apex", "lib64", base+".o")
+			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+				return []string{candidate}
+			}
 		}
 	}
 	return nil
@@ -1341,6 +1440,21 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)
 	} else {
 		ldflags = append(ldflags, "-L"+g.libDir())
+	}
+
+	if g.opts.SysrootDir != "" {
+		for _, sub := range []string{archLibSub(g.opts.TargetArch), "lib64", "lib"} {
+			sysLib := filepath.Join(g.opts.SysrootDir, sub)
+			if fi, err := os.Stat(sysLib); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps || strings.HasPrefix(g.opts.SysrootDir, "/apex/") {
+				ldflags = append(ldflags, "-L"+sysLib, "-B"+sysLib)
+				break
+			}
+		}
+		if strings.HasPrefix(g.opts.SysrootDir, "/apex/") {
+			if fi, err := os.Stat("/apex/lib64"); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps || strings.HasPrefix(g.opts.SysrootDir, "/apex/") {
+				ldflags = append(ldflags, "-L/apex/lib64", "-B/apex/lib64")
+			}
+		}
 	}
 
 	// Auto-detect library paths for dependencies from TopDir (ANDROID_BUILD_TOP)

@@ -152,17 +152,20 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	var javaSrcs []string
 	var ktSrcs []string
 	var jarSrcs []string
+	var srcjarSrcs []string
 	for _, src := range srcs {
 		if strings.HasSuffix(src, ".kt") {
 			ktSrcs = append(ktSrcs, src)
 		} else if strings.HasSuffix(src, ".java") {
 			javaSrcs = append(javaSrcs, src)
+		} else if strings.HasSuffix(src, ".srcjar") {
+			srcjarSrcs = append(srcjarSrcs, src)
 		} else if strings.HasSuffix(src, ".jar") {
 			jarSrcs = append(jarSrcs, src)
 		}
 	}
 
-	allSrcs := append(append([]string{}, ktSrcs...), javaSrcs...)
+	allSrcs := append(append(append([]string{}, ktSrcs...), javaSrcs...), srcjarSrcs...)
 	if len(allSrcs) == 0 {
 		if g.opts.AllowMissingDeps {
 			g.emitPhonyIfNeeded(jarTarget)
@@ -187,20 +190,42 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	var rule string
 	var cmd string
 
-	if len(ktSrcs) > 0 && len(javaSrcs) == 0 {
+	encoding := g.opts.JavaEncoding
+	if encoding == "" {
+		encoding = "UTF-8"
+	}
+	envPrefix := "export LC_ALL=C.UTF-8 LANG=C.UTF-8 JAVA_TOOL_OPTIONS=\"-Dfile.encoding=UTF-8\" && "
+
+	// System modules support (--system)
+	sysModulesArg := ""
+	if sm := mod.GetString("system_modules"); sm != "" {
+		sysModulesDir := filepath.Join(g.opts.OutDir, "system_modules", sm)
+		sysModulesArg = "--system=" + sysModulesDir + " "
+		if outs, ok := g.moduleOutputs[sm]; ok {
+			cpDeps = append(cpDeps, outs...)
+		}
+	}
+
+	srcjarExtractCmd := ""
+	srcjarJavaArg := ""
+	if len(srcjarSrcs) > 0 {
+		srcjarDir := filepath.Join(classesDir, "srcgen")
+		srcjarExtractCmd = "mkdir -p " + srcjarDir + " && for sj in " + strings.Join(srcjarSrcs, " ") + "; do unzip -qo -d " + srcjarDir + " $$sj 2>/dev/null || true; done && find " + srcjarDir + " -name '*.java' > " + classesDir + "/srcjar.list && "
+		srcjarJavaArg = " @" + classesDir + "/srcjar.list"
+	}
+
+	if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 {
 		// Pure Kotlin compilation
 		rule = "kotlinc_compile"
 		cpArg := ""
 		if cpFlag != "" {
 			cpArg = cpFlag + " "
 		}
-		cmd = "mkdir -p " + classesDir +
+		cmd = envPrefix + "mkdir -p " + classesDir +
 			" && $kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
-	} else if len(ktSrcs) > 0 && len(javaSrcs) > 0 {
+	} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0) {
 		// Mixed Kotlin + Java compilation:
-		// 1. kotlinc compiles Kotlin and processes Java sources for cross-language references
-		// 2. javac compiles Java sources against Kotlin bytecode
 		rule = "kotlin_java_compile"
 		cpArg := ""
 		if cpFlag != "" {
@@ -210,9 +235,9 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		if cpFlag != "" {
 			javacCp = classesDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
 		}
-		cmd = "mkdir -p " + classesDir +
-			" && $kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") + " " + strings.Join(javaSrcs, " ") +
-			" && $javac -encoding UTF-8 -d " + classesDir + " -cp " + javacCp + " " + strings.Join(javaSrcs, " ") +
+		cmd = envPrefix + "mkdir -p " + classesDir + " && " + srcjarExtractCmd +
+			"$kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") + " " + strings.Join(javaSrcs, " ") +
+			" && $javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " -cp " + javacCp + " " + strings.Join(javaSrcs, " ") + srcjarJavaArg +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	} else {
 		// Pure Java compilation
@@ -221,8 +246,8 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		if cpFlag != "" {
 			cpArg = cpFlag + " "
 		}
-		cmd = "mkdir -p " + classesDir +
-			" && $javac -encoding UTF-8 -d " + classesDir + " " + cpArg + strings.Join(javaSrcs, " ") +
+		cmd = envPrefix + "mkdir -p " + classesDir + " && " + srcjarExtractCmd +
+			"$javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " " + cpArg + strings.Join(javaSrcs, " ") + srcjarJavaArg +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	}
 

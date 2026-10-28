@@ -52,6 +52,20 @@ type Options struct {
 	HostCodegenArches   []string
 	TargetCodegenArches []string
 
+	// Host tools and code generators
+	XsdcPath             string // xsdc CLI binary path
+	ConvLinkerConfigPath string // conv_linker_config CLI binary path
+	XmllintPath          string // xmllint CLI binary path
+	MkbootimgPath        string // mkbootimg CLI binary path
+	AvbtoolPath          string // avbtool CLI binary path
+	LpmakePath           string // lpmake CLI binary path
+	CompatConfigPath     string // process-compat-config CLI binary path
+
+	// Platform sysroot and ABI controls
+	SkipAbiLevel   int    // Skip base ABI libraries at or below this level
+	DisableSkipAbis bool   // Disable skipping base ABI libraries (force APEX resolution)
+	JavaEncoding   string // Default Java source encoding (default: UTF-8)
+
 	// Siso emits Siso-specific ninja bindings (restat_content, remote_enabled,
 	// sandbox_disabled, ...) so the graph runs under `siso ninja` as a drop-in
 	// Ninja replacement. Upstream Ninja rejects those bindings, hence opt-in.
@@ -84,8 +98,16 @@ func DefaultOptions(topDir, outDir string) Options {
 		KotlincPath:      "kotlinc",
 		JavacPath:        "javac",
 		JarPath:          "jar",
-		HidlGenPath:      "hidl-gen",
-		AllowMissingDeps: true,
+		HidlGenPath:          "hidl-gen",
+		XsdcPath:             "xsdc",
+		ConvLinkerConfigPath: "conv_linker_config",
+		XmllintPath:          "xmllint",
+		MkbootimgPath:        "mkbootimg",
+		AvbtoolPath:          "avbtool",
+		LpmakePath:           "lpmake",
+		CompatConfigPath:     "process-compat-config",
+		JavaEncoding:         "UTF-8",
+		AllowMissingDeps:     true,
 	}
 }
 
@@ -96,6 +118,8 @@ type Generator struct {
 	registry         *plugins.Registry
 	moduleMap        map[string]*eval.EvaluatedModule
 	moduleOutputs    map[string][]string
+	taggedOutputs    map[string][]string
+	aidlLibraries    map[string]*aidlLibraryInfo
 	filegroups       map[string][]string
 	emittedPhonies   map[string]bool
 	topDirModules    map[string]string
@@ -114,12 +138,17 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 	if reg == nil {
 		reg = plugins.GlobalRegistry
 	}
+	if opts.JavaEncoding == "" {
+		opts.JavaEncoding = "UTF-8"
+	}
 	return &Generator{
 		opts:             opts,
 		nw:               nw,
 		registry:         reg,
 		moduleMap:        make(map[string]*eval.EvaluatedModule),
 		moduleOutputs:    make(map[string][]string),
+		taggedOutputs:    make(map[string][]string),
+		aidlLibraries:    make(map[string]*aidlLibraryInfo),
 		filegroups:       make(map[string][]string),
 		emittedPhonies:   make(map[string]bool),
 		topDirModules:    nil,
@@ -248,6 +277,11 @@ func (g *Generator) resolveReference(ref string) []string {
 		baseLabel, tag := parseTaggedLabel(label)
 		if fg, ok := g.filegroups[baseLabel]; ok && len(fg) > 0 {
 			return fg
+		}
+		if tag != "" {
+			if tagged, ok := g.taggedOutputs[baseLabel+":"+tag]; ok && len(tagged) > 0 {
+				return tagged
+			}
 		}
 		if outs, ok := g.moduleOutputs[baseLabel]; ok && len(outs) > 0 {
 			if tag != "" {
@@ -503,6 +537,24 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets = []string{jarTarget}
 		case "cc_aconfig_library":
 			targets, err = g.generateCcAconfigLibrary(mod)
+		case "xsd_config":
+			targets, err = g.generateXsdConfig(mod)
+		case "linker_config":
+			targets, err = g.generateLinkerConfig(mod)
+		case "prebuilt_etc_xml":
+			targets, err = g.generatePrebuiltEtcXml(mod)
+		case "aidl_library":
+			targets, err = g.generateAidlLibrary(mod)
+		case "bootimg":
+			targets, err = g.generateBootimg(mod)
+		case "vbmeta", "avb_gen_vbmeta_image":
+			targets, err = g.generateVbmeta(mod)
+		case "logical_partition":
+			targets, err = g.generateLogicalPartition(mod)
+		case "platform_compat_config":
+			targets, err = g.generatePlatformCompatConfig(mod)
+		case "java_system_modules":
+			targets, err = g.generateJavaSystemModules(mod)
 		default:
 			// Fallback only: Pattern recognition heuristic when no plugin or handler exists
 			targets, err = g.autoDeriveFallback(mod)
@@ -607,6 +659,48 @@ func (g *Generator) emitHeader() error {
 		hidlGenPath = "hidl-gen"
 	}
 	g.nw.Variable("hidl_gen", hidlGenPath)
+
+	xsdcPath := g.opts.XsdcPath
+	if xsdcPath == "" {
+		xsdcPath = "xsdc"
+	}
+	g.nw.Variable("xsdc", xsdcPath)
+
+	convLinkerConfigPath := g.opts.ConvLinkerConfigPath
+	if convLinkerConfigPath == "" {
+		convLinkerConfigPath = "conv_linker_config"
+	}
+	g.nw.Variable("conv_linker_config", convLinkerConfigPath)
+
+	xmllintPath := g.opts.XmllintPath
+	if xmllintPath == "" {
+		xmllintPath = "xmllint"
+	}
+	g.nw.Variable("xmllint", xmllintPath)
+
+	mkbootimgPath := g.opts.MkbootimgPath
+	if mkbootimgPath == "" {
+		mkbootimgPath = "mkbootimg"
+	}
+	g.nw.Variable("mkbootimg", mkbootimgPath)
+
+	avbtoolPath := g.opts.AvbtoolPath
+	if avbtoolPath == "" {
+		avbtoolPath = "avbtool"
+	}
+	g.nw.Variable("avbtool", avbtoolPath)
+
+	lpmakePath := g.opts.LpmakePath
+	if lpmakePath == "" {
+		lpmakePath = "lpmake"
+	}
+	g.nw.Variable("lpmake", lpmakePath)
+
+	compatConfigPath := g.opts.CompatConfigPath
+	if compatConfigPath == "" {
+		compatConfigPath = "process-compat-config"
+	}
+	g.nw.Variable("process_compat_config", compatConfigPath)
 	g.nw.BlankLine()
 	return nil
 }
@@ -886,6 +980,122 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// XSDC C++ codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "xsdc_cpp",
+		Command:         "mkdir -p $out_dir && $xsdc $in -p $package_name -o $out_dir -c $args",
+		Description:     "XSDC_CPP $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// XSDC Java codegen and srcjar packaging
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "xsdc_java",
+		Command:         "rm -rf $out_dir && mkdir -p $out_dir && $xsdc $in -p $package_name -o $out_dir -j $args && $jar cf $out -C $out_dir .",
+		Description:     "XSDC_JAVA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// XSD schema copy
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "xsd_copy",
+		Command:       "cp -f $in $out",
+		Description:   "COPY_XSD $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Linker config binary protobuf compiler
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "conv_linker_config",
+		Command:       "$conv_linker_config proto -s $in -o $out",
+		Description:   "CONV_LINKER_CONFIG $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// XML schema validation (XSD)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "xmllint_xsd",
+		Command:       "$xmllint --schema $schema $in > /dev/null && cp -f $in $out",
+		Description:   "XMLLINT_XSD $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// XML DTD validation
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "xmllint_dtd",
+		Command:       "$xmllint --dtdvalid $dtd $in > /dev/null && cp -f $in $out",
+		Description:   "XMLLINT_DTD $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Boot image generation (mkbootimg)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "mkbootimg",
+		Command:         "$mkbootimg $args -o $out",
+		Description:     "MKBOOTIMG $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Android Verified Boot vbmeta image (avbtool)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "avbtool_vbmeta",
+		Command:         "$avbtool make_vbmeta_image $args --output $out",
+		Description:     "AVBTOOL_VBMETA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Dynamic partition super image (lpmake)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "lpmake",
+		Command:         "$lpmake $args --output $out",
+		Description:     "LPMAKE $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Platform compatibility config
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "process_compat_config",
+		Command:       "$process_compat_config $args -o $out",
+		Description:   "PROCESS_COMPAT_CONFIG $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Java system modules image generation (jlink)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "system_modules_jlink",
+		Command:         "rm -rf $out && jlink --module-path $module_path --add-modules $add_modules --output $out",
+		Description:     "JLINK $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -1133,6 +1343,8 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 				for _, fg := range fgSrcs {
 					expanded = append(expanded, g.expandGlob(fg)...)
 				}
+			} else if tag != "" && len(g.taggedOutputs[baseLabel+":"+tag]) > 0 {
+				expanded = append(expanded, g.taggedOutputs[baseLabel+":"+tag]...)
 			} else if outs, ok := g.moduleOutputs[baseLabel]; ok {
 				if tag != "" {
 					var matched []string

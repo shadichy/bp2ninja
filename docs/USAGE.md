@@ -135,6 +135,26 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Linker executable path used for partial linking (`ld.lld -r` via `partial_link` rule).
 - **`-hidl-gen <path>`** *(default: `hidl-gen`)*:
   Path to `hidl-gen` executable. If omitted, `bp2ninja` checks `$HIDL_GEN`, then searches prebuilts directories (e.g. `$top/prebuilts/build-tools/linux-x86/bin/hidl-gen` or `/los-21/...`). Used for code generation on `hidl_interface` modules.
+- **`-xsdc <path>`** *(default: `xsdc`)*:
+  Path to `xsdc` XML schema compiler executable. Can also be supplied via `$XSDC`.
+- **`-conv-linker-config <path>`** *(default: `conv_linker_config`)*:
+  Path to `conv_linker_config` tool. Can also be supplied via `$CONV_LINKER_CONFIG`.
+- **`-xmllint <path>`** *(default: `xmllint`)*:
+  Path to `xmllint` XML validator. Can also be supplied via `$XMLLINT`.
+- **`-mkbootimg <path>`** *(default: `mkbootimg`)*:
+  Path to `mkbootimg` boot image creation tool. Can also be supplied via `$MKBOOTIMG`.
+- **`-avbtool <path>`** *(default: `avbtool`)*:
+  Path to `avbtool` Android Verified Boot utility. Can also be supplied via `$AVBTOOL`.
+- **`-lpmake <path>`** *(default: `lpmake`)*:
+  Path to `lpmake` dynamic partition utility. Can also be supplied via `$LPMAKE`.
+- **`-compat-config <path>`** *(default: `process-compat-config`)*:
+  Path to `process-compat-config` tool. Can also be supplied via `$PROCESS_COMPAT_CONFIG`.
+- **`-java-encoding <encoding>`** *(default: `UTF-8`)*:
+  Explicit source encoding for `javac` and `kotlinc` compilation. Can also be supplied via `$JAVA_ENCODING`.
+- **`-skip-abi-level <n>`** *(default: `0`)*:
+  Base Android ABI skip level threshold (corresponds to makeapex / apexm `--skip-abi-level`).
+- **`-disable-skip-abis`** *(default: `false`)*:
+  Disables base Android ABI library skipping. Forces resolution against custom in-tree/APEX platform headers and libraries (`/apex/include`, `/apex/com.android.ext.framework.base/include`), and suppresses shadowing VNDK snapshot headers.
 - **`-cflags <flags>`**:
   Extra C compiler flags (can also be passed via the `$CFLAGS` environment variable).
 - **`-cppflags <flags>`, `-cxxflags <flags>`**:
@@ -230,6 +250,14 @@ matching NDK runtime libraries on the device when the API level differs.
 | `ART_HOST_CODEGEN_ARCHS` | Space-delimited host codegen architectures (defaults to all supported architectures). |
 | `BP2NINJA_PLUGINS_DIR` | Directory automatically scanned for `*.so` plugins. |
 | `HIDL_GEN` | Path to `hidl-gen` executable. |
+| `XSDC` | Path to `xsdc` executable. |
+| `CONV_LINKER_CONFIG` | Path to `conv_linker_config` executable. |
+| `XMLLINT` | Path to `xmllint` executable. |
+| `MKBOOTIMG` | Path to `mkbootimg` executable. |
+| `AVBTOOL` | Path to `avbtool` executable. |
+| `LPMAKE` | Path to `lpmake` executable. |
+| `PROCESS_COMPAT_CONFIG` | Path to `process-compat-config` executable. |
+| `JAVA_ENCODING` | Default character encoding for Java compilation (default: `UTF-8`). |
 | `PROTOC` | Path to Protobuf compiler executable (for ABI pinning). |
 | `CLASSPATH` | Host Java classpath search path. |
 

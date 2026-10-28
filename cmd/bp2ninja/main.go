@@ -222,6 +222,29 @@ func main() {
 	// Built-in tool flags
 	var hidlGenPath string
 	flag.StringVar(&hidlGenPath, "hidl-gen", "hidl-gen", "Path to hidl-gen executable (or via $HIDL_GEN)")
+
+	var xsdcPath string
+	var convLinkerConfigPath string
+	var xmllintPath string
+	var mkbootimgPath string
+	var avbtoolPath string
+	var lpmakePath string
+	var compatConfigPath string
+	var skipAbiLevel int
+	var disableSkipAbis bool
+	var javaEncoding string
+
+	flag.StringVar(&xsdcPath, "xsdc", "xsdc", "Path to xsdc executable (or via $XSDC)")
+	flag.StringVar(&convLinkerConfigPath, "conv-linker-config", "conv_linker_config", "Path to conv_linker_config executable (or via $CONV_LINKER_CONFIG)")
+	flag.StringVar(&xmllintPath, "xmllint", "xmllint", "Path to xmllint executable (or via $XMLLINT)")
+	flag.StringVar(&mkbootimgPath, "mkbootimg", "mkbootimg", "Path to mkbootimg executable (or via $MKBOOTIMG)")
+	flag.StringVar(&avbtoolPath, "avbtool", "avbtool", "Path to avbtool executable (or via $AVBTOOL)")
+	flag.StringVar(&lpmakePath, "lpmake", "lpmake", "Path to lpmake executable (or via $LPMAKE)")
+	flag.StringVar(&compatConfigPath, "compat-config", "process-compat-config", "Path to process-compat-config executable (or via $PROCESS_COMPAT_CONFIG)")
+	flag.IntVar(&skipAbiLevel, "skip-abi-level", 0, "Base ABI level threshold for skipping platform libraries")
+	flag.BoolVar(&disableSkipAbis, "disable-skip-abis", false, "Disable skipping base ABI libraries (force APEX resolution)")
+	flag.StringVar(&javaEncoding, "java-encoding", "UTF-8", "Default character encoding for Java compilation (or via $JAVA_ENCODING)")
+
 	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
 	flag.StringVar(&bp2ninjaDir, "bp2ninja-dir", "", "Path to bp2ninja package root (used with -convert-plugin)")
 	flag.BoolVar(&genGoWork, "gen-gowork", false, "Generate go.work resolving android/* packages")
@@ -716,6 +739,69 @@ func main() {
 		}
 	}
 	opts.HidlGenPath = hidlGenPath
+
+	if envXsdc := os.Getenv("XSDC"); envXsdc != "" && xsdcPath == "xsdc" {
+		xsdcPath = envXsdc
+	} else if xsdcPath == "xsdc" {
+		for _, cand := range []string{
+			filepath.Join(topDir, "prebuilts/host/xsdc/bin/xsdc"),
+			"/los-21/prebuilts/host/xsdc/bin/xsdc",
+			"/opt/xsdc/bin/xsdc",
+		} {
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				xsdcPath = cand
+				break
+			}
+		}
+	}
+	opts.XsdcPath = xsdcPath
+
+	if envConv := os.Getenv("CONV_LINKER_CONFIG"); envConv != "" && convLinkerConfigPath == "conv_linker_config" {
+		convLinkerConfigPath = envConv
+	} else if convLinkerConfigPath == "conv_linker_config" {
+		for _, cand := range []string{
+			filepath.Join(topDir, "out/host/linux-x86/bin/conv_linker_config"),
+			"/los-21/out/host/linux-x86/bin/conv_linker_config",
+		} {
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				convLinkerConfigPath = cand
+				break
+			}
+		}
+	}
+	opts.ConvLinkerConfigPath = convLinkerConfigPath
+
+	if envXml := os.Getenv("XMLLINT"); envXml != "" && xmllintPath == "xmllint" {
+		xmllintPath = envXml
+	}
+	opts.XmllintPath = xmllintPath
+
+	if envMkboot := os.Getenv("MKBOOTIMG"); envMkboot != "" && mkbootimgPath == "mkbootimg" {
+		mkbootimgPath = envMkboot
+	}
+	opts.MkbootimgPath = mkbootimgPath
+
+	if envAvb := os.Getenv("AVBTOOL"); envAvb != "" && avbtoolPath == "avbtool" {
+		avbtoolPath = envAvb
+	}
+	opts.AvbtoolPath = avbtoolPath
+
+	if envLp := os.Getenv("LPMAKE"); envLp != "" && lpmakePath == "lpmake" {
+		lpmakePath = envLp
+	}
+	opts.LpmakePath = lpmakePath
+
+	if envCompat := os.Getenv("PROCESS_COMPAT_CONFIG"); envCompat != "" && compatConfigPath == "process-compat-config" {
+		compatConfigPath = envCompat
+	}
+	opts.CompatConfigPath = compatConfigPath
+
+	if envEnc := os.Getenv("JAVA_ENCODING"); envEnc != "" && javaEncoding == "UTF-8" {
+		javaEncoding = envEnc
+	}
+	opts.JavaEncoding = javaEncoding
+	opts.SkipAbiLevel = skipAbiLevel
+	opts.DisableSkipAbis = disableSkipAbis
 	opts.IncludeRoot = includeRoot
 	opts.AllowMissingDeps = allowMissing
 	opts.Siso = siso

@@ -22,10 +22,19 @@ This document provides a comprehensive reference of the Soong and Blueprint modu
   - [`gensrcs` & `java_gensrcs`](#gensrcs--java_gensrcs)
   - [`cc_aconfig_library` & `java_aconfig_library`](#cc_aconfig_library--java_aconfig_library)
   - [`hidl_interface`](#hidl_interface)
+  - [`xsd_config`](#xsd_config)
+  - [`aidl_library`](#aidl_library)
+  - [`linker_config`](#linker_config)
+  - [`platform_compat_config`](#platform_compat_config)
 - [Prebuilts & Script Modules](#prebuilts--script-modules)
   - [`prebuilt_etc`, `prebuilt_etc_host`](#prebuilt_etc-prebuilt_etc_host)
+  - [`prebuilt_etc_xml`](#prebuilt_etc_xml)
   - [`sh_binary`, `sh_binary_host`](#sh_binary-sh_binary_host)
   - [`python_binary`, `python_binary_host`, `python_test_host`](#python_binary-python_binary_host-python_test_host)
+- [Filesystem & Image Modules](#filesystem--image-modules)
+  - [`bootimg`](#bootimg)
+  - [`vbmeta` & `avb_gen_vbmeta_image`](#vbmeta--avb_gen_vbmeta_image)
+  - [`logical_partition`](#logical_partition)
 - [Declarative Meta-Modules](#declarative-meta-modules)
   - [`cc_defaults`, `java_defaults`](#cc_defaults-java_defaults)
   - [`filegroup`](#filegroup)
@@ -197,12 +206,40 @@ Compiles Android HIDL (Hardware Interface Definition Language) HAL declarations:
   - Generates Java source files with `hidl-gen -L java` (or `-L java-constants`).
   - Compiles Java sources with `javac` against platform stubs (`system/android.jar`, resolving hidden APIs such as `HwParcel` and `HwBinder`) and packages into `out/lib64/<name>.jar` for platform consumption (`frameworks/base`, `services/core`).
 
+### `xsd_config`
+Upstream XML schema compiler module type (build/soong/xsdc):
+- Compiles XML schema (`.xsd`) files into C++ parsers/enums and Java `.srcjar` libraries via `xsdc`.
+- Emits C++ headers into `out/gen/<name>/cpp/include/` and C++ source files into `out/gen/<name>/cpp/`.
+- Emits Java classes packaged into `out/gen/<name>/java/<pkg>_xsdcgen.srcjar`.
+- Copies raw `.xsd` to `out/gen/<name>/<name>.xsd` for test dependencies.
+- Supports all xsdc flags: `-w` (`gen_writer`), `-n` (`nullability`), `-g` (`gen_has`), `-e` (`enums_only`), `-x` (`parser_only`), `-b` (`boolean_getter`), `-t` (`tinyxml`), `-r` (`root_elements`).
+- Exposes tagged references for dependers: `:name{cpp}`, `:name{h}`, `:name{java}`.
+
+### `aidl_library`
+Upstream AIDL library definition (build/soong/aidl):
+- Declares re-usable interface definition source trees and exported include headers (`hdrs`).
+- Supports `strip_import_prefix` and `include_dirs` to configure AIDL search paths across modules.
+
+### `linker_config`
+Upstream dynamic linker configuration module type (build/soong/linkerconfig):
+- Converts human-readable `linker.config.json` manifests into binary protobuf `linker.config.pb` via `conv_linker_config`.
+- Automatically stages outputs into `out/etc/linker.config.pb` for Bionic dynamic linker (`linker64`) runtime isolation.
+
+### `platform_compat_config`
+Upstream app compat configuration module type (build/soong/java):
+- Combines platform compat XML definitions into merged binary config `platform_compat_config.xml` via `process-compat-config`.
+
 ---
 
 ## Prebuilts & Script Modules
 
 ### `prebuilt_etc`, `prebuilt_etc_host`
 Copies configuration files, XMLs, and assets into target or host partitions (`out/etc/<name>`).
+
+### `prebuilt_etc_xml`
+Upstream XML configuration module type (build/soong/xml):
+- Stages XML files into target partitions (`out/etc/<sub_dir>/<filename>`).
+- Validates XML syntax and constraints against XML Schema (`.xsd`) or DTD (`.dtd`) via `xmllint` prior to staging.
 
 ### `sh_binary`, `sh_binary_host`
 Copies shell scripts and ensures executable permissions (`chmod +x`) in `out/bin/<name>`.
@@ -222,10 +259,30 @@ Generates self-contained executable Python wrapper scripts in `out/bin/<name>` s
 
 ---
 
+## Filesystem & Image Modules
+
+### `bootimg`
+Upstream boot image generator module type (build/soong/filesystem):
+- Packages Linux kernel (`kernel_prebuilt`) and initramfs (`ramdisk_module`) into Android boot images (`out/images/<stem>.img`) via `mkbootimg`.
+- Supports kernel cmdline (`cmdline`), header version (`header_version`), and board name options.
+
+### `vbmeta` & `avb_gen_vbmeta_image`
+Upstream Android Verified Boot metadata generator (build/soong/filesystem):
+- Generates signed VBMeta partition images (`out/images/<stem>.img`) via `avbtool make_vbmeta_image`.
+- Supports partition signing keys (`key`), algorithm (`algorithm`), rollback index, and chained partitions.
+
+### `logical_partition`
+Upstream dynamic partition image generator (build/soong/filesystem):
+- Synthesizes dynamic partition super images (`out/images/<stem>.img`) via `lpmake`.
+- Supports device size (`size`), metadata size (`metadata_size`), metadata slots (`metadata_slots`), partition groups (`groups`, `default_group_size`), and constituent sub-partition images (`partitions`).
+
+---
+
 ## Declarative Meta-Modules
 
 These module types do not produce standalone build artifacts directly, but define metadata evaluated during compilation:
 
+- **`java_system_modules`**: Generates modular runtime images for Java 9+ compilation via `jlink --module-path ... --add-modules ...`.
 - **`cc_defaults`, `java_defaults`**: Template modules holding properties inherited by other modules via `defaults: ["..."]`. Path-valued properties (`srcs`, `local_include_dirs`, `export_include_dirs`, also inside `arch`/`target`/`multilib`) are rebased from the defaults module directory to the consumer directory; flag and library lists (`cflags`, `ldflags`, `shared_libs`, ...) are copied verbatim.
 - **`filegroup`**: Reusable collections of source files referenced via `:filegroup_name`.
 - **`soong_config_module_type`, `soong_config_string_variable`, `soong_config_bool_variable`**: Declarative conditional configuration variables evaluated via `-config <key>=<value>`.

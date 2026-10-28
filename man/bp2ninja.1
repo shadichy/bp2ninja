@@ -102,6 +102,36 @@ Linker executable path. Defaults to \fBld.lld\fR, or the NDK toolchain ld.lld bi
 .TP
 .BI \-hidl\-gen " PATH"
 Path to the \fBhidl-gen\fR executable. Used for code generation on \fBhidl_interface\fR targets. If omitted, checks \fB$HIDL_GEN\fR, prebuilts build-tools, or system PATH. Defaults to \fBhidl-gen\fR.
+.TP
+.BI \-xsdc " PATH"
+Path to the \fBxsdc\fR XML schema compiler executable. Can also be supplied via \fB$XSDC\fR. Defaults to \fBxsdc\fR.
+.TP
+.BI \-conv\-linker\-config " PATH"
+Path to the \fBconv_linker_config\fR executable. Can also be supplied via \fB$CONV_LINKER_CONFIG\fR. Defaults to \fBconv_linker_config\fR.
+.TP
+.BI \-xmllint " PATH"
+Path to the \fBxmllint\fR XML validator executable. Can also be supplied via \fB$XMLLINT\fR. Defaults to \fBxmllint\fR.
+.TP
+.BI \-mkbootimg " PATH"
+Path to the \fBmkbootimg\fR boot image creation utility. Can also be supplied via \fB$MKBOOTIMG\fR. Defaults to \fBmkbootimg\fR.
+.TP
+.BI \-avbtool " PATH"
+Path to the \fBavbtool\fR Android Verified Boot executable. Can also be supplied via \fB$AVBTOOL\fR. Defaults to \fBavbtool\fR.
+.TP
+.BI \-lpmake " PATH"
+Path to the \fBlpmake\fR dynamic partition utility. Can also be supplied via \fB$LPMAKE\fR. Defaults to \fBlpmake\fR.
+.TP
+.BI \-compat\-config " PATH"
+Path to the \fBprocess-compat-config\fR executable. Can also be supplied via \fB$PROCESS_COMPAT_CONFIG\fR. Defaults to \fBprocess-compat-config\fR.
+.TP
+.BI \-java\-encoding " ENC"
+Character encoding for Java/Kotlin compilation (defaults to \fBUTF-8\fR). Can also be supplied via \fB$JAVA_ENCODING\fR.
+.TP
+.BI \-skip\-abi\-level " LEVEL"
+Base Android ABI skip level threshold (corresponds to makeapex / apexm \fB\-\-skip\-abi\-level\fR).
+.TP
+.B \-disable\-skip\-abis
+Disable skipping base Android ABI libraries. Enforces authentic platform header precedence (\fI/apex/include\fR, \fI/apex/com.android.ext.framework.base/include\fR) and suppresses shadowing VNDK snapshot headers.
 
 .SS Compiler Flags & Configuration
 .TP
@@ -198,6 +228,30 @@ Directory searched automatically for \fB*.so\fR plugins in addition to \fI/usr/l
 .B HIDL_GEN
 Path to the \fBhidl-gen\fR executable.
 .TP
+.B XSDC
+Path to the \fBxsdc\fR executable.
+.TP
+.B CONV_LINKER_CONFIG
+Path to the \fBconv_linker_config\fR executable.
+.TP
+.B XMLLINT
+Path to the \fBxmllint\fR executable.
+.TP
+.B MKBOOTIMG
+Path to the \fBmkbootimg\fR executable.
+.TP
+.B AVBTOOL
+Path to the \fBavbtool\fR executable.
+.TP
+.B LPMAKE
+Path to the \fBlpmake\fR executable.
+.TP
+.B PROCESS_COMPAT_CONFIG
+Path to the \fBprocess-compat-config\fR executable.
+.TP
+.B JAVA_ENCODING
+Default source character encoding for Java compilation (defaults to \fBUTF-8\fR).
+.TP
 .B PROTOC
 Path to the Protobuf compiler binary. Useful when pinning to a specific fleet ABI (e.g. Protobuf 21.12).
 .TP
@@ -224,13 +278,16 @@ natively translates the following Blueprint module types:
 \(bu For \fBndk_library\fR, NDK symbol definition maps (\fB.map.txt\fR) are transformed into linker version scripts.
 .TP
 .B Java & Kotlin Modules
-\fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR.
+\fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR, \fBjava_system_modules\fR.
 .TP
 .B Codegen & Feature Flags
-\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR, \fBhidl_interface\fR.
+\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR, \fBhidl_interface\fR, \fBxsd_config\fR, \fBaidl_library\fR, \fBlinker_config\fR, \fBplatform_compat_config\fR.
 .TP
 .B System & Prebuilt Modules
-\fBprebuilt_etc\fR, \fBprebuilt_etc_host\fR, \fBsh_binary\fR, \fBsh_binary_host\fR, \fBpython_binary\fR, \fBpython_binary_host\fR, \fBpython_test_host\fR.
+\fBprebuilt_etc\fR, \fBprebuilt_etc_host\fR, \fBprebuilt_etc_xml\fR, \fBsh_binary\fR, \fBsh_binary_host\fR, \fBpython_binary\fR, \fBpython_binary_host\fR, \fBpython_test_host\fR.
+.TP
+.B Filesystem & Partition Images
+\fBbootimg\fR, \fBvbmeta\fR, \fBavb_gen_vbmeta_image\fR, \fBlogical_partition\fR, \fBandroid_filesystem\fR, \fBfilesystem\fR, \fBinstall_symlink\fR.
 .TP
 .B Declarative Meta-modules
 \fBcc_defaults\fR, \fBjava_defaults\fR, \fBfilegroup\fR, \fBphony\fR, \fBsoong_config_module_type\fR, \fBsoong_config_string_variable\fR, \fBsoong_config_bool_variable\fR, \fBhidl_package_root\fR.

@@ -65,6 +65,14 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
   - Host: `-host` mode switches to host compilers (`$CC`, `$CXX`), expanding `host: {}` blocks, `target.host`, `target.linux`, and `target.linux_glibc`.
 - **Runtime Environment Overrides**: Generated Ninja rules incorporate `$${CFLAGS}`, `$${CCFLAGS}`, `$${CXXFLAGS}`, `$${CPPFLAGS}`, `$${ASFLAGS}`, and `$${LDFLAGS}` variables, allowing callers to override compilation flags at `ninja` run time without re-running `bp2ninja`.
 - **Protobuf (`protoc`) Generator**: Automatically transforms `.proto` files into C++ headers and source files, preserves subpath directory layouts (e.g. `protos/aconfig_storage_metadata.pb.h`), adds output include paths, and links order-only header dependencies (`|| <pbHdr>`). Supports ABI pinning via `$PROTOC`.
+- **XML Schema Compiler (`xsd_config`)**: Compiles XML schema (`.xsd`) files into C++ parsers/enums and Java `.srcjar` libraries via `xsdc`. Emits C++ headers (`cpp/include/`) and sources (`cpp/`), packs Java bytecode into `.srcjar`, copies schema for tests, and exposes `:name{cpp}`, `:name{h}`, `:name{java}` tagged references.
+- **AIDL & Dynamic Linker Configurations**: Full support for `aidl_library` (re-usable AIDL interface packages with `strip_import_prefix`) and `linker_config` (converts `linker.config.json` manifests into binary `linker.config.pb` via `conv_linker_config` staged to `out/etc/`).
+- **Filesystem & Partition Images**: Natively generates Android boot images (`bootimg` via `mkbootimg`), verified boot metadata (`vbmeta` / `avb_gen_vbmeta_image` via `avbtool`), dynamic partition super images (`logical_partition` via `lpmake`), declarative symlinks (`install_symlink`), and validated XMLs (`prebuilt_etc_xml` with `xmllint` validation against `.xsd` / `.dtd`).
+- **Authentic Platform Sysroot & Include Precedence**:
+  - **4-Tier Header Precedence**: APEX platform headers (`/apex/include`, `/apex/com.android.ext.framework.base/include`) and sysroots strictly precede auto-discovered VNDK snapshot paths (`/opt/android-sdk/vndk/v<API>`), preventing VNDK header shadowing.
+  - **ABI Skipping Policy**: `--disable-skip-abis` / `--skip-abi-level` enables linking against custom platform APEXes and suppresses older VNDK snapshot paths.
+  - **Platform Sysroot CRT Resolution**: Supports authentic Bionic platform sysroots (`-sysroot /apex/com.android.runtime.dev`) directly, resolving startup objects and injecting `-L` and `-B`.
+- **Java Toolchain UTF-8 & Modular System Modules**: Exports `LC_ALL=C.UTF-8` and `-Dfile.encoding=UTF-8` with `-encoding UTF-8` (or custom `-java-encoding`) across all `javac` rules; supports `java_system_modules` (`jlink`).
 - **HIDL Hardware Interfaces (`hidl_interface`, `hidl_package_root`)**: Full support for Android HIDL code generation via `hidl-gen`. Generates C++ sources (`_genc++`), C++ headers (`_genc++_headers`), and Java interface deliverables (`*-java.jar`, e.g. `android.hidl.base-V1.0-java`). Automatically routes generated headers into dependent C++ libraries (such as `libhidlbase`), and compiles Java interfaces with `javac` against `system/android.jar`.
 - **AConfig (`cc_aconfig_library`)**: Supports Android 14+ feature flag declarations, invoking `aconfig create-cpp-lib` to produce headers and static archives.
 - **Kotlin & Java Pipeline**: Full support for `java_library`, `java_binary`, `java_import`, and `android_app`. Orchestrates two-stage compilation: `kotlinc` compiles Kotlin bytecode followed by `javac` against Kotlin outputs.
@@ -194,6 +202,16 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-cxx` | string | `clang++` | C++ compiler executable path (or via `$CXX`). |
 | `-ld` | string | `ld.lld` | Linker executable path (or via `$LD`), used for `cc_object` partial linking (`ld.lld -r`). |
 | `-hidl-gen` | string | `hidl-gen` | Path to `hidl-gen` executable (or via `$HIDL_GEN`). |
+| `-xsdc` | string | `xsdc` | Path to `xsdc` XML schema compiler (or via `$XSDC`). |
+| `-conv-linker-config` | string | `conv_linker_config` | Path to `conv_linker_config` executable (or via `$CONV_LINKER_CONFIG`). |
+| `-xmllint` | string | `xmllint` | Path to `xmllint` executable (or via `$XMLLINT`). |
+| `-mkbootimg` | string | `mkbootimg` | Path to `mkbootimg` executable (or via `$MKBOOTIMG`). |
+| `-avbtool` | string | `avbtool` | Path to `avbtool` executable (or via `$AVBTOOL`). |
+| `-lpmake` | string | `lpmake` | Path to `lpmake` executable (or via `$LPMAKE`). |
+| `-compat-config` | string | `process-compat-config` | Path to `process-compat-config` executable (or via `$PROCESS_COMPAT_CONFIG`). |
+| `-java-encoding` | string | `UTF-8` | Explicit Java compilation character encoding (or via `$JAVA_ENCODING`). |
+| `-skip-abi-level` | int | `0` | Base Android ABI skip level threshold (derived from makeapex / apexm). |
+| `-disable-skip-abis` | bool | `false` | Disable ABI skipping; prioritize APEX platform headers and suppress shadowing VNDK paths. |
 
 ### Flag & Macro Overrides
 
@@ -235,6 +253,14 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `ANDROID_SDK` / `ANDROID_HOME` | Path to Android SDK (used to locate `<SDK>/platforms/android-<API>/android.jar`). |
 | `BP2NINJA_PLUGINS_DIR` | Directory containing dynamic `.so` plugins for auto-loading. |
 | `HIDL_GEN` | Custom path to `hidl-gen` executable. |
+| `XSDC` | Custom path to `xsdc` executable. |
+| `CONV_LINKER_CONFIG` | Custom path to `conv_linker_config` executable. |
+| `XMLLINT` | Custom path to `xmllint` executable. |
+| `MKBOOTIMG` | Custom path to `mkbootimg` executable. |
+| `AVBTOOL` | Custom path to `avbtool` executable. |
+| `LPMAKE` | Custom path to `lpmake` executable. |
+| `PROCESS_COMPAT_CONFIG` | Custom path to `process-compat-config` executable. |
+| `JAVA_ENCODING` | Default character encoding for Java compilation (default: `UTF-8`). |
 | `PROTOC` | Custom path to Protobuf compiler (useful for ABI pinning to Protobuf 21.12). |
 | `CLASSPATH` | Host Java classpath search path. |
 

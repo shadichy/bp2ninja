@@ -235,6 +235,10 @@ func main() {
 	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
 	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
 
+	var versionFlag bool
+	flag.BoolVar(&versionFlag, "version", false, "Print bp2ninja version and exit")
+	flag.BoolVar(&versionFlag, "v", false, "Alias for -version")
+
 	var positional []string
 	args := os.Args[1:]
 	for len(args) > 0 {
@@ -251,6 +255,11 @@ func main() {
 		}
 		positional = append(positional, rem[0])
 		args = rem[1:]
+	}
+
+	if versionFlag {
+		fmt.Println("bp2ninja 0.1.2")
+		return
 	}
 
 	if len(positional) > 0 {

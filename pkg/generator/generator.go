@@ -476,8 +476,11 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateCcLibrary(mod)
 		case "cc_test", "cc_benchmark", "cc_test_host", "cc_fuzz", "art_cc_test", "art_cc_test_library":
 			targets, err = g.generateCcTest(mod)
-		case "android_app", "android_app_certificate":
+		case "android_app":
 			targets, err = g.generateAndroidApp(mod)
+		case "android_app_certificate":
+			// Certificate declarations define signing key/cert pairs, not a runnable APK
+			targets = []string{}
 		case "java_library", "java_library_host", "android_library", "java_library_static":
 			targets, err = g.generateJavaLibrary(mod)
 		case "java_import", "android_library_import":

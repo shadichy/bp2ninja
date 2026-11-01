@@ -179,8 +179,8 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Base Android ABI skip level threshold (corresponds to makeapex / apexm `--skip-abi-level`).
 - **`-disable-skip-abis`** *(default: `false`)*:
   Disables base Android ABI library skipping. Forces resolution against custom in-tree/APEX platform headers and libraries (`/apex/include`, `/apex/com.android.ext.framework.base/include`), and suppresses shadowing VNDK snapshot headers.
-- **`-cflags <flags>`**:
-  Extra C compiler flags (can also be passed via the `$CFLAGS` environment variable).
+- **`-cflags <flags>`, `-ccflags <flags>`**:
+  Extra C compiler flags (can also be passed via the `$CFLAGS` or `$CCFLAGS` environment variables).
 - **`-cppflags <flags>`, `-cxxflags <flags>`**:
   Extra C++ compiler flags (can also be passed via `$CXXFLAGS` or `$CPPFLAGS`).
 - **`-asflags <flags>`**:

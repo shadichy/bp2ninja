@@ -227,7 +227,7 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `-cflags` | string | `""` | Extra C compiler flags (can also be passed via `$CFLAGS`). |
+| `-cflags`, `-ccflags` | string | `""` | Extra C compiler flags (can also be passed via `$CFLAGS` / `$CCFLAGS`). |
 | `-cppflags`, `-cxxflags` | string | `""` | Extra C++ compiler flags (can also be passed via `$CXXFLAGS` / `$CPPFLAGS`). |
 | `-asflags` | string | `""` | Extra assembler flags for `.s`/`.S` files (can also be passed via `$ASFLAGS`). |
 | `-ldflags` | string | `""` | Extra linker flags (can also be passed via `$LDFLAGS`). |

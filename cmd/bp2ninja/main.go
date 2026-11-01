@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +135,137 @@ func isBp2CargoInvocation(argv0 string) bool {
 	return name == "bp2cargo" || name == "bp2ninja-cargo"
 }
 
+// printUsage outputs formatted command-line help matching GNU software documentation standards.
+func printUsage(out io.Writer, argv0 string) {
+	progName := filepath.Base(argv0)
+	if progName == "" {
+		progName = "bp2ninja"
+	}
+	isCargo := isBp2CargoInvocation(argv0)
+	isSiso := isBp2SisoInvocation(argv0)
+
+	cargoDef := "false (true when invoked as bp2cargo)"
+	if isCargo {
+		cargoDef = "true"
+	}
+	sisoDef := "false (true when invoked as bp2siso)"
+	if isSiso {
+		sisoDef = "true"
+	}
+
+	fmt.Fprintf(out, "Usage: %s [OPTION]... [FILE|DIR]\n", progName)
+	if !isCargo && !isSiso {
+		fmt.Fprintf(out, "  or:  bp2cargo [OPTION]... [FILE|DIR]\n")
+		fmt.Fprintf(out, "  or:  bp2siso [OPTION]... [FILE|DIR]\n")
+	}
+	fmt.Fprintf(out, "\nTranslate Android.bp (Soong/Blueprint) build manifests into Ninja build files.\n\n")
+
+	fmt.Fprintf(out, "Core options:\n")
+	fmt.Fprintf(out, "  -bp PATH                   Path to target Android.bp file or directory (default: \"Android.bp\")\n")
+	fmt.Fprintf(out, "  -o FILE                    Output Ninja build file path (default: \"build.ninja\")\n")
+	fmt.Fprintf(out, "  -out DIR                   Output directory for build artifacts (default: \"out\")\n")
+	fmt.Fprintf(out, "  -top DIR                   Top of Android source tree (defaults to $ANDROID_BUILD_TOP or \".\")\n")
+	fmt.Fprintf(out, "  -include-root DIR          Root directory for resolving root-relative include paths\n")
+	fmt.Fprintf(out, "  -prefix DIR                Runtime install prefix for deploy-relative and absolute rpaths\n")
+	fmt.Fprintf(out, "  -host                      Build for host machine instead of target device\n")
+	fmt.Fprintf(out, "  -subdirs, -r               Recursively discover nested Android.bp files across subdirectories (default: true)\n")
+	fmt.Fprintf(out, "  -allow-missing-deps        Allow missing dependencies / inputs by generating phony rules (default: true)\n\n")
+
+	fmt.Fprintf(out, "Target architecture and NDK options:\n")
+	fmt.Fprintf(out, "  -arch ARCH                 Target architecture: arm64 (default), arm, x86_64, x86, x32, riscv64\n")
+	fmt.Fprintf(out, "  -api LEVEL                 Target Android API level for NDK compilation (default: 34)\n")
+	fmt.Fprintf(out, "  -ndk PATH                  Path to Android NDK or 'auto' to auto-discover\n")
+	fmt.Fprintf(out, "  -ndk-version VER           Preferred Android NDK version (e.g. 'latest', 'beta', 'r29', '30')\n")
+	fmt.Fprintf(out, "  -ndk-info                  Display discovered Android NDK installations and exit\n")
+	fmt.Fprintf(out, "  -sysroot DIR               Path to target Android sysroot (auto-derived with -ndk)\n")
+	fmt.Fprintf(out, "  -prebuilt-libs DIR         Directory containing prebuilt .so / .a libraries for linker search path\n")
+	fmt.Fprintf(out, "  -skip-abi-level LEVEL      Base ABI level threshold for skipping platform libraries (default: 0)\n")
+	fmt.Fprintf(out, "  -disable-skip-abis         Disable skipping base ABI libraries (force APEX resolution)\n\n")
+
+	fmt.Fprintf(out, "Compiler and linker overrides:\n")
+	fmt.Fprintf(out, "  -cc PATH                   C compiler executable path (default: \"clang\", or via $CC)\n")
+	fmt.Fprintf(out, "  -cxx PATH                  C++ compiler executable path (default: \"clang++\", or via $CXX)\n")
+	fmt.Fprintf(out, "  -ld PATH                   Linker executable path for partial linking (default: \"ld.lld\", or via $LD)\n")
+	fmt.Fprintf(out, "  -cflags, -ccflags FLAGS    Extra C compiler flags (or via $CFLAGS / $CCFLAGS)\n")
+	fmt.Fprintf(out, "  -cppflags, -cxxflags FLAGS Extra C++ compiler flags (or via $CPPFLAGS / $CXXFLAGS)\n")
+	fmt.Fprintf(out, "  -asflags FLAGS             Extra assembler flags for .s/.S files (or via $ASFLAGS)\n")
+	fmt.Fprintf(out, "  -ldflags FLAGS             Extra linker flags (or via $LDFLAGS)\n")
+	fmt.Fprintf(out, "  -java-encoding ENC         Character encoding for Java compilation (default: \"UTF-8\", or via $JAVA_ENCODING)\n")
+	fmt.Fprintf(out, "  -art-target-codegen-archs ARCHES\n")
+	fmt.Fprintf(out, "                             Space-delimited target codegen architectures for ART/VIXL\n")
+	fmt.Fprintf(out, "  -art-host-codegen-archs ARCHES\n")
+	fmt.Fprintf(out, "                             Space-delimited host codegen architectures for ART/VIXL\n")
+	fmt.Fprintf(out, "  -config KEY=VAL            Soong config variable in key=value format (can be repeated)\n\n")
+
+	fmt.Fprintf(out, "Rust and Cargo options (bp2cargo):\n")
+	fmt.Fprintf(out, "  -cargo                     Enable Cargo hybrid engine: synthesize Cargo.toml and compile via cargo\n")
+	fmt.Fprintf(out, "                             (default: %s)\n", cargoDef)
+	fmt.Fprintf(out, "  -cargo-path PATH           Path to cargo executable (default: \"cargo\", or via $CARGO)\n")
+	fmt.Fprintf(out, "  -cargo-out-dir DIR         Custom directory for synthesized Cargo.toml manifests\n")
+	fmt.Fprintf(out, "  -cargo-offline             Pass --offline and export CARGO_NET_OFFLINE=true during cargo builds\n")
+	fmt.Fprintf(out, "  -bindgen-path PATH         Path to bindgen executable (default: \"bindgen\", or via $BINDGEN)\n\n")
+
+	fmt.Fprintf(out, "Platform codegen tools:\n")
+	fmt.Fprintf(out, "  -aidl PATH                 Path to aidl executable (default: \"aidl\", or via $AIDL)\n")
+	fmt.Fprintf(out, "  -metalava PATH             Path to metalava executable (default: \"metalava\", or via $METALAVA)\n")
+	fmt.Fprintf(out, "  -hidl-gen PATH             Path to hidl-gen executable (default: \"hidl-gen\", or via $HIDL_GEN)\n")
+	fmt.Fprintf(out, "  -xsdc PATH                 Path to xsdc XML schema compiler (default: \"xsdc\", or via $XSDC)\n")
+	fmt.Fprintf(out, "  -conv-linker-config PATH   Path to conv_linker_config executable (default: \"conv_linker_config\")\n")
+	fmt.Fprintf(out, "  -xmllint PATH              Path to xmllint XML validator (default: \"xmllint\", or via $XMLLINT)\n")
+	fmt.Fprintf(out, "  -mkbootimg PATH            Path to mkbootimg executable (default: \"mkbootimg\", or via $MKBOOTIMG)\n")
+	fmt.Fprintf(out, "  -avbtool PATH              Path to avbtool executable (default: \"avbtool\", or via $AVBTOOL)\n")
+	fmt.Fprintf(out, "  -lpmake PATH               Path to lpmake executable (default: \"lpmake\", or via $LPMAKE)\n")
+	fmt.Fprintf(out, "  -compat-config PATH        Path to process-compat-config executable (default: \"process-compat-config\")\n\n")
+
+	fmt.Fprintf(out, "Siso execution options (bp2siso):\n")
+	fmt.Fprintf(out, "  -siso                      Emit Siso-specific ninja bindings and companion siso.star config\n")
+	fmt.Fprintf(out, "                             (default: %s)\n", sisoDef)
+	fmt.Fprintf(out, "  -siso-remote               With -siso: mark pure compile actions remote_enabled for RBE\n\n")
+
+	fmt.Fprintf(out, "Modular plugins and Go workspace:\n")
+	fmt.Fprintf(out, "  -a, -add-plugin, -plugin PATH\n")
+	fmt.Fprintf(out, "                             Path to compiled Go plugin (.so) to load (can be repeated)\n")
+	fmt.Fprintf(out, "  -convert-plugin TARGET     Convert in-tree Soong plugin sources into a bp2ninja .so plugin\n")
+	fmt.Fprintf(out, "  -bp2ninja-dir DIR          Path to bp2ninja root source directory (used with -convert-plugin)\n")
+	fmt.Fprintf(out, "  -gen-gowork                Generate go.work workspace resolving android/* packages\n")
+	fmt.Fprintf(out, "  -clean-gowork              Remove go.work and go.work.sum files\n")
+	fmt.Fprintf(out, "  -remote                    Clone missing packages remotely during go.work generation\n")
+	fmt.Fprintf(out, "  -tree DIR                  Android source tree root for go.work generation\n\n")
+
+	fmt.Fprintf(out, "Informational options:\n")
+	fmt.Fprintf(out, "  -help, -h                  Display this help text and exit\n")
+	fmt.Fprintf(out, "  -version, -v               Print version information and exit\n\n")
+
+	fmt.Fprintf(out, "Subcommands:\n")
+	fmt.Fprintf(out, "  convert-plugin TARGET [-o OUT.so] [--bp2ninja-dir DIR]\n")
+	fmt.Fprintf(out, "                             Convert an in-tree Soong plugin into a loadable .so plugin\n")
+	fmt.Fprintf(out, "  gowork [--tree DIR] [--remote] [--clean]\n")
+	fmt.Fprintf(out, "                             Generate or clean go.work workspace for Android Go modules\n")
+	fmt.Fprintf(out, "  clean-gowork               Remove go.work and go.work.sum workspace files\n\n")
+
+	fmt.Fprintf(out, "Environment variables:\n")
+	fmt.Fprintf(out, "  CC                         Default C compiler (overridden by -cc)\n")
+	fmt.Fprintf(out, "  CXX                        Default C++ compiler (overridden by -cxx)\n")
+	fmt.Fprintf(out, "  LD                         Default linker (overridden by -ld)\n")
+	fmt.Fprintf(out, "  CFLAGS, CCFLAGS            Extra flags passed to C compilation\n")
+	fmt.Fprintf(out, "  CPPFLAGS, CXXFLAGS         Extra flags passed to C++ compilation\n")
+	fmt.Fprintf(out, "  ASFLAGS                    Extra flags passed to assembly compilation\n")
+	fmt.Fprintf(out, "  LDFLAGS                    Extra flags passed to linking\n")
+	fmt.Fprintf(out, "  CARGO                      Path to cargo binary (overridden by -cargo-path)\n")
+	fmt.Fprintf(out, "  BINDGEN                    Path to bindgen binary (overridden by -bindgen-path)\n")
+	fmt.Fprintf(out, "  AIDL                       Path to aidl binary (overridden by -aidl)\n")
+	fmt.Fprintf(out, "  METALAVA                   Path to metalava binary (overridden by -metalava)\n")
+	fmt.Fprintf(out, "  ANDROID_BUILD_TOP          Fallback path for -top\n")
+	fmt.Fprintf(out, "  ANDROID_NDK                Android NDK directory for auto-discovery\n")
+	fmt.Fprintf(out, "  ANDROID_SDK, ANDROID_HOME  Android SDK directory for android.jar resolution\n")
+	fmt.Fprintf(out, "  BP2NINJA_PLUGINS_DIR       Directory containing dynamic .so plugins for auto-loading\n")
+	fmt.Fprintf(out, "  HIDL_GEN, XSDC, CONV_LINKER_CONFIG, XMLLINT, MKBOOTIMG, AVBTOOL, LPMAKE, PROCESS_COMPAT_CONFIG\n")
+	fmt.Fprintf(out, "                             Custom tool binary paths\n\n")
+
+	fmt.Fprintf(out, "Report bugs to: <https://github.com/shadichy/bp2ninja/issues>\n")
+	fmt.Fprintf(out, "bp2ninja home page: <https://github.com/shadichy/bp2ninja>\n")
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -146,12 +278,27 @@ func main() {
 		case "clean-gowork":
 			_ = gowork.CleanGoWork(".")
 			return
+		case "help", "--help", "-help", "-h":
+			printUsage(os.Stdout, os.Args[0])
+			return
 		}
 	}
 
 	// Invocation alias: a bp2siso symlink behaves as bp2ninja -siso.
 	sisoDefault := isBp2SisoInvocation(os.Args[0])
 	cargoDefault := isBp2CargoInvocation(os.Args[0])
+
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		for _, a := range os.Args[1:] {
+			if a == "-h" || a == "-help" || a == "--help" || a == "help" {
+				out = os.Stdout
+				break
+			}
+		}
+		printUsage(out, os.Args[0])
+	}
+	flag.CommandLine.Usage = flag.Usage
 
 	var (
 		bpFile              string
@@ -170,6 +317,7 @@ func main() {
 		apiLevel            int
 		ndkInfoFlag         bool
 		extraCflags         string
+		extraCcflags        string
 		extraCppflags       string
 		extraLdflags        string
 		extraAsflags        string
@@ -196,55 +344,58 @@ func main() {
 		metalavaPath        string
 	)
 
-	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
+	// 1. Core Options
+	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to target Android.bp file or directory")
 	flag.StringVar(&outFile, "o", "build.ninja", "Output Ninja build file path")
 	flag.StringVar(&outDir, "out", "out", "Output directory for build artifacts")
-	flag.StringVar(&prefix, "prefix", "", "Runtime install prefix: link edges gain -Wl,-rpath,<prefix>/<libsub> (lib64, lib or libx32 by target arch) plus a deploy-relative -Wl,-rpath,$$ORIGIN/../<libsub> so linked artifacts find their shared libraries once deployed (/system, /apex/<name>...); artifacts always build into out/ and the link-time -L search is unchanged. '.' or '/' keeps the relative behavior")
 	flag.StringVar(&topDir, "top", "", "Top of Android source tree (defaults to $ANDROID_BUILD_TOP or current dir)")
-	flag.StringVar(&includeRoot, "include-root", "", "Root directory for resolving root-relative include paths in cflags and include_dirs")
-	flag.StringVar(&sysrootDir, "sysroot", "", "Path to Android sysroot / NDK (optional)")
+	flag.StringVar(&includeRoot, "include-root", "", "Root directory for resolving root-relative include paths")
+	flag.StringVar(&prefix, "prefix", "", "Runtime install prefix: link edges gain -Wl,-rpath,<prefix>/<libsub>")
+	flag.BoolVar(&isHost, "host", false, "Build for host machine instead of target device")
+	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
+	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
+	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
+
+	// 2. Target Architecture & NDK Options
+	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, x32, riscv64)")
+	flag.IntVar(&apiLevel, "api", 34, "Android API level for NDK target compiler (defaults to 34)")
+	flag.StringVar(&ndkPath, "ndk", "", "Path to Android NDK or 'auto' to auto-discover")
+	flag.StringVar(&ndkVersion, "ndk-version", "", "Preferred Android NDK version (e.g. 'latest', 'beta', 'r29', '30')")
+	flag.BoolVar(&ndkInfoFlag, "ndk-info", false, "Display discovered Android NDK installations and exit")
+	flag.StringVar(&sysrootDir, "sysroot", "", "Path to target Android sysroot (auto-derived with -ndk)")
 	flag.StringVar(&prebuiltLibs, "prebuilt-libs", "", "Directory containing prebuilt .so / .a libraries")
+	var skipAbiLevel int
+	var disableSkipAbis bool
+	flag.IntVar(&skipAbiLevel, "skip-abi-level", 0, "Base ABI level threshold for skipping platform libraries")
+	flag.BoolVar(&disableSkipAbis, "disable-skip-abis", false, "Disable skipping base ABI libraries (force APEX resolution)")
+
+	// 3. Compiler & Linker Overrides
 	flag.StringVar(&clangPath, "cc", "clang", "C compiler executable path")
 	flag.StringVar(&clangCxxPath, "cxx", "clang++", "C++ compiler executable path")
 	flag.StringVar(&ldPath, "ld", "ld.lld", "Linker executable path")
-	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, x32, riscv64). x32 selects the x32 ABI (-mx32, host/glibc only)")
-	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
-	flag.BoolVar(&isHost, "host", false, "Build for host instead of target (uses host compiler and host libraries)")
-	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
-	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
-	flag.BoolVar(&siso, "siso", sisoDefault, "Emit Siso-specific ninja bindings (restat_content, sandbox_disabled) and a companion siso.star config for running the graph with siso (default: on when invoked as bp2siso)")
-	flag.BoolVar(&sisoRemote, "siso-remote", false, "With -siso: additionally mark pure compile actions remote_enabled for RBE offloading (requires a REAPI backend)")
-	flag.BoolVar(&cargo, "cargo", cargoDefault, "Enable Cargo hybrid engine: synthesize Cargo.toml manifests and compile Rust crates via cargo (default: on when invoked as bp2cargo)")
-	flag.StringVar(&cargoPath, "cargo-path", "cargo", "Path to cargo executable (or via $CARGO)")
-	flag.StringVar(&cargoOutDir, "cargo-out-dir", "", "Custom directory for synthesized Cargo manifests (defaults to crate dir or out/cargo/<name>)")
-	flag.BoolVar(&cargoOffline, "cargo-offline", false, "Pass --offline and CARGO_NET_OFFLINE=true to cargo builds")
-	flag.StringVar(&bindgenPath, "bindgen-path", "bindgen", "Path to bindgen executable (or via $BINDGEN)")
-	flag.StringVar(&aidlPath, "aidl", "aidl", "Path to aidl executable (or via $AIDL)")
-	flag.StringVar(&metalavaPath, "metalava", "metalava", "Path to metalava executable (or via $METALAVA)")
-
-	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS, ASFLAGS)
-	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS)")
+	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS / $CCFLAGS)")
+	flag.StringVar(&extraCcflags, "ccflags", "", "Alias for -cflags")
 	flag.StringVar(&extraCppflags, "cppflags", "", "Extra C++ flags (or via $CPPFLAGS / $CXXFLAGS)")
 	flag.StringVar(&extraCppflags, "cxxflags", "", "Alias for -cppflags")
 	flag.StringVar(&extraLdflags, "ldflags", "", "Extra linker flags (or via $LDFLAGS)")
 	flag.StringVar(&extraAsflags, "asflags", "", "Extra assembler flags (or via $ASFLAGS)")
-
-	// ART codegen architecture flags
+	var javaEncoding string
+	flag.StringVar(&javaEncoding, "java-encoding", "UTF-8", "Character encoding for Java compilation (or via $JAVA_ENCODING)")
 	var artTargetCodegen string
 	var artHostCodegen string
-	flag.StringVar(&artTargetCodegen, "art-target-codegen-archs", "", "Space-delimited target codegen architectures for ART/VIXL (or via $ART_TARGET_CODEGEN_ARCHS)")
-	flag.StringVar(&artHostCodegen, "art-host-codegen-archs", "", "Space-delimited host codegen architectures for ART/VIXL (or via $ART_HOST_CODEGEN_ARCHS)")
+	flag.StringVar(&artTargetCodegen, "art-target-codegen-archs", "", "Space-delimited target codegen architectures for ART/VIXL")
+	flag.StringVar(&artHostCodegen, "art-host-codegen-archs", "", "Space-delimited host codegen architectures for ART/VIXL")
+	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
 
-	// Android NDK flags
-	flag.StringVar(&ndkPath, "ndk", "", "Path to Android NDK or 'auto' to auto-discover (Studio, $ANDROID_NDK, distro packages)")
-	flag.StringVar(&ndkVersion, "ndk-version", "", "Preferred Android NDK version (e.g. 'latest', 'beta', 'r29', '30')")
-	flag.IntVar(&apiLevel, "api", 34, "Android API level for NDK target compiler (defaults to 34)")
-	flag.BoolVar(&ndkInfoFlag, "ndk-info", false, "Display discovered Android NDK installations and exit")
+	// 4. Rust and Cargo Hybrid Options (bp2cargo)
+	flag.BoolVar(&cargo, "cargo", cargoDefault, "Enable Cargo hybrid engine (default: on when invoked as bp2cargo)")
+	flag.StringVar(&cargoPath, "cargo-path", "cargo", "Path to cargo executable (or via $CARGO)")
+	flag.StringVar(&cargoOutDir, "cargo-out-dir", "", "Custom directory for synthesized Cargo manifests")
+	flag.BoolVar(&cargoOffline, "cargo-offline", false, "Pass --offline and CARGO_NET_OFFLINE=true to cargo builds")
+	flag.StringVar(&bindgenPath, "bindgen-path", "bindgen", "Path to bindgen executable (or via $BINDGEN)")
 
-	// Built-in tool flags
+	// 5. Platform Codegen Tool Overrides
 	var hidlGenPath string
-	flag.StringVar(&hidlGenPath, "hidl-gen", "hidl-gen", "Path to hidl-gen executable (or via $HIDL_GEN)")
-
 	var xsdcPath string
 	var convLinkerConfigPath string
 	var xmllintPath string
@@ -252,10 +403,9 @@ func main() {
 	var avbtoolPath string
 	var lpmakePath string
 	var compatConfigPath string
-	var skipAbiLevel int
-	var disableSkipAbis bool
-	var javaEncoding string
-
+	flag.StringVar(&aidlPath, "aidl", "aidl", "Path to aidl executable (or via $AIDL)")
+	flag.StringVar(&metalavaPath, "metalava", "metalava", "Path to metalava executable (or via $METALAVA)")
+	flag.StringVar(&hidlGenPath, "hidl-gen", "hidl-gen", "Path to hidl-gen executable (or via $HIDL_GEN)")
 	flag.StringVar(&xsdcPath, "xsdc", "xsdc", "Path to xsdc executable (or via $XSDC)")
 	flag.StringVar(&convLinkerConfigPath, "conv-linker-config", "conv_linker_config", "Path to conv_linker_config executable (or via $CONV_LINKER_CONFIG)")
 	flag.StringVar(&xmllintPath, "xmllint", "xmllint", "Path to xmllint executable (or via $XMLLINT)")
@@ -263,10 +413,15 @@ func main() {
 	flag.StringVar(&avbtoolPath, "avbtool", "avbtool", "Path to avbtool executable (or via $AVBTOOL)")
 	flag.StringVar(&lpmakePath, "lpmake", "lpmake", "Path to lpmake executable (or via $LPMAKE)")
 	flag.StringVar(&compatConfigPath, "compat-config", "process-compat-config", "Path to process-compat-config executable (or via $PROCESS_COMPAT_CONFIG)")
-	flag.IntVar(&skipAbiLevel, "skip-abi-level", 0, "Base ABI level threshold for skipping platform libraries")
-	flag.BoolVar(&disableSkipAbis, "disable-skip-abis", false, "Disable skipping base ABI libraries (force APEX resolution)")
-	flag.StringVar(&javaEncoding, "java-encoding", "UTF-8", "Default character encoding for Java compilation (or via $JAVA_ENCODING)")
 
+	// 6. Siso Execution Options (bp2siso)
+	flag.BoolVar(&siso, "siso", sisoDefault, "Emit Siso-specific ninja bindings and companion siso.star config (default: on when invoked as bp2siso)")
+	flag.BoolVar(&sisoRemote, "siso-remote", false, "With -siso: mark pure compile actions remote_enabled for RBE offloading")
+
+	// 7. Modular Plugins and Go Workspace
+	flag.Var(&pluginPaths, "a", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
+	flag.Var(&pluginPaths, "add-plugin", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
+	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
 	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
 	flag.StringVar(&bp2ninjaDir, "bp2ninja-dir", "", "Path to bp2ninja package root (used with -convert-plugin)")
 	flag.BoolVar(&genGoWork, "gen-gowork", false, "Generate go.work resolving android/* packages")
@@ -274,12 +429,7 @@ func main() {
 	flag.BoolVar(&goworkRemote, "remote", false, "Clone missing packages remotely in go.work generation")
 	flag.StringVar(&goworkTree, "tree", "", "Android source tree root for go.work generation")
 
-	// Plugin flags: -a, -add-plugin, --add-plugin, -plugin
-	flag.Var(&pluginPaths, "a", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
-	flag.Var(&pluginPaths, "add-plugin", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
-	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
-	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
-
+	// 8. Informational Options
 	var versionFlag bool
 	flag.BoolVar(&versionFlag, "version", false, "Print bp2ninja version and exit")
 	flag.BoolVar(&versionFlag, "v", false, "Alias for -version")
@@ -871,8 +1021,14 @@ func main() {
 	if envCflags := os.Getenv("CFLAGS"); envCflags != "" {
 		combinedCflags = append(combinedCflags, strings.Fields(envCflags)...)
 	}
+	if envCcflags := os.Getenv("CCFLAGS"); envCcflags != "" {
+		combinedCflags = append(combinedCflags, strings.Fields(envCcflags)...)
+	}
 	if extraCflags != "" {
 		combinedCflags = append(combinedCflags, strings.Fields(extraCflags)...)
+	}
+	if extraCcflags != "" {
+		combinedCflags = append(combinedCflags, strings.Fields(extraCcflags)...)
 	}
 	opts.ExtraCflags = combinedCflags
 

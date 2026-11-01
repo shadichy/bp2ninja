@@ -114,6 +114,30 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
 
 ---
 
+### Rust & Cargo Execution (`bp2cargo`, `-cargo`)
+
+- **`bp2cargo` invocation alias**:
+  The `make install` target installs a `bp2cargo` symlink next to `bp2ninja`. Invoking the binary through it (`bp2cargo <dir> -o build.ninja ...`) is equivalent to `bp2ninja -cargo ...` — Cargo mode defaults to on.
+- **`-cargo`** *(default: `false`, or `true` when invoked as `bp2cargo`)*:
+  Enables Cargo manifest synthesis and drives Rust crate builds through `cargo build`.
+  - For each Rust module (`rust_ffi`, `rust_library`, `rust_binary`, `rust_proc_macro`), synthesizes an idiomatic `Cargo.toml` manifest under `out/cargo/<name>/Cargo.toml`.
+  - Emits `cargo_build` ninja rules targeting `x86_64-linux-android`, `aarch64-linux-android`, or host triples, injecting cross-linker settings via `CARGO_TARGET_<TRIPLE>_LINKER="$cc"`.
+  - Stages compiled static archives (`.a`), shared libraries (`.so`), and binaries into `out/lib64/` and `out/bin/`, with full C-ABI linkage and header export support for dependent `cc_library` / `cc_binary` targets.
+- **`-cargo-path <path>`** *(default: `cargo`, env `$CARGO`)*:
+  Path to the `cargo` executable.
+- **`-cargo-out-dir <dir>`**:
+  Custom directory for generated `Cargo.toml` manifests (defaults to `out/cargo/<name>`).
+- **`-cargo-offline`** *(default: `false`)*:
+  Passes `--offline` and exports `CARGO_NET_OFFLINE=true`, ensuring airgapped builds without crates.io network access.
+- **`-bindgen-path <path>`** *(default: `bindgen`, env `$BINDGEN`)*:
+  Path to the `bindgen` executable used for `rust_bindgen` rules.
+- **`-aidl <path>`** *(default: `aidl`, env `$AIDL`)*:
+  Path to the `aidl` executable used for `aidl_interface` multi-backend codegen.
+- **`-metalava <path>`** *(default: `metalava`, env `$METALAVA`)*:
+  Path to the `metalava` executable used for `droidstubs` API stubs.
+
+---
+
 ### Host Mode Execution
 
 - **`-host`** *(default: `false`)*:
@@ -374,6 +398,48 @@ ninja -f hidl.ninja out/lib64/libhidlbase.so
 # Build Java interface JAR deliverables:
 ninja -f hidl.ninja out/lib64/android.hidl.base-V1.0-java.jar
 ninja -f hidl.ninja out/lib64/android.hidl.manager-V1.0-java.jar
+```
+
+### 9. Compiling Rust C-ABI Libraries with `bp2cargo`
+
+Synthesizes Cargo manifests and compiles Rust crates with C-ABI static archives (`.a`) and dynamic libraries (`.so`) linked into C++ modules:
+
+```bash
+# Invoke via bp2cargo alias (or bp2ninja -cargo) with offline mode
+bp2cargo -bp external/rust/crates/rustc-demangle-capi \
+         -arch x86_64 \
+         -api 34 \
+         -cargo-offline \
+         -o rust.ninja
+
+# Build C-ABI static archive
+ninja -f rust.ninja out/lib64/librustc_demangle_static.a
+
+# C/C++ modules depending on it link automatically:
+# static_libs: ["librustc_demangle_static"] -> -l:librustc_demangle_static.a
+```
+
+### 10. Multi-Backend AIDL Interfaces & Metalava Stubs
+
+Compiles AIDL interface definitions across C++, NDK, Java, and Rust backends with versioned aliases:
+
+```bash
+bp2ninja -bp hardware/interfaces/power/aidl \
+         -arch x86_64 \
+         -api 34 \
+         -aidl aidl \
+         -metalava metalava \
+         -o aidl.ninja
+
+# Build C++ and NDK shared and static libraries
+ninja -f aidl.ninja out/lib64/libandroid.hardware.power-cpp.so
+ninja -f aidl.ninja out/lib64/libandroid.hardware.power-ndk.so
+
+# Build Java interface JAR
+ninja -f aidl.ninja out/lib64/android.hardware.power-java.jar
+
+# Build versioned target aliases
+ninja -f aidl.ninja android.hardware.power-V1-cpp
 ```
 
 ---

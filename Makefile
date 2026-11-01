@@ -34,6 +34,7 @@ DOCDIR ?= $(PREFIX)/share/doc/bp2ninja
 install: build
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/bp2ninja
 	ln -sf bp2ninja $(DESTDIR)$(BINDIR)/bp2siso
+	ln -sf bp2ninja $(DESTDIR)$(BINDIR)/bp2cargo
 	install -Dm644 man/bp2ninja.1 $(DESTDIR)$(MANDIR)/bp2ninja.1
 	install -d $(DESTDIR)$(DOCDIR)
 	install -Dm644 README.md $(DESTDIR)$(DOCDIR)/README.md
@@ -88,7 +89,8 @@ build-musl-%:
 release: build-linux-amd64 build-linux-arm64 build-android-arm64
 	cd $(RELEASE_DIR) && for f in bp2ninja-*; do \
 		ln -sf $$f $$(echo $$f | sed 's/^bp2ninja-/bp2siso-/'); \
+		ln -sf $$f $$(echo $$f | sed 's/^bp2ninja-/bp2cargo-/'); \
 		tar -czf bp2ninja-$(RELEASE_VERSION)-$${f#bp2ninja-}.tar.gz $$f; \
 	done
 	cd $(RELEASE_DIR) && sha256sum bp2ninja-$(RELEASE_VERSION)-*.tar.gz > sha256sums.txt
-	@echo "[OK] Release artifacts in $(RELEASE_DIR)/ (bp2siso symlinks + checksums included)"
+	@echo "[OK] Release artifacts in $(RELEASE_DIR)/ (bp2siso + bp2cargo symlinks + checksums included)"

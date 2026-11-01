@@ -16,11 +16,18 @@ This document provides a comprehensive reference of the Soong and Blueprint modu
   - [Prebuilts (`java_import`, `android_library_import`)](#prebuilts-java_import-android_library_import)
   - [Executables (`java_binary`, `java_binary_host`)](#executables-java_binary-java_binary_host)
   - [Applications (`android_app`)](#applications-android_app)
+  - [API Stubs (`droidstubs`, `droiddoc`)](#api-stubs-droidstubs-droiddoc)
   - [Java Properties Matrix](#java-properties-matrix)
+- [Rust Modules & Cargo Manifest Synthesis](#rust-modules--cargo-manifest-synthesis)
+  - [C-ABI Exports (`rust_ffi`, `rust_ffi_static`, `rust_ffi_shared`)](#c-abi-exports-rust_ffi-rust_ffi_static-rust_ffi_shared)
+  - [Libraries (`rust_library`, `rust_library_rlib`, `rust_library_dylib`, `rust_proc_macro`)](#libraries-rust_library-rust_library_rlib-rust_library_dylib-rust_proc_macro)
+  - [Executables (`rust_binary`, `rust_binary_host`)](#executables-rust_binary-rust_binary_host)
+  - [Rust Bindgen (`rust_bindgen`, `rust_bindgen_host`)](#rust-bindgen-rust_bindgen-rust_bindgen_host)
 - [Codegen & Feature Flag Modules](#codegen--feature-flag-modules)
   - [`genrule` & `java_genrule`](#genrule--java_genrule)
   - [`gensrcs` & `java_gensrcs`](#gensrcs--java_gensrcs)
   - [`cc_aconfig_library` & `java_aconfig_library`](#cc_aconfig_library--java_aconfig_library)
+  - [`aidl_interface`](#aidl_interface)
   - [`hidl_interface`](#hidl_interface)
   - [`xsd_config`](#xsd_config)
   - [`aidl_library`](#aidl_library)
@@ -157,6 +164,12 @@ Compiles a Java/Kotlin JAR archive and generates a shell wrapper script in `out/
 ### Applications (`android_app`)
 Packages an Android APK. Compiles Java/Kotlin classes into `out/lib64/<name>.jar` (exported for dependers) and produces an APK target via AAPT2.
 
+### API Stubs (`droidstubs`, `droiddoc`, `droidstubs_host`, `droiddoc_host`)
+Compiles Java/Kotlin API documentation and stub sources using Google's `metalava` compiler:
+- Runs `metalava` against platform source files (`srcs`) and classpath dependencies (`libs`).
+- Emits API signature files (`out/gen/<name>/current.txt` or `api_filename`) and packages generated Java stubs into `out/gen/<name>/stubs.srcjar`.
+- Exposes tagged references for dependers: `:stubs.srcjar` and `:current.txt`.
+
 ### Java Properties Matrix
 
 | Property | Type | Description |
@@ -167,6 +180,32 @@ Packages an Android APK. Compiles Java/Kotlin classes into `out/lib64/<name>.jar
 | `jars` | list of string | Prebuilt JAR files for `java_import`. |
 | `kotlincflags` | list of string | Extra flags passed to the Kotlin compiler. |
 | `javacflags` | list of string | Extra flags passed to the Java compiler. |
+
+---
+
+## Rust Modules & Cargo Manifest Synthesis
+
+`bp2ninja` natively supports Rust modules (`build/soong/rust`), synthesizing idiomatic `Cargo.toml` manifests and driving builds via `cargo build` in standalone environments or via the `bp2cargo` invocation alias.
+
+### C-ABI Exports (`rust_ffi`, `rust_ffi_static`, `rust_ffi_shared`, `rust_ffi_host`, `rust_ffi_host_static`, `rust_ffi_host_shared`)
+Provides native C-ABI static archives (`.a`) and dynamic shared libraries (`.so`) linkable by downstream C/C++ modules:
+- **`rust_ffi`**: Dual-variant C-ABI module emitting `crate-type = ["staticlib", "cdylib"]`, producing both `out/lib64/lib<name>.a` and `out/lib64/lib<name>.so`.
+- **`rust_ffi_static`**: Generates `crate-type = ["staticlib"]`, producing `out/lib64/lib<name>.a`.
+- **`rust_ffi_shared`**: Generates `crate-type = ["cdylib"]`, producing `out/lib64/lib<name>.so`.
+- **C/C++ Interoperability**: Downstream `cc_library` and `cc_binary` modules specifying the Rust module in `static_libs` or `shared_libs` automatically link against `-l:lib<name>.a` or `-l<name>`, and receive exported C header paths via `export_include_dirs`.
+
+### Libraries (`rust_library`, `rust_library_host`, `rust_library_rlib`, `rust_library_dylib`, `rust_proc_macro`)
+- **`rust_library`, `rust_library_rlib`**: Produces Rust `.rlib` archives staged under `out/lib64/`.
+- **`rust_library_dylib`**: Produces Rust `.so` dynamic libraries staged under `out/lib64/`.
+- **`rust_proc_macro`**: Procedural macro compiler plugin compiled with `proc-macro = true` and staged to `out/lib64/lib<name>.so`.
+
+### Executables (`rust_binary`, `rust_binary_host`)
+Compiles Rust binary crates with `[[bin]]` stanzas and stages executable binaries under `out/bin/<name>`.
+
+### Rust Bindgen (`rust_bindgen`, `rust_bindgen_host`)
+Runs Google's `bindgen` CLI tool on a C/C++ wrapper header (`wrapper_src`) to generate Rust FFI bindings:
+- Injects C includes, architecture cross-compiler flags, and `bindgen_flags`.
+- Generates Rust binding source files into `out/gen/<name>/<stem>.rs` and exposes `:bindings.rs` for dependent Rust modules.
 
 ---
 
@@ -192,6 +231,16 @@ Implements Android 14+ AConfig feature flag library compilation:
 - Resolves upstream `aconfig_declarations`.
 - Invokes `aconfig create-cpp-lib` to generate C++ headers and source code.
 - Compiles generated code into a static library and exports headers under `-Iout/gen/<name>/include`.
+
+### `aidl_interface`
+Upstream AIDL interface multi-backend compiler module type (system/tools/aidl):
+- Compiles `.aidl` interface definitions across multiple backends using Google's `aidl` CLI:
+  - **C++ Backend (`<name>-cpp`)**: Generates C++ headers (`out/gen/<name>/cpp/include/`) and source files, and compiles into static archive `out/lib64/lib<name>-cpp.a` and shared library `out/lib64/lib<name>-cpp.so` linking `libbinder` and `libutils`.
+  - **NDK Backend (`<name>-ndk`)**: Generates NDK C++ headers (`out/gen/<name>/ndk/include/`) and sources, compiling into `lib<name>-ndk.a` and `lib<name>-ndk.so` linking `libbinder_ndk`.
+  - **Java Backend (`<name>-java`)**: Generates Java bindings and packages classes into `out/lib64/<name>-java.jar` for platform consumption.
+  - **Rust Backend (`<name>-rust`)**: Generates Rust binding source code into `out/gen/<name>/rust/<name>.rs`.
+- **Versioned Aliases**: Automatically registers versioned target aliases (e.g. `<name>-V1-cpp`, `<name>-V2-ndk`, `<name>-V1-java`) matching the `versions: [...]` array.
+- **Header & Include Propagation**: Automatically injects `-Iout/gen/<name>/cpp/include` and `-Iout/gen/<name>/ndk/include` into downstream `cc_library` / `cc_binary` modules.
 
 ### `hidl_interface`
 Compiles Android HIDL (Hardware Interface Definition Language) HAL declarations:

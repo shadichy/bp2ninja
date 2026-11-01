@@ -3,6 +3,8 @@
 bp2ninja \- High-speed standalone Android.bp (Soong/Blueprint) to Ninja generator
 .br
 bp2siso \- invocation alias for \fBbp2ninja \-siso\fR
+.br
+bp2cargo \- invocation alias for \fBbp2ninja \-cargo\fR
 .SH SYNOPSIS
 .B bp2ninja
 [\fIOPTIONS\fR] [\fIpath/to/Android.bp\fR | \fIpath/to/directory\fR]
@@ -10,6 +12,10 @@ bp2siso \- invocation alias for \fBbp2ninja \-siso\fR
 .B bp2siso
 [\fIOPTIONS\fR] [\fIpath/to/Android.bp\fR | \fIpath/to/directory\fR]
 (\fB\-siso\fR defaults to on)
+.br
+.B bp2cargo
+[\fIOPTIONS\fR] [\fIpath/to/Android.bp\fR | \fIpath/to/directory\fR]
+(\fB\-cargo\fR defaults to on)
 .br
 .B bp2ninja
 \fB\-ndk\-info\fR
@@ -156,6 +162,29 @@ Space-delimited host codegen architectures (defaults to all supported architectu
 .BI \-config " KEY=VALUE"
 Set a Soong configuration variable for conditional evaluation (e.g. \fB\-config target_board_platform=sm8450\fR). Can be repeated.
 
+.SS Rust & Cargo Options
+.TP
+.B \-cargo
+Synthesize idiomatic \fBCargo.toml\fR manifests and emit \fBcargo_build\fR Ninja rules for Rust modules (\fBrust_ffi\fR, \fBrust_library\fR, \fBrust_binary\fR, \fBrust_proc_macro\fR). Defaults to on when invoked via \fBbp2cargo\fR.
+.TP
+.BI \-cargo\-path " PATH"
+Path to the \fBcargo\fR executable. Can also be set via \fB$CARGO\fR. Defaults to \fBcargo\fR.
+.TP
+.BI \-cargo\-out\-dir " DIR"
+Custom output directory for synthesized \fBCargo.toml\fR manifests. Defaults to \fIout/cargo/<name>\fR.
+.TP
+.B \-cargo\-offline
+Pass \fB\-\-offline\fR and export \fBCARGO_NET_OFFLINE=true\fR during cargo compilation for airgapped container builds.
+.TP
+.BI \-bindgen\-path " PATH"
+Path to the \fBbindgen\fR executable used for \fBrust_bindgen\fR rules. Can also be set via \fB$BINDGEN\fR. Defaults to \fBbindgen\fR.
+.TP
+.BI \-aidl " PATH"
+Path to the \fBaidl\fR executable used for \fBaidl_interface\fR multi-backend codegen. Can also be set via \fB$AIDL\fR. Defaults to \fBaidl\fR.
+.TP
+.BI \-metalava " PATH"
+Path to the \fBmetalava\fR executable used for \fBdroidstubs\fR API stub generation. Can also be set via \fB$METALAVA\fR. Defaults to \fBmetalava\fR.
+
 .SS Modular Plugins & Go Workspace
 .TP
 .BR \-a " PATH, " \-plugin " PATH, " \-add\-plugin " PATH"
@@ -278,10 +307,19 @@ natively translates the following Blueprint module types:
 \(bu For \fBndk_library\fR, NDK symbol definition maps (\fB.map.txt\fR) are transformed into linker version scripts.
 .TP
 .B Java & Kotlin Modules
-\fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR, \fBjava_system_modules\fR.
+\fBjava_library\fR, \fBjava_library_host\fR, \fBjava_library_static\fR, \fBjava_import\fR, \fBjava_binary\fR, \fBjava_binary_host\fR, \fBandroid_app\fR, \fBandroid_library\fR, \fBandroid_library_import\fR, \fBjava_system_modules\fR, \fBdroidstubs\fR, \fBdroiddoc\fR, \fBdroidstubs_host\fR, \fBdroiddoc_host\fR.
+.TP
+.B Rust Modules & Cargo Manifest Synthesis
+\fBrust_ffi\fR, \fBrust_ffi_static\fR, \fBrust_ffi_shared\fR, \fBrust_ffi_host\fR, \fBrust_ffi_host_static\fR, \fBrust_ffi_host_shared\fR, \fBrust_library\fR, \fBrust_library_host\fR, \fBrust_library_rlib\fR, \fBrust_library_dylib\fR, \fBrust_binary\fR, \fBrust_binary_host\fR, \fBrust_proc_macro\fR, \fBrust_bindgen\fR, \fBrust_bindgen_host\fR.
+.IP
+\(bu For \fBrust_ffi\fR and \fBrust_ffi_static\fR, native C-ABI static archives (\fB.a\fR) and shared libraries (\fB.so\fR) are staged to \fIout/lib64\fR and linked directly by \fBcc_library\fR and \fBcc_binary\fR.
+.IP
+\(bu For \fBrust_bindgen\fR, C/C++ header wrappers are converted to Rust FFI bindings via \fBbindgen\fR.
 .TP
 .B Codegen & Feature Flags
-\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR, \fBhidl_interface\fR, \fBxsd_config\fR, \fBaidl_library\fR, \fBlinker_config\fR, \fBplatform_compat_config\fR.
+\fBgenrule\fR, \fBgensrcs\fR, \fBjava_genrule\fR, \fBjava_gensrcs\fR, \fBcc_aconfig_library\fR, \fBjava_aconfig_library\fR, \fBaidl_interface\fR, \fBaidl_library\fR, \fBhidl_interface\fR, \fBxsd_config\fR, \fBlinker_config\fR, \fBplatform_compat_config\fR.
+.IP
+\(bu For \fBaidl_interface\fR, multi-backend codegen translates \fB.aidl\fR into C++, NDK, Java, and Rust bindings with versioned aliases (\fB<name>-V<ver>-cpp\fR, etc.).
 .TP
 .B System & Prebuilt Modules
 \fBprebuilt_etc\fR, \fBprebuilt_etc_host\fR, \fBprebuilt_etc_xml\fR, \fBsh_binary\fR, \fBsh_binary_host\fR, \fBpython_binary\fR, \fBpython_binary_host\fR, \fBpython_test_host\fR.

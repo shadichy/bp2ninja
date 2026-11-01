@@ -1,0 +1,403 @@
+package generator
+
+import (
+	"path/filepath"
+	"strings"
+
+	"bp2ninja/pkg/eval"
+	"bp2ninja/pkg/ninja"
+)
+
+// generateAidlInterface implements the upstream `aidl_interface` module type (system/tools/aidl/build/aidl_interface.go):
+// translates .aidl interface definitions into Java, C++, NDK, and Rust bindings, registering companion
+// libraries and versioned target aliases.
+func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, error) {
+	srcs := g.ResolveSrcs(mod)
+	var aidlFiles []string
+	for _, s := range srcs {
+		if strings.HasSuffix(s, ".aidl") {
+			aidlFiles = append(aidlFiles, s)
+		}
+	}
+	if len(aidlFiles) == 0 {
+		if g.opts.AllowMissingDeps {
+			target := filepath.Join(g.opts.OutDir, "gen", mod.Name, mod.Name+".stamp")
+			g.emitPhonyIfNeeded(target)
+			return []string{target}, nil
+		}
+		return nil, nil
+	}
+
+	// 1. Resolve AIDL import search paths
+	localIncDir := mod.GetString("local_include_dir")
+	if localIncDir == "" {
+		localIncDir = mod.Dir
+	} else if !filepath.IsAbs(localIncDir) && mod.Dir != "" && mod.Dir != "." {
+		localIncDir = filepath.Clean(filepath.Join(mod.Dir, localIncDir))
+	}
+	if localIncDir == "" {
+		localIncDir = "."
+	}
+
+	var importDirs []string
+	importDirs = append(importDirs, localIncDir)
+
+	imports := mod.GetStringList("imports")
+	for _, imp := range imports {
+		baseName := imp
+		if idx := strings.Index(imp, "-V"); idx != -1 {
+			baseName = imp[:idx]
+		}
+		if impMod, ok := g.moduleMap[baseName]; ok {
+			dir := impMod.Dir
+			if dir == "" {
+				dir = "."
+			}
+			importDirs = append(importDirs, dir)
+		}
+		if libInfo, ok := g.aidlLibraries[imp]; ok {
+			importDirs = append(importDirs, libInfo.IncludeDirs...)
+		}
+		if libInfo, ok := g.aidlLibraries[baseName]; ok {
+			importDirs = append(importDirs, libInfo.IncludeDirs...)
+		}
+	}
+	importDirs = dedup(importDirs)
+
+	var importFlags []string
+	for _, dir := range importDirs {
+		importFlags = append(importFlags, "-I"+dir)
+	}
+
+	// 2. Resolve optional flags & stability
+	var optFlags []string
+	if stability := mod.GetString("stability"); stability != "" {
+		optFlags = append(optFlags, "--stability", stability)
+	}
+	optFlags = append(optFlags, mod.GetStringList("flags")...)
+
+	// 3. Inspect enabled backends
+	backendMap := mod.GetMap("backend")
+	cppEnabled := true
+	ndkEnabled := true
+	javaEnabled := true
+	rustEnabled := false
+
+	if backendMap != nil {
+		if cpp, ok := backendMap["cpp"].(map[string]interface{}); ok {
+			if en, ok := cpp["enabled"].(bool); ok {
+				cppEnabled = en
+			}
+		}
+		if ndk, ok := backendMap["ndk"].(map[string]interface{}); ok {
+			if en, ok := ndk["enabled"].(bool); ok {
+				ndkEnabled = en
+			}
+		}
+		if java, ok := backendMap["java"].(map[string]interface{}); ok {
+			if en, ok := java["enabled"].(bool); ok {
+				javaEnabled = en
+			}
+		}
+		if rust, ok := backendMap["rust"].(map[string]interface{}); ok {
+			if en, ok := rust["enabled"].(bool); ok {
+				rustEnabled = en
+			}
+		}
+	}
+
+	var allTargets []string
+	var cppTargets []string
+	var ndkTargets []string
+	var javaTargets []string
+	var rustTargets []string
+
+	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
+	cflags = stripIncludeFlags(cflags)
+	cflags = append(cflags, g.archCodegenFlags()...)
+	cflags = append(cflags, g.crossTargetFlags()...)
+	cflags = append(cflags, "-fPIC")
+	cflags = dedup(cflags)
+
+	ldflags, _ := g.resolveLinkerArgs(mod)
+
+	// 4. Emit C++ Backend
+	if cppEnabled {
+		cppModName := mod.Name + "-cpp"
+		cleanCppName := strings.TrimPrefix(cppModName, "lib")
+		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "cpp")
+		hdrDir := filepath.Join(genDir, "include")
+		genCpp := filepath.Join(genDir, mod.Name+".cpp")
+		genHdr := filepath.Join(hdrDir, mod.Name+".h")
+
+		vars := map[string]string{
+			"header_dir": hdrDir,
+			"out_dir":    genDir,
+			"imports":    shellJoin(importFlags),
+		}
+		if len(optFlags) > 0 {
+			vars["optional_flags"] = shellJoin(optFlags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{genCpp, genHdr},
+			Rule:      "aidl_cpp",
+			Inputs:    aidlFiles,
+			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+
+		// Compile generated C++
+		objDir := g.objDir(cppModName)
+		obj := filepath.Join(objDir, mod.Name+".o")
+		includes := dedup(append(g.resolveIncludeDirs(mod), "-I"+hdrDir, "-I"+genDir))
+		compileVars := map[string]string{
+			"includes": shellJoin(includes),
+		}
+		if len(cflags) > 0 {
+			compileVars["cflags"] = shellJoin(cflags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{obj},
+			Rule:      "cc_compile",
+			Inputs:    []string{genCpp},
+			Variables: compileVars,
+		}); err != nil {
+			return nil, err
+		}
+
+		staticTarget := filepath.Join(g.libDir(), "lib"+cleanCppName+".a")
+		sharedTarget := filepath.Join(g.libDir(), "lib"+cleanCppName+".so")
+
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{staticTarget},
+			Rule:    "archive_static",
+			Inputs:  []string{obj},
+		})
+
+		cppLibs := []string{"-lbinder", "-lutils"}
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{sharedTarget},
+			Rule:    "link_shared",
+			Inputs:  []string{obj},
+			Variables: map[string]string{
+				"ldflags": shellJoin(ldflags),
+				"libs":    shellJoin(cppLibs),
+				"soname":  "lib" + cleanCppName + ".so",
+			},
+		})
+
+		cppTargets = []string{sharedTarget, staticTarget}
+		g.moduleOutputs[cppModName] = cppTargets
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{cppModName},
+			Rule:    "phony",
+			Inputs:  cppTargets,
+		})
+		allTargets = append(allTargets, cppTargets...)
+	}
+
+	// 5. Emit NDK Backend
+	if ndkEnabled {
+		ndkModName := mod.Name + "-ndk"
+		cleanNdkName := strings.TrimPrefix(ndkModName, "lib")
+		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "ndk")
+		hdrDir := filepath.Join(genDir, "include")
+		genCpp := filepath.Join(genDir, mod.Name+".cpp")
+		genHdr := filepath.Join(hdrDir, mod.Name+".h")
+
+		vars := map[string]string{
+			"header_dir": hdrDir,
+			"out_dir":    genDir,
+			"imports":    shellJoin(importFlags),
+		}
+		if len(optFlags) > 0 {
+			vars["optional_flags"] = shellJoin(optFlags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{genCpp, genHdr},
+			Rule:      "aidl_ndk",
+			Inputs:    aidlFiles,
+			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+
+		// Compile generated NDK C++
+		objDir := g.objDir(ndkModName)
+		obj := filepath.Join(objDir, mod.Name+".o")
+		includes := dedup(append(g.resolveIncludeDirs(mod), "-I"+hdrDir, "-I"+genDir))
+		compileVars := map[string]string{
+			"includes": shellJoin(includes),
+		}
+		if len(cflags) > 0 {
+			compileVars["cflags"] = shellJoin(cflags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{obj},
+			Rule:      "cc_compile",
+			Inputs:    []string{genCpp},
+			Variables: compileVars,
+		}); err != nil {
+			return nil, err
+		}
+
+		staticTarget := filepath.Join(g.libDir(), "lib"+cleanNdkName+".a")
+		sharedTarget := filepath.Join(g.libDir(), "lib"+cleanNdkName+".so")
+
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{staticTarget},
+			Rule:    "archive_static",
+			Inputs:  []string{obj},
+		})
+
+		ndkLibs := []string{"-lbinder_ndk"}
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{sharedTarget},
+			Rule:    "link_shared",
+			Inputs:  []string{obj},
+			Variables: map[string]string{
+				"ldflags": shellJoin(ldflags),
+				"libs":    shellJoin(ndkLibs),
+				"soname":  "lib" + cleanNdkName + ".so",
+			},
+		})
+
+		ndkTargets = []string{sharedTarget, staticTarget}
+		g.moduleOutputs[ndkModName] = ndkTargets
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{ndkModName},
+			Rule:    "phony",
+			Inputs:  ndkTargets,
+		})
+		allTargets = append(allTargets, ndkTargets...)
+	}
+
+	// 6. Emit Java Backend
+	if javaEnabled {
+		javaModName := mod.Name + "-java"
+		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "java")
+		jarTarget := filepath.Join(g.libDir(), javaModName+".jar")
+
+		vars := map[string]string{
+			"out_dir": genDir,
+			"imports": shellJoin(importFlags),
+		}
+		if len(optFlags) > 0 {
+			vars["optional_flags"] = shellJoin(optFlags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{jarTarget},
+			Rule:      "aidl_java",
+			Inputs:    aidlFiles,
+			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+
+		javaTargets = []string{jarTarget}
+		g.moduleOutputs[javaModName] = javaTargets
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{javaModName},
+			Rule:    "phony",
+			Inputs:  javaTargets,
+		})
+		allTargets = append(allTargets, javaTargets...)
+	}
+
+	// 7. Emit Rust Backend
+	if rustEnabled {
+		rustModName := mod.Name + "-rust"
+		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "rust")
+		rsTarget := filepath.Join(genDir, mod.Name+".rs")
+
+		vars := map[string]string{
+			"out_dir": genDir,
+			"imports": shellJoin(importFlags),
+		}
+		if len(optFlags) > 0 {
+			vars["optional_flags"] = shellJoin(optFlags)
+		}
+
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{rsTarget},
+			Rule:      "aidl_rust",
+			Inputs:    aidlFiles,
+			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+
+		rustTargets = []string{rsTarget}
+		g.moduleOutputs[rustModName] = rustTargets
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{rustModName},
+			Rule:    "phony",
+			Inputs:  rustTargets,
+		})
+		allTargets = append(allTargets, rustTargets...)
+	}
+
+	// 8. Register versioned target aliases (e.g. android.hardware.foo-V1-cpp)
+	versions := mod.GetStringList("versions")
+	for _, v := range versions {
+		vPrefix := mod.Name + "-V" + v
+		if len(cppTargets) > 0 {
+			vCpp := vPrefix + "-cpp"
+			g.moduleOutputs[vCpp] = cppTargets
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vCpp},
+				Rule:    "phony",
+				Inputs:  cppTargets,
+			})
+		}
+		if len(ndkTargets) > 0 {
+			vNdk := vPrefix + "-ndk"
+			g.moduleOutputs[vNdk] = ndkTargets
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vNdk},
+				Rule:    "phony",
+				Inputs:  ndkTargets,
+			})
+		}
+		if len(javaTargets) > 0 {
+			vJava := vPrefix + "-java"
+			g.moduleOutputs[vJava] = javaTargets
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vJava},
+				Rule:    "phony",
+				Inputs:  javaTargets,
+			})
+		}
+		if len(rustTargets) > 0 {
+			vRust := vPrefix + "-rust"
+			g.moduleOutputs[vRust] = rustTargets
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vRust},
+				Rule:    "phony",
+				Inputs:  rustTargets,
+			})
+		}
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{vPrefix},
+			Rule:    "phony",
+			Inputs:  allTargets,
+		})
+		g.moduleOutputs[vPrefix] = allTargets
+	}
+
+	// 9. Register main module targets and phony
+	g.moduleOutputs[mod.Name] = allTargets
+	_ = g.nw.Build(ninja.BuildEdge{
+		Outputs: []string{mod.Name},
+		Rule:    "phony",
+		Inputs:  allTargets,
+	})
+
+	return allTargets, nil
+}

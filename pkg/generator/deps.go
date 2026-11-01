@@ -48,6 +48,20 @@ func GetModuleDependencies(mod *eval.EvaluatedModule) []string {
 	raw = append(raw, mod.GetAllStringList("data_libs")...)
 	raw = append(raw, mod.GetAllStringList("data_bins")...)
 
+	// Rust dependencies
+	raw = append(raw, mod.GetAllStringList("rustlibs")...)
+	raw = append(raw, mod.GetAllStringList("rlibs")...)
+	raw = append(raw, mod.GetAllStringList("proc_macros")...)
+
+	// AIDL interface imports
+	for _, imp := range mod.GetAllStringList("imports") {
+		base := imp
+		if idx := strings.Index(imp, "-V"); idx != -1 {
+			base = imp[:idx]
+		}
+		raw = append(raw, imp, base)
+	}
+
 	// Codegen & headers
 	for _, s := range append(mod.GetAllStringList("generated_headers"), mod.GetAllStringList("export_generated_headers")...) {
 		baseLabel, _ := parseTaggedLabel(strings.TrimPrefix(s, ":"))
@@ -126,9 +140,25 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 	}
 
 	definedModules := make(map[string]bool)
+	moduleLookup := make(map[string]string)
 	for _, mod := range modules {
 		if mod.Name != "" {
 			definedModules[mod.Name] = true
+			if mod.Type == "aidl_interface" {
+				for _, sub := range []string{"-cpp", "-ndk", "-java", "-rust"} {
+					definedModules[mod.Name+sub] = true
+					moduleLookup[mod.Name+sub] = mod.Name
+				}
+				for _, v := range mod.GetStringList("versions") {
+					vPrefix := mod.Name + "-V" + v
+					definedModules[vPrefix] = true
+					moduleLookup[vPrefix] = mod.Name
+					for _, sub := range []string{"-cpp", "-ndk", "-java", "-rust"} {
+						definedModules[vPrefix+sub] = true
+						moduleLookup[vPrefix+sub] = mod.Name
+					}
+				}
+			}
 		}
 	}
 
@@ -185,7 +215,11 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 				continue
 			}
 			if definedModules[dep] {
-				for _, j := range nameToIndices[dep] {
+				lookupName := dep
+				if parent, ok := moduleLookup[dep]; ok {
+					lookupName = parent
+				}
+				for _, j := range nameToIndices[lookupName] {
 					if j != i {
 						// j precedes i
 						adj[j][i] = true

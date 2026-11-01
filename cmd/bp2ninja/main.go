@@ -127,6 +127,13 @@ func isBp2SisoInvocation(argv0 string) bool {
 	return name == "bp2siso" || name == "bp2ninja-siso"
 }
 
+// isBp2CargoInvocation reports whether the binary was invoked as bp2cargo
+// (e.g. through a symlink), which enables -cargo by default.
+func isBp2CargoInvocation(argv0 string) bool {
+	name := strings.TrimSuffix(filepath.Base(argv0), ".exe")
+	return name == "bp2cargo" || name == "bp2ninja-cargo"
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -144,6 +151,7 @@ func main() {
 
 	// Invocation alias: a bp2siso symlink behaves as bp2ninja -siso.
 	sisoDefault := isBp2SisoInvocation(os.Args[0])
+	cargoDefault := isBp2CargoInvocation(os.Args[0])
 
 	var (
 		bpFile              string
@@ -179,6 +187,13 @@ func main() {
 		traceSubdirs        bool
 		siso                bool
 		sisoRemote          bool
+		cargo               bool
+		cargoPath           string
+		cargoOutDir         string
+		cargoOffline        bool
+		bindgenPath         string
+		aidlPath            string
+		metalavaPath        string
 	)
 
 	flag.StringVar(&bpFile, "bp", "Android.bp", "Path to the target Android.bp file or directory")
@@ -199,6 +214,13 @@ func main() {
 	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
 	flag.BoolVar(&siso, "siso", sisoDefault, "Emit Siso-specific ninja bindings (restat_content, sandbox_disabled) and a companion siso.star config for running the graph with siso (default: on when invoked as bp2siso)")
 	flag.BoolVar(&sisoRemote, "siso-remote", false, "With -siso: additionally mark pure compile actions remote_enabled for RBE offloading (requires a REAPI backend)")
+	flag.BoolVar(&cargo, "cargo", cargoDefault, "Enable Cargo hybrid engine: synthesize Cargo.toml manifests and compile Rust crates via cargo (default: on when invoked as bp2cargo)")
+	flag.StringVar(&cargoPath, "cargo-path", "cargo", "Path to cargo executable (or via $CARGO)")
+	flag.StringVar(&cargoOutDir, "cargo-out-dir", "", "Custom directory for synthesized Cargo manifests (defaults to crate dir or out/cargo/<name>)")
+	flag.BoolVar(&cargoOffline, "cargo-offline", false, "Pass --offline and CARGO_NET_OFFLINE=true to cargo builds")
+	flag.StringVar(&bindgenPath, "bindgen-path", "bindgen", "Path to bindgen executable (or via $BINDGEN)")
+	flag.StringVar(&aidlPath, "aidl", "aidl", "Path to aidl executable (or via $AIDL)")
+	flag.StringVar(&metalavaPath, "metalava", "metalava", "Path to metalava executable (or via $METALAVA)")
 
 	// Custom/project-specific flags (can also be read from CFLAGS, CXXFLAGS, LDFLAGS, ASFLAGS)
 	flag.StringVar(&extraCflags, "cflags", "", "Extra C compiler flags (or via $CFLAGS)")
@@ -800,6 +822,30 @@ func main() {
 		javaEncoding = envEnc
 	}
 	opts.JavaEncoding = javaEncoding
+
+	if envCargo := os.Getenv("CARGO"); envCargo != "" && cargoPath == "cargo" {
+		cargoPath = envCargo
+	}
+	opts.Cargo = cargo
+	opts.CargoPath = cargoPath
+	opts.CargoOutDir = cargoOutDir
+	opts.CargoOffline = cargoOffline
+
+	if envBindgen := os.Getenv("BINDGEN"); envBindgen != "" && bindgenPath == "bindgen" {
+		bindgenPath = envBindgen
+	}
+	opts.BindgenPath = bindgenPath
+
+	if envAidl := os.Getenv("AIDL"); envAidl != "" && aidlPath == "aidl" {
+		aidlPath = envAidl
+	}
+	opts.AidlPath = aidlPath
+
+	if envMetalava := os.Getenv("METALAVA"); envMetalava != "" && metalavaPath == "metalava" {
+		metalavaPath = envMetalava
+	}
+	opts.MetalavaPath = metalavaPath
+
 	opts.SkipAbiLevel = skipAbiLevel
 	opts.DisableSkipAbis = disableSkipAbis
 	opts.IncludeRoot = includeRoot

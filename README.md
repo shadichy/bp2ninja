@@ -79,6 +79,9 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
 - **BPF & System-Property Primitives**: upstream `bpf` module type (clang `--target=bpf` with the canonical Bionic UAPI includes, BTF strip by default, staged under `out/etc/bpf/<sub_dir>/`) and `sysprop_library` / `.sysprop` sources in cc modules (codegen via `sysprop-cli`, pinnable with `$SYSPROP_CLI`; dependents get the generated header dir and `-l` link automatically).
 - **Platform `android.jar` Resolution**: Dynamic resolution of `:current_android_jar` and `:system_android_jar` to `<SDK>/platforms/android-<API>/android.jar` matching target API level.
 - **Siso Backend Support (`-siso` / `bp2siso` alias)**: A `bp2siso` symlink to the binary turns `-siso` on by default (`bp2siso <dir> -o build.ninja` ≡ `bp2ninja -siso ...`). Emits Siso-compatible ninja bindings (`restat_content` on deterministic codegen rules, `sandbox_disabled` on host-tool rules) plus a generated `siso.star` Starlark config, so the graph executes under Google's [Siso](https://go.chromium.org/build/siso) (`siso ninja`) as a drop-in Ninja replacement with native REAPI/RBE offloading (`-siso-remote` marks compile actions `remote_enabled`).
+- **Rust Toolchain & Cargo Synthesis (`bp2cargo` / `-cargo`)**: Invocable as `bp2cargo` or `bp2ninja -cargo`. Automatically synthesizes idiomatic `Cargo.toml` manifests for Rust modules (`rust_ffi`, `rust_library`, `rust_binary`, `rust_proc_macro`), drives compilation via `cargo build`, and exports native C-ABI static archives (`.a`) and dynamic libraries (`.so`) into `out/lib64/` with full linkage and header export support for dependent `cc_library` / `cc_binary` modules. Supports `rust_bindgen` for automated C wrapper FFI generation.
+- **Native AIDL Multi-Backend Compiler (`aidl_interface`)**: Directly translates `.aidl` interface definitions into C++, NDK, Java, and Rust bindings via `aidl` CLI. Automatically synthesizes `<name>-cpp` (linking `libbinder`), `<name>-ndk` (linking `libbinder_ndk`), `<name>-java` (`.jar`), and `<name>-rust` (`.rs`), complete with versioned aliases (`<name>-V<ver>-*`).
+- **API Documentation & Stubs (`droidstubs`, `droiddoc`)**: Runs `metalava` to generate API signature files (`current.txt`) and packaged Java stub source archives (`stubs.srcjar`).
 - **Granular Codegen (`genrule`, `gensrcs`)**: Per-source edge generation for `gensrcs`, `export_include_dirs`, consumer wiring (`generated_sources`, `generated_headers`), and `data: [...]` dependency tracking.
 - **Recursive Subdirectory Discovery**: Discovers nested `Android.bp` trees automatically via `-subdirs` (`-r`), unifying multi-module checkouts into a single cohesive Ninja graph.
 - **Pure-Go Modular Plugins**: In-tree Go converter (`convert-plugin`) and workspace orchestrator (`gowork`) to convert custom Soong rules into dynamically loaded `.so` plugins, with auto-discovery in `/usr/lib/bp2ninja/plugins/`.
@@ -212,6 +215,13 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-java-encoding` | string | `UTF-8` | Explicit Java compilation character encoding (or via `$JAVA_ENCODING`). |
 | `-skip-abi-level` | int | `0` | Base Android ABI skip level threshold (derived from makeapex / apexm). |
 | `-disable-skip-abis` | bool | `false` | Disable ABI skipping; prioritize APEX platform headers and suppress shadowing VNDK paths. |
+| `-cargo` | bool | `false` (`true` when invoked as `bp2cargo`) | Synthesize `Cargo.toml` manifests and emit `cargo_build` rules for Rust modules. |
+| `-cargo-path` | string | `cargo` | Path to `cargo` executable (or via `$CARGO`). |
+| `-cargo-out-dir` | string | `""` | Custom output directory for synthesized `Cargo.toml` manifests. |
+| `-cargo-offline` | bool | `false` | Pass `--offline` and export `CARGO_NET_OFFLINE=true` to cargo. |
+| `-bindgen-path` | string | `bindgen` | Path to `bindgen` executable (or via `$BINDGEN`). |
+| `-aidl` | string | `aidl` | Path to `aidl` executable (or via `$AIDL`). |
+| `-metalava` | string | `metalava` | Path to `metalava` executable (or via `$METALAVA`). |
 
 ### Flag & Macro Overrides
 
@@ -260,6 +270,10 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `AVBTOOL` | Custom path to `avbtool` executable. |
 | `LPMAKE` | Custom path to `lpmake` executable. |
 | `PROCESS_COMPAT_CONFIG` | Custom path to `process-compat-config` executable. |
+| `CARGO` | Custom path to `cargo` executable when `-cargo-path` is omitted. |
+| `BINDGEN` | Custom path to `bindgen` executable when `-bindgen-path` is omitted. |
+| `AIDL` | Custom path to `aidl` executable when `-aidl` is omitted. |
+| `METALAVA` | Custom path to `metalava` executable when `-metalava` is omitted. |
 | `JAVA_ENCODING` | Default character encoding for Java compilation (default: `UTF-8`). |
 | `PROTOC` | Custom path to Protobuf compiler (useful for ABI pinning to Protobuf 21.12). |
 | `CLASSPATH` | Host Java classpath search path. |

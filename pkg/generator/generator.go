@@ -60,6 +60,15 @@ type Options struct {
 	AvbtoolPath          string // avbtool CLI binary path
 	LpmakePath           string // lpmake CLI binary path
 	CompatConfigPath     string // process-compat-config CLI binary path
+	AidlPath             string // aidl CLI binary path
+	MetalavaPath         string // metalava CLI binary path
+
+	// Rust and Cargo options
+	Cargo        bool   // Whether to synthesize Cargo.toml manifests and drive build via cargo
+	CargoPath    string // cargo CLI binary path
+	CargoOutDir  string // Custom output directory for Cargo manifests
+	CargoOffline bool   // Pass --offline and CARGO_NET_OFFLINE=true to cargo
+	BindgenPath  string // bindgen CLI binary path
 
 	// Platform sysroot and ABI controls
 	SkipAbiLevel   int    // Skip base ABI libraries at or below this level
@@ -106,6 +115,10 @@ func DefaultOptions(topDir, outDir string) Options {
 		AvbtoolPath:          "avbtool",
 		LpmakePath:           "lpmake",
 		CompatConfigPath:     "process-compat-config",
+		AidlPath:             "aidl",
+		MetalavaPath:         "metalava",
+		CargoPath:            "cargo",
+		BindgenPath:          "bindgen",
 		JavaEncoding:         "UTF-8",
 		AllowMissingDeps:     true,
 	}
@@ -555,6 +568,16 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generatePlatformCompatConfig(mod)
 		case "java_system_modules":
 			targets, err = g.generateJavaSystemModules(mod)
+		case "rust_ffi", "rust_ffi_shared", "rust_ffi_static", "rust_ffi_host", "rust_ffi_host_shared", "rust_ffi_host_static",
+			"rust_library", "rust_library_host", "rust_library_rlib", "rust_library_dylib", "rust_library_host_rlib", "rust_library_host_dylib",
+			"rust_binary", "rust_binary_host", "rust_proc_macro":
+			targets, err = g.generateRustModule(mod)
+		case "rust_bindgen", "rust_bindgen_host":
+			targets, err = g.generateRustBindgen(mod)
+		case "aidl_interface":
+			targets, err = g.generateAidlInterface(mod)
+		case "droidstubs", "droidstubs_host", "droiddoc", "droiddoc_host":
+			targets, err = g.generateDroidstubs(mod)
 		default:
 			// Fallback only: Pattern recognition heuristic when no plugin or handler exists
 			targets, err = g.autoDeriveFallback(mod)
@@ -701,6 +724,30 @@ func (g *Generator) emitHeader() error {
 		compatConfigPath = "process-compat-config"
 	}
 	g.nw.Variable("process_compat_config", compatConfigPath)
+
+	cargoPath := g.opts.CargoPath
+	if cargoPath == "" {
+		cargoPath = "cargo"
+	}
+	g.nw.Variable("cargo", cargoPath)
+
+	bindgenPath := g.opts.BindgenPath
+	if bindgenPath == "" {
+		bindgenPath = "bindgen"
+	}
+	g.nw.Variable("bindgen", bindgenPath)
+
+	aidlPath := g.opts.AidlPath
+	if aidlPath == "" {
+		aidlPath = "aidl"
+	}
+	g.nw.Variable("aidl", aidlPath)
+
+	metalavaPath := g.opts.MetalavaPath
+	if metalavaPath == "" {
+		metalavaPath = "metalava"
+	}
+	g.nw.Variable("metalava", metalavaPath)
 	g.nw.BlankLine()
 	return nil
 }
@@ -1090,6 +1137,83 @@ func (g *Generator) emitStandardRules() error {
 		Name:            "system_modules_jlink",
 		Command:         "rm -rf $out && jlink --module-path $module_path --add-modules $add_modules --output $out",
 		Description:     "JLINK $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Rust / Cargo compilation
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "cargo_build",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "CARGO_BUILD $out",
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Rust bindgen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "rust_bindgen",
+		Command:         "$bindgen $in -o $out $bindgen_flags -- $cflags",
+		Description:     "BINDGEN $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// AIDL C++ codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "aidl_cpp",
+		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=cpp $optional_flags --ninja -d $out.d -h $header_dir -o $out_dir $imports $in",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "AIDL_CPP $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// AIDL NDK codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "aidl_ndk",
+		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=ndk $optional_flags --ninja -d $out.d -h $header_dir -o $out_dir $imports $in",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "AIDL_NDK $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// AIDL Java codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "aidl_java",
+		Command:         "rm -rf $out_dir && mkdir -p $out_dir && $aidl --lang=java $optional_flags --ninja -d $out.d -o $out_dir $imports $in && $jar cf $out -C $out_dir .",
+		Description:     "AIDL_JAVA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// AIDL Rust codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "aidl_rust",
+		Command:       "mkdir -p $out_dir && $aidl --lang=rust $optional_flags --ninja -d $out.d -o $out_dir $imports $in",
+		Description:   "AIDL_RUST $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Metalava stubs generation
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "metalava_stubs",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "METALAVA_STUBS $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {

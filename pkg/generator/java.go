@@ -62,6 +62,26 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 			}
 		}
 
+		// Check if dependency is an aidl_interface or droidstubs
+		if len(targets) == 0 {
+			if outs, ok := g.moduleOutputs[lib+"-java"]; ok && len(outs) > 0 {
+				for _, o := range outs {
+					if strings.HasSuffix(o, ".jar") {
+						targets = append(targets, o)
+					}
+				}
+			}
+		}
+		if len(targets) == 0 {
+			if depMod, ok := g.moduleMap[lib]; ok {
+				if depMod.Type == "aidl_interface" {
+					targets = append(targets, filepath.Join(g.libDir(), lib+"-java.jar"))
+				} else if depMod.Type == "droidstubs" || depMod.Type == "droiddoc" {
+					targets = append(targets, filepath.Join(g.opts.OutDir, "gen", lib, "stubs.srcjar"))
+				}
+			}
+		}
+
 		if len(targets) == 0 {
 			jarTarget := filepath.Join(g.libDir(), cleanLib+".jar")
 			targets = append(targets, jarTarget)

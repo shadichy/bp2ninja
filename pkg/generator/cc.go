@@ -851,9 +851,26 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	allLibs := append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...)
 	allLibs = append(allLibs, mod.GetAllStringList("whole_static_libs")...)
 	for _, lib := range allLibs {
+		if strings.HasSuffix(lib, "-cpp") {
+			base := strings.TrimSuffix(lib, "-cpp")
+			if idx := strings.Index(base, "-V"); idx != -1 {
+				base = base[:idx]
+			}
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", base, "cpp", "include"))
+		} else if strings.HasSuffix(lib, "-ndk") {
+			base := strings.TrimSuffix(lib, "-ndk")
+			if idx := strings.Index(base, "-V"); idx != -1 {
+				base = base[:idx]
+			}
+			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", base, "ndk", "include"))
+		}
 		if libMod, ok := g.moduleMap[lib]; ok {
 			if libMod.Type == "cc_aconfig_library" {
 				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name, "include"))
+			}
+			if libMod.Type == "aidl_interface" {
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name, "cpp", "include"))
+				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name, "ndk", "include"))
 			}
 			for _, dir := range libMod.GetStringList("export_include_dirs") {
 				incPath := dir
@@ -1257,6 +1274,27 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			return []string{filepath.Join(g.libDir(), baseName+".so")}
 		case "cc_library_static", "cc_library_host_static", "cc_aconfig_library":
 			return []string{filepath.Join(g.libDir(), baseName+".a")}
+		case "rust_ffi", "rust_ffi_host":
+			if preferExt == ".a" {
+				return []string{filepath.Join(g.libDir(), baseName+".a")}
+			}
+			return []string{filepath.Join(g.libDir(), baseName+".so")}
+		case "rust_ffi_static", "rust_ffi_host_static":
+			return []string{filepath.Join(g.libDir(), baseName+".a")}
+		case "rust_ffi_shared", "rust_ffi_host_shared", "rust_library_dylib", "rust_library_host_dylib", "rust_proc_macro":
+			return []string{filepath.Join(g.libDir(), baseName+".so")}
+		case "rust_library", "rust_library_host", "rust_library_rlib":
+			if preferExt == ".a" {
+				return []string{filepath.Join(g.libDir(), baseName+".a")}
+			}
+			return []string{filepath.Join(g.libDir(), baseName+".rlib")}
+		case "rust_binary", "rust_binary_host":
+			return []string{filepath.Join(g.binDir(), libMod.Name)}
+		case "aidl_interface":
+			if preferExt == ".a" {
+				return []string{filepath.Join(g.libDir(), baseName+".a")}
+			}
+			return []string{filepath.Join(g.libDir(), baseName+".so")}
 		case "cc_object":
 			return []string{filepath.Join(g.libDir(), baseName+".o")}
 		case "cc_library_headers":
@@ -1271,6 +1309,15 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			}
 			return genOuts
 		}
+	}
+
+	// AIDL synthesized C++ / NDK targets fallback (e.g. android.hardware.foo-cpp)
+	if strings.HasSuffix(lib, "-cpp") || strings.HasSuffix(lib, "-ndk") {
+		cleanStem := strings.TrimPrefix(lib, "lib")
+		if preferExt == ".a" {
+			return []string{filepath.Join(g.libDir(), "lib" + cleanStem + ".a")}
+		}
+		return []string{filepath.Join(g.libDir(), "lib" + cleanStem + ".so")}
 	}
 
 	// Authentic platform sysroot CRT objects and prebuilts fallback
@@ -1379,6 +1426,29 @@ func (g *Generator) staticArchiveFor(lib string, mod *eval.EvaluatedModule) (str
 
 	haveArchive := false
 	for _, cand := range candidates {
+		if outs, ok := g.moduleOutputs[cand]; ok {
+			for _, o := range outs {
+				if strings.HasSuffix(o, ".a") {
+					haveArchive = true
+					break
+				}
+			}
+		}
+		if strings.HasSuffix(cand, "-cpp") || strings.HasSuffix(cand, "-ndk") {
+			base := cand
+			if strings.HasSuffix(base, "-cpp") {
+				base = strings.TrimSuffix(base, "-cpp")
+			} else {
+				base = strings.TrimSuffix(base, "-ndk")
+			}
+			base = strings.TrimPrefix(base, "lib")
+			if idx := strings.Index(base, "-V"); idx != -1 {
+				base = base[:idx]
+			}
+			if baseMod, ok := g.moduleMap[base]; ok && baseMod.Type == "aidl_interface" {
+				haveArchive = true
+			}
+		}
 		libMod, ok := g.moduleMap[cand]
 		if !ok {
 			continue
@@ -1392,6 +1462,10 @@ func (g *Generator) staticArchiveFor(lib string, mod *eval.EvaluatedModule) (str
 			if len(g.ResolveSrcs(libMod.WithVariant("static"))) > 0 {
 				haveArchive = true
 			}
+		case "rust_ffi", "rust_ffi_static", "rust_ffi_host", "rust_ffi_host_static":
+			haveArchive = true
+		case "aidl_interface":
+			haveArchive = true
 		}
 	}
 

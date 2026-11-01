@@ -999,10 +999,17 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		if fi, err := os.Stat(sysInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
 			tier1 = append(tier1, "-I"+sysInc)
 		}
-		if !strings.Contains(g.opts.ClangPath, "-clang") {
-			sysUsrInc := filepath.Join(g.opts.SysrootDir, "usr", "include")
-			if fi, err := os.Stat(sysUsrInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
-				tier1 = append(tier1, "-isystem "+sysUsrInc)
+		if g.opts.ClangPath != "" && strings.Contains(g.opts.ClangPath, "-clang") {
+			// NDK wrapper: already bakes in libc++ and sysroot search paths
+		} else if g.opts.SysrootDir != "" {
+			// Clang target mode with --sysroot: libc++ is located in usr/include/c++/v1 inside the sysroot.
+			// Clang's internal driver injects <sysroot>/usr/include/c++/v1 as internal-isystem, followed by
+			// <sysroot>/include and <sysroot>/usr/include. Adding an explicit -isystem <sysroot>/usr/include
+			// would place C headers before libc++'s C++ wrappers, breaking <cstdlib>, <cmath>, etc.
+			// Therefore, let Clang's driver order sysroot/usr/include naturally, or only inject C++ include dir if present.
+			cxxInc := filepath.Join(g.opts.SysrootDir, "usr", "include", "c++", "v1")
+			if fi, err := os.Stat(cxxInc); err == nil && fi.IsDir() {
+				tier1 = append([]string{"-isystem " + cxxInc}, tier1...)
 			}
 		}
 	}

@@ -1308,7 +1308,11 @@ func (g *Generator) crossTargetFlags() []string {
 	}
 	// Single-token forms survive shellJoin's bare-flag-prefix filter and
 	// dedup as opaque strings; clang/gcc accept both --target= / --sysroot=.
-	flags := []string{"--target=" + g.opts.TargetTriple}
+	triple := g.opts.TargetTriple
+	if g.opts.APILevel > 0 && !strings.HasSuffix(triple, fmt.Sprintf("%d", g.opts.APILevel)) {
+		triple = fmt.Sprintf("%s%d", triple, g.opts.APILevel)
+	}
+	flags := []string{"--target=" + triple}
 	if g.opts.SysrootDir != "" {
 		flags = append(flags, "--sysroot="+g.opts.SysrootDir)
 	}

@@ -498,7 +498,7 @@ Prepares an isolated `go.work` environment:
 
 ```bash
 # Generate workspace
-bp2ninja gowork --tree /path/to/los-21
+bp2ninja gowork -tree /path/to/los-21
 
 # Remove workspace
 bp2ninja clean-gowork

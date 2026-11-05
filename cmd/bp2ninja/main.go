@@ -56,27 +56,55 @@ func (p *pathListFlag) Set(val string) error {
 	return nil
 }
 
+// normalizeArgs normalizes command-line arguments to a single '-' prefix.
+// Any flag starting with '--' (e.g. '--top', '--tree=foo') is rewritten to
+// use a single '-' prefix ('-top', '-tree=foo'). Standalone '--' is preserved
+// as the standard separator indicating the end of flags, and all arguments
+// following it are left unmodified.
+func normalizeArgs(args []string) []string {
+	out := make([]string, len(args))
+	sawTerminator := false
+	for i, a := range args {
+		if sawTerminator {
+			out[i] = a
+			continue
+		}
+		if a == "--" {
+			sawTerminator = true
+			out[i] = a
+			continue
+		}
+		if strings.HasPrefix(a, "--") {
+			out[i] = "-" + strings.TrimLeft(a, "-")
+		} else {
+			out[i] = a
+		}
+	}
+	return out
+}
+
 func handleConvertPlugin(args []string) {
 	var target string
 	var outSo string
 	var bp2ninjaDir string
 
+	args = normalizeArgs(args)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "-o" || arg == "--output" || arg == "-output" {
+		if arg == "-o" || arg == "-output" {
 			if i+1 < len(args) {
 				outSo = args[i+1]
 				i++
 			}
-		} else if strings.HasPrefix(arg, "-o=") || strings.HasPrefix(arg, "--output=") {
+		} else if strings.HasPrefix(arg, "-o=") || strings.HasPrefix(arg, "-output=") {
 			parts := strings.SplitN(arg, "=", 2)
 			outSo = parts[1]
-		} else if arg == "--bp2ninja-dir" || arg == "-bp2ninja-dir" {
+		} else if arg == "-bp2ninja-dir" {
 			if i+1 < len(args) {
 				bp2ninjaDir = args[i+1]
 				i++
 			}
-		} else if strings.HasPrefix(arg, "--bp2ninja-dir=") {
+		} else if strings.HasPrefix(arg, "-bp2ninja-dir=") {
 			parts := strings.SplitN(arg, "=", 2)
 			bp2ninjaDir = parts[1]
 		} else if !strings.HasPrefix(arg, "-") && target == "" {
@@ -100,27 +128,28 @@ func handleGoWork(args []string) {
 	var remote bool
 	var clean bool
 
+	args = normalizeArgs(args)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--remote" || arg == "-remote":
+		case arg == "-remote":
 			remote = true
-		case arg == "--clean" || arg == "-clean":
+		case arg == "-clean":
 			clean = true
-		case arg == "--tree" || arg == "-tree":
+		case arg == "-tree":
 			if i+1 < len(args) {
 				treeDir = args[i+1]
 				i++
 			}
-		case strings.HasPrefix(arg, "--tree="):
+		case strings.HasPrefix(arg, "-tree="):
 			parts := strings.SplitN(arg, "=", 2)
 			treeDir = parts[1]
-		case arg == "--dir" || arg == "-dir":
+		case arg == "-dir":
 			if i+1 < len(args) {
 				workDir = args[i+1]
 				i++
 			}
-		case strings.HasPrefix(arg, "--dir="):
+		case strings.HasPrefix(arg, "-dir="):
 			parts := strings.SplitN(arg, "=", 2)
 			workDir = parts[1]
 		}
@@ -263,9 +292,9 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -version, -v               Print version information and exit\n\n")
 
 	fmt.Fprintf(out, "Subcommands:\n")
-	fmt.Fprintf(out, "  convert-plugin TARGET [-o OUT.so] [--bp2ninja-dir DIR]\n")
+	fmt.Fprintf(out, "  convert-plugin TARGET [-o OUT.so] [-bp2ninja-dir DIR]\n")
 	fmt.Fprintf(out, "                             Convert an in-tree Soong plugin into a loadable .so plugin\n")
-	fmt.Fprintf(out, "  gowork [--tree DIR] [--remote] [--clean]\n")
+	fmt.Fprintf(out, "  gowork [-tree DIR] [-remote] [-clean]\n")
 	fmt.Fprintf(out, "                             Generate or clean go.work workspace for Android Go modules\n")
 	fmt.Fprintf(out, "  clean-gowork               Remove go.work and go.work.sum workspace files\n\n")
 
@@ -298,18 +327,19 @@ func printUsage(out io.Writer, argv0 string) {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	rawArgs := normalizeArgs(os.Args[1:])
+	if len(rawArgs) > 0 {
+		switch rawArgs[0] {
 		case "convert-plugin":
-			handleConvertPlugin(os.Args[2:])
+			handleConvertPlugin(rawArgs[1:])
 			return
 		case "gowork":
-			handleGoWork(os.Args[2:])
+			handleGoWork(rawArgs[1:])
 			return
 		case "clean-gowork":
 			_ = gowork.CleanGoWork(".")
 			return
-		case "help", "--help", "-help", "-h":
+		case "help", "-help", "-h":
 			printUsage(os.Stdout, os.Args[0])
 			return
 		}
@@ -321,8 +351,8 @@ func main() {
 
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		for _, a := range os.Args[1:] {
-			if a == "-h" || a == "-help" || a == "--help" || a == "help" {
+		for _, a := range rawArgs {
+			if a == "-h" || a == "-help" || a == "help" {
 				out = os.Stdout
 				break
 			}
@@ -462,7 +492,7 @@ func main() {
 	// 7. Modular Plugins and Go Workspace
 	flag.Var(&pluginPaths, "a", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
 	flag.Var(&pluginPaths, "add-plugin", "Path to compiled Go plugin (.so) to load (repeated or comma-separated)")
-	flag.Var(&pluginPaths, "plugin", "Alias for -a/--add-plugin")
+	flag.Var(&pluginPaths, "plugin", "Alias for -a/-add-plugin")
 	flag.StringVar(&convertPluginTarget, "convert-plugin", "", "Convert in-tree Soong plugin sources to bp2ninja .so plugin")
 	flag.StringVar(&bp2ninjaDir, "bp2ninja-dir", "", "Path to bp2ninja package root (used with -convert-plugin)")
 	flag.BoolVar(&genGoWork, "gen-gowork", false, "Generate go.work resolving android/* packages")
@@ -476,7 +506,7 @@ func main() {
 	flag.BoolVar(&versionFlag, "v", false, "Alias for -version")
 
 	var positional []string
-	args := os.Args[1:]
+	args := rawArgs
 	for len(args) > 0 {
 		if err := flag.CommandLine.Parse(args); err != nil {
 			break
@@ -620,7 +650,7 @@ func main() {
 		}
 	}
 
-	// Load any explicitly requested dynamic plugins (-a / --add-plugin)
+	// Load any explicitly requested dynamic plugins (-a / -add-plugin)
 	for _, p := range pluginPaths {
 		if err := loadPluginFile(p, true); err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading plugin %s: %v\n", p, err)

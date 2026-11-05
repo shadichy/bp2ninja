@@ -21,10 +21,10 @@ bp2cargo \- invocation alias for \fBbp2ninja \-cargo\fR
 \fB\-ndk\-info\fR
 .br
 .B bp2ninja
-\fBconvert\-plugin\fR \fITARGET\fR [\fB\-o\fR \fIOUT.so\fR] [\fB\-\-bp2ninja\-dir\fR \fIDIR\fR]
+\fBconvert\-plugin\fR \fITARGET\fR [\fB\-o\fR \fIOUT.so\fR] [\fB\-bp2ninja\-dir\fR \fIDIR\fR]
 .br
 .B bp2ninja
-\fBgowork\fR [\fB\-\-tree\fR \fIDIR\fR] [\fB\-\-remote\fR] [\fB\-\-clean\fR]
+\fBgowork\fR [\fB\-tree\fR \fIDIR\fR] [\fB\-remote\fR] [\fB\-clean\fR]
 .br
 .B bp2ninja
 \fBclean\-gowork\fR
@@ -227,10 +227,10 @@ Android source tree root used for \fBgo.work\fR discovery.
 .B bp2ninja \-ndk\-info
 List all discovered Android NDK installations with their versions, supported architectures, and Clang toolchain locations.
 .TP
-.BI "bp2ninja convert\-plugin " "TARGET [\-o OUT.so] [\-\-bp2ninja\-dir DIR]"
+.BI "bp2ninja convert\-plugin " "TARGET [\-o OUT.so] [\-bp2ninja\-dir DIR]"
 Transpile and compile an in-tree Blueprint/Soong Go package into a standalone \fB.so\fR plugin.
 .TP
-.BI "bp2ninja gowork " "[\-\-tree DIR] [\-\-remote] [\-\-clean]"
+.BI "bp2ninja gowork " "[\-tree DIR] [\-remote] [\-clean]"
 Generate or clean a multi-package Go workspace for development and IDE support.
 
 .SH ENVIRONMENT

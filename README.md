@@ -70,7 +70,7 @@ In official AOSP builds, converting Blueprint files requires running `soong_buil
 - **Filesystem & Partition Images**: Natively generates Android boot images (`bootimg` via `mkbootimg`), verified boot metadata (`vbmeta` / `avb_gen_vbmeta_image` via `avbtool`), dynamic partition super images (`logical_partition` via `lpmake`), declarative symlinks (`install_symlink`), and validated XMLs (`prebuilt_etc_xml` with `xmllint` validation against `.xsd` / `.dtd`).
 - **Authentic Platform Sysroot & Include Precedence**:
   - **4-Tier Header Precedence**: APEX platform headers (`/apex/include`, `/apex/com.android.ext.framework.base/include`) and sysroots strictly precede auto-discovered VNDK snapshot paths (`/opt/android-sdk/vndk/v<API>`), preventing VNDK header shadowing.
-  - **ABI Skipping Policy**: `--disable-skip-abis` / `--skip-abi-level` enables linking against custom platform APEXes and suppresses older VNDK snapshot paths.
+  - **ABI Skipping Policy**: `-disable-skip-abis` / `-skip-abi-level` enables linking against custom platform APEXes and suppresses older VNDK snapshot paths.
   - **Platform Sysroot CRT Resolution**: Supports authentic Bionic platform sysroots (`-sysroot /apex/com.android.runtime.dev`) directly, resolving startup objects and injecting `-L` and `-B`.
 - **Java Toolchain UTF-8 & Modular System Modules**: Exports `LC_ALL=C.UTF-8` and `-Dfile.encoding=UTF-8` with `-encoding UTF-8` (or custom `-java-encoding`) across all `javac` rules; supports `java_system_modules` (`jlink`).
 - **HIDL Hardware Interfaces (`hidl_interface`, `hidl_package_root`)**: Full support for Android HIDL code generation via `hidl-gen`. Generates C++ sources (`_genc++`), C++ headers (`_genc++_headers`), and Java interface deliverables (`*-java.jar`, e.g. `android.hidl.base-V1.0-java`). Automatically routes generated headers into dependent C++ libraries (such as `libhidlbase`), and compiles Java interfaces with `javac` against `system/android.jar`.
@@ -300,7 +300,7 @@ bp2ninja -ndk-info
 bp2ninja convert-plugin path/to/soong/rules -o rules.so
 
 # Generate a go.work workspace for IDE and plugin compilation
-bp2ninja gowork --tree /path/to/android/tree [--remote]
+bp2ninja gowork -tree /path/to/android/tree [-remote]
 
 # Clean up go.work artifacts
 bp2ninja clean-gowork

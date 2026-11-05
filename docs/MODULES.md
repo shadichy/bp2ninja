@@ -118,7 +118,7 @@ Compiles test binaries. These targets are omitted from the default Ninja build t
 ### ART Soong Schema & Codegen Properties
 Modules in the ART compiler ecosystem and VIXL use domain-specific types and the `codegen:` property block:
 - **`art_cc_*`**: Native equivalents of standard `cc_*` modules with implicit `-DART_TARGET` flags and full integration with ART defaults.
-- **`codegen: { <arch>: { srcs, cflags, cppflags, static_libs, shared_libs } }`**: Declares architecture-specific code generation or simulation sources. On host builds (`--host`), expands all supported architectures (`arm`, `arm64`, `riscv64`, `x86`, `x86_64`) by default. On target builds, expands the active device architecture or the list set in `$ART_TARGET_CODEGEN_ARCHS` (e.g. for multi-arch simulation / translation on x86_64).
+- **`codegen: { <arch>: { srcs, cflags, cppflags, static_libs, shared_libs } }`**: Declares architecture-specific code generation or simulation sources. On host builds (`-host`), expands all supported architectures (`arm`, `arm64`, `riscv64`, `x86`, `x86_64`) by default. On target builds, expands the active device architecture or the list set in `$ART_TARGET_CODEGEN_ARCHS` (e.g. for multi-arch simulation / translation on x86_64).
 
 ### C/C++ Properties Matrix
 

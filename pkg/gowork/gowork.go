@@ -163,7 +163,7 @@ func GenerateGoWork(treeDir, workDir string, remote bool) error {
 			}
 			useDirs = append(useDirs, relPath)
 		} else if !remote && aospRoot == "" {
-			fmt.Printf("[-] Unresolved package %s (specify --tree or --remote)\n", pkg)
+			fmt.Printf("[-] Unresolved package %s (specify -tree or -remote)\n", pkg)
 		}
 	}
 

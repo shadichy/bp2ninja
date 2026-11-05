@@ -129,3 +129,41 @@ func TestPathListFlag(t *testing.T) {
 		t.Errorf("Unexpected comma path list: %v", commaList)
 	}
 }
+
+func TestNormalizeArgs(t *testing.T) {
+	input := []string{
+		"--top", "/path/to/top",
+		"--arch=x86_64",
+		"-cflags", "-Wall",
+		"--tree=/path/to/tree",
+		"--remote",
+		"-clean",
+		"--bp2ninja-dir=../bp2ninja",
+		"--",
+		"--positional-flag-kept",
+		"Android.bp",
+	}
+
+	expected := []string{
+		"-top", "/path/to/top",
+		"-arch=x86_64",
+		"-cflags", "-Wall",
+		"-tree=/path/to/tree",
+		"-remote",
+		"-clean",
+		"-bp2ninja-dir=../bp2ninja",
+		"--",
+		"--positional-flag-kept",
+		"Android.bp",
+	}
+
+	got := normalizeArgs(input)
+	if len(got) != len(expected) {
+		t.Fatalf("normalizeArgs returned %d args, want %d", len(got), len(expected))
+	}
+	for i := range got {
+		if got[i] != expected[i] {
+			t.Errorf("normalizeArgs[%d] = %q, want %q", i, got[i], expected[i])
+		}
+	}
+}

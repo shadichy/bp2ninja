@@ -548,6 +548,12 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		case "hidl_interface":
 			targets, err = g.generateHidlInterface(mod)
 		case "cc_binary", "cc_binary_host", "art_cc_binary":
+			if mod.IsHostOnly() {
+				if prebuilt := g.findPrebuiltHostTool(mod.Name); prebuilt != "" {
+					g.moduleOutputs[mod.Name] = []string{prebuilt}
+					continue
+				}
+			}
 			targets, err = g.generateCcBinary(mod)
 		case "cc_library", "cc_library_shared", "cc_library_static", "cc_library_headers",
 			"cc_library_host", "cc_library_host_shared", "cc_library_host_static",
@@ -565,6 +571,12 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		case "java_import", "android_library_import":
 			targets, err = g.generateJavaImport(mod)
 		case "java_binary", "java_binary_host":
+			if mod.IsHostOnly() {
+				if prebuilt := g.findPrebuiltHostTool(mod.Name); prebuilt != "" {
+					g.moduleOutputs[mod.Name] = []string{prebuilt}
+					continue
+				}
+			}
 			targets, err = g.generateJavaBinary(mod)
 		case "genrule":
 			targets, err = g.generateGenrule(mod)
@@ -962,10 +974,17 @@ func (g *Generator) emitStandardRules() error {
 	}
 
 	// Protoc: emit C++ from .proto. Recipe build env pins /tmp/pbc/protoc321
-	// via $PROTOC (ABI-matched to the fleet runtime); fall back to system protoc.
+	// via $PROTOC (ABI-matched to the fleet runtime); fall back to authentic prebuilt or system protoc.
+	protocCmd := "$${PROTOC:-protoc}"
+	if g.opts.TopDir != "" {
+		aprotocCand := filepath.Join(g.opts.TopDir, "prebuilts/external/protobuf/host/bin/aprotoc")
+		if fi, err := os.Stat(aprotocCand); err == nil && !fi.IsDir() {
+			protocCmd = fmt.Sprintf("$${PROTOC:-%s}", aprotocCand)
+		}
+	}
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "protoc",
-		Command:       "mkdir -p $$(dirname $out) && $${PROTOC:-protoc} $protoc_args",
+		Command:       fmt.Sprintf("mkdir -p $$(dirname $out) && %s $protoc_args", protocCmd),
 		Description:   "PROTOC $in",
 		RestatContent: g.opts.Siso,
 	}); err != nil {
@@ -1451,24 +1470,37 @@ func (g *Generator) isHostModule(mod *eval.EvaluatedModule) bool {
 	return g.opts.IsHost || (mod != nil && mod.IsHostOnly())
 }
 
-// resolveTool locates the executable or output path for a named tool/module.
-func (g *Generator) resolveTool(name string) string {
-	// 1. Check if tool module outputs were already recorded
-	if targets, ok := g.moduleOutputs[name]; ok && len(targets) > 0 {
-		return targets[0]
+func (g *Generator) findPrebuiltHostTool(name string) string {
+	if g.opts.TopDir == "" {
+		return ""
 	}
-
-	// 2. Check authentic prebuilt shadows (prebuilts/host/*/bin/<name> or prebuilts/build-tools/*/bin/<name>)
-	if g.opts.TopDir != "" {
-		hostPatterns := []string{
-			filepath.Join(g.opts.TopDir, "prebuilts", "host", "*", "bin", name),
-			filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "*", "bin", name),
-		}
-		for _, pat := range hostPatterns {
-			if matches, err := filepath.Glob(pat); err == nil && len(matches) > 0 {
-				return matches[0]
+	hostPatterns := []string{
+		filepath.Join(g.opts.TopDir, "prebuilts", "host", "*", "bin", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "*", "bin", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "linux-x86", "bin", name),
+	}
+	for _, pat := range hostPatterns {
+		if matches, err := filepath.Glob(pat); err == nil && len(matches) > 0 {
+			for _, m := range matches {
+				if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
+					return m
+				}
 			}
 		}
+	}
+	return ""
+}
+
+// resolveTool locates the executable or output path for a named tool/module.
+func (g *Generator) resolveTool(name string) string {
+	// 1. Check authentic prebuilt shadows (prebuilts/host/*/bin/<name> or prebuilts/build-tools/*/bin/<name>)
+	if prebuilt := g.findPrebuiltHostTool(name); prebuilt != "" {
+		return prebuilt
+	}
+
+	// 2. Check if tool module outputs were already recorded
+	if targets, ok := g.moduleOutputs[name]; ok && len(targets) > 0 {
+		return targets[0]
 	}
 
 	// 3. Check if the module is in moduleMap

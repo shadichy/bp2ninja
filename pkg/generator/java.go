@@ -187,10 +187,6 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 
 	allSrcs := append(append(append([]string{}, ktSrcs...), javaSrcs...), srcjarSrcs...)
 	if len(allSrcs) == 0 {
-		if g.opts.AllowMissingDeps {
-			g.emitPhonyIfNeeded(jarTarget)
-			return []string{jarTarget}, nil
-		}
 		return nil, nil
 	}
 
@@ -286,7 +282,18 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 
 func (g *Generator) generateJavaLibrary(mod *eval.EvaluatedModule) ([]string, error) {
 	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
-	return g.compileJavaKotlin(mod, jarTarget)
+	outs, err := g.compileJavaKotlin(mod, jarTarget)
+	if err != nil {
+		return nil, err
+	}
+	if len(outs) == 0 {
+		if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(jarTarget)
+			return []string{jarTarget}, nil
+		}
+		return nil, nil
+	}
+	return outs, nil
 }
 
 func (g *Generator) generateJavaImport(mod *eval.EvaluatedModule) ([]string, error) {
@@ -419,4 +426,55 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 	}
 
 	return []string{apkTarget, libJarTarget}, nil
+}
+
+func (g *Generator) generateAndroidAppImport(mod *eval.EvaluatedModule) ([]string, error) {
+	apk := mod.GetString("apk")
+	if apk == "" {
+		if g.opts.AllowMissingDeps {
+			target := filepath.Join(g.binDir(), mod.Name+".apk")
+			g.emitPhonyIfNeeded(target)
+			return []string{target}, nil
+		}
+		return nil, nil
+	}
+
+	srcApk := apk
+	if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcApk) {
+		srcApk = filepath.Clean(filepath.Join(mod.Dir, srcApk))
+	}
+
+	apkTarget := filepath.Join(g.binDir(), mod.Name+".apk")
+	if err := g.nw.Build(ninja.BuildEdge{
+		Outputs: []string{apkTarget},
+		Rule:    "copy",
+		Inputs:  []string{srcApk},
+	}); err != nil {
+		return nil, err
+	}
+
+	libJarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+	if err := g.nw.Build(ninja.BuildEdge{
+		Outputs: []string{libJarTarget},
+		Rule:    "copy",
+		Inputs:  []string{srcApk},
+	}); err != nil {
+		return nil, err
+	}
+
+	targets := []string{apkTarget, libJarTarget}
+
+	// Register srcjar if present (e.g. R.java / Manifest.java symbols)
+	srcjar := mod.GetString("srcjar")
+	if srcjar != "" {
+		srcjarPath := srcjar
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcjarPath) {
+			srcjarPath = filepath.Clean(filepath.Join(mod.Dir, srcjarPath))
+		}
+		g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
+		g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
+		g.taggedOutputs[mod.Name+":.aapt.jar"] = []string{libJarTarget}
+	}
+
+	return targets, nil
 }

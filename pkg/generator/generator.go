@@ -441,10 +441,29 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	// Sort modules by internal dependencies and report missing/circular dependencies
 	modules = g.SortModules(modules)
 
+	// Invariant: Prebuilts with `prefer: true` supersede source modules of the same name.
+	preferred := make(map[string]*eval.EvaluatedModule)
+	for _, mod := range modules {
+		if mod.Name != "" && mod.GetBool("prefer") {
+			preferred[mod.Name] = mod
+		}
+	}
+	if len(preferred) > 0 {
+		for _, mod := range modules {
+			if pref, ok := preferred[mod.Name]; ok && pref != mod {
+				mod.Properties["enabled"] = false
+			}
+		}
+	}
+
 	// Index all modules and filegroups by name
 	for _, mod := range modules {
 		if mod.Name != "" {
-			g.moduleMap[mod.Name] = mod
+			if pref, ok := preferred[mod.Name]; ok {
+				g.moduleMap[mod.Name] = pref
+			} else {
+				g.moduleMap[mod.Name] = mod
+			}
 			if mod.Type == "filegroup" {
 				var fgSrcs []string
 				for _, s := range mod.GetStringList("srcs") {
@@ -464,6 +483,17 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 					pbRel := strings.TrimSuffix(src, ".proto")
 					pbHdr := filepath.Join(g.opts.OutDir, "gen", mod.Name, pbRel+".pb.h")
 					g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
+				}
+			}
+			// Pre-index srcjar outputs for android_app_import or android_app
+			if mod.Type == "android_app_import" || mod.Type == "android_app" {
+				if srcjar := mod.GetString("srcjar"); srcjar != "" {
+					srcjarPath := srcjar
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcjarPath) {
+						srcjarPath = filepath.Clean(filepath.Join(mod.Dir, srcjarPath))
+					}
+					g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
+					g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
 				}
 			}
 		}
@@ -563,6 +593,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateCcTest(mod)
 		case "android_app":
 			targets, err = g.generateAndroidApp(mod)
+		case "android_app_import":
+			targets, err = g.generateAndroidAppImport(mod)
 		case "android_app_certificate":
 			// Certificate declarations define signing key/cert pairs, not a runnable APK
 			targets = []string{}

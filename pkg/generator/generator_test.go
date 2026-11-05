@@ -3095,3 +3095,72 @@ func TestHostModuleIsolationFromTargetSysroot(t *testing.T) {
 		t.Errorf("expected host binary to link -lprotobuf, got:\n%s", hostSection)
 	}
 }
+
+func TestAndroidAppImportWithPrefer(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	// Prebuilt app with prefer: true
+	prebuiltApp := &eval.EvaluatedModule{
+		Type: "android_app_import",
+		Name: "framework-res",
+		Dir:  "prebuilts/target/framework-base",
+		Properties: map[string]interface{}{
+			"name":   "framework-res",
+			"apk":    "framework-res.apk",
+			"srcjar": "framework-res.srcjar",
+			"prefer": true,
+		},
+	}
+
+	// Source app of the same name (should be disabled by prefer)
+	sourceApp := &eval.EvaluatedModule{
+		Type: "android_app",
+		Name: "framework-res",
+		Dir:  "frameworks/base/core/res",
+		Properties: map[string]interface{}{
+			"name": "framework-res",
+		},
+	}
+
+	// Consumer java library referencing framework-res{.aapt.srcjar}
+	consumerLib := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "consumer_framework",
+		Dir:  "frameworks/base",
+		Properties: map[string]interface{}{
+			"name": "consumer_framework",
+			"srcs": []interface{}{":framework-res{.aapt.srcjar}", "Main.java"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{sourceApp, prebuiltApp, consumerLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// 1. Verify prebuilt apk was copied
+	expectedApk := filepath.Join(gen.binDir(), "framework-res.apk")
+	if !strings.Contains(ninjaContent, expectedApk) {
+		t.Errorf("Expected prebuilt apk %s in ninja:\n%s", expectedApk, ninjaContent)
+	}
+
+	// 2. Verify consumer library compiles against the prebuilt srcjar
+	expectedSrcjar := filepath.Join("prebuilts/target/framework-base", "framework-res.srcjar")
+	if !strings.Contains(ninjaContent, expectedSrcjar) {
+		t.Errorf("Expected consumer library to reference %s in ninja:\n%s", expectedSrcjar, ninjaContent)
+	}
+
+	// 3. Verify sourceApp was disabled (no dummy /tmp/out/apps/framework-res/resources.apk)
+	unwantedApk := filepath.Join(outDir, "apps", "framework-res", "resources.apk")
+	if strings.Contains(ninjaContent, unwantedApk) {
+		t.Errorf("Expected source app to be disabled, but found %s in ninja:\n%s", unwantedApk, ninjaContent)
+	}
+}

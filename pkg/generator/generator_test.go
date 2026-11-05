@@ -711,6 +711,58 @@ func TestFilegroupSourcePathInSubdir(t *testing.T) {
 	}
 }
 
+func TestNestedFilegroupRecursiveResolution(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	leafFg := &eval.EvaluatedModule{
+		Type: "filegroup",
+		Name: "leaf_fg",
+		Dir:  "sub/leaf",
+		Properties: map[string]interface{}{
+			"name": "leaf_fg",
+			"srcs": []interface{}{"leaf.cpp"},
+		},
+	}
+
+	parentFg := &eval.EvaluatedModule{
+		Type: "filegroup",
+		Name: "parent_fg",
+		Dir:  "sub/parent",
+		Properties: map[string]interface{}{
+			"name": "parent_fg",
+			"srcs": []interface{}{":leaf_fg", "parent.cpp"},
+		},
+	}
+
+	consumerMod := &eval.EvaluatedModule{
+		Type: "cc_library_static",
+		Name: "libnested_consumer",
+		Dir:  "root",
+		Properties: map[string]interface{}{
+			"name": "libnested_consumer",
+			"srcs": []interface{}{":parent_fg", "main.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{leafFg, parentFg, consumerMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "sub/leaf/leaf.cpp") {
+		t.Errorf("Expected sub/leaf/leaf.cpp to be resolved recursively in ninja output, got: %s", content)
+	}
+	if !strings.Contains(content, "sub/parent/parent.cpp") {
+		t.Errorf("Expected sub/parent/parent.cpp in ninja output, got: %s", content)
+	}
+	if !strings.Contains(content, "root/main.cpp") {
+		t.Errorf("Expected root/main.cpp in ninja output, got: %s", content)
+	}
+}
+
 func TestCcLibraryPhonyWhenZeroObjsAndAllowMissingDeps(t *testing.T) {
 	var buf bytes.Buffer
 	nw := ninja.NewWriter(&buf)

@@ -279,6 +279,10 @@ func parseTaggedLabel(label string) (string, string) {
 }
 
 func (g *Generator) resolveReference(ref string) []string {
+	return g.resolveReferenceWithVisited(ref, make(map[string]bool))
+}
+
+func (g *Generator) resolveReferenceWithVisited(ref string, visited map[string]bool) []string {
 	if ref == "current_android_jar" || ref == "system_android_jar" {
 		jar := g.resolveCurrentAndroidJar()
 		if jar != "" {
@@ -289,7 +293,21 @@ func (g *Generator) resolveReference(ref string) []string {
 		label := strings.TrimPrefix(ref, ":")
 		baseLabel, tag := parseTaggedLabel(label)
 		if fg, ok := g.filegroups[baseLabel]; ok && len(fg) > 0 {
-			return fg
+			if visited[baseLabel] {
+				return nil
+			}
+			visited[baseLabel] = true
+			defer func() { visited[baseLabel] = false }()
+
+			var expanded []string
+			for _, item := range fg {
+				if strings.HasPrefix(item, ":") || strings.HasPrefix(item, "//") {
+					expanded = append(expanded, g.resolveReferenceWithVisited(item, visited)...)
+				} else {
+					expanded = append(expanded, item)
+				}
+			}
+			return expanded
 		}
 		if tag != "" {
 			if tagged, ok := g.taggedOutputs[baseLabel+":"+tag]; ok && len(tagged) > 0 {
@@ -341,7 +359,21 @@ func (g *Generator) resolveReference(ref string) []string {
 			label := parts[1]
 			baseLabel, tag := parseTaggedLabel(label)
 			if fg, ok := g.filegroups[baseLabel]; ok && len(fg) > 0 {
-				return fg
+				if visited[baseLabel] {
+					return nil
+				}
+				visited[baseLabel] = true
+				defer func() { visited[baseLabel] = false }()
+
+				var expanded []string
+				for _, item := range fg {
+					if strings.HasPrefix(item, ":") || strings.HasPrefix(item, "//") {
+						expanded = append(expanded, g.resolveReferenceWithVisited(item, visited)...)
+					} else {
+						expanded = append(expanded, item)
+					}
+				}
+				return expanded
 			}
 			if outs, ok := g.moduleOutputs[baseLabel]; ok && len(outs) > 0 {
 				if tag != "" {
@@ -1464,49 +1496,9 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 
 	var expanded []string
 	for _, s := range rawSrcs {
-		if strings.HasPrefix(s, ":") {
-			label := strings.TrimPrefix(s, ":")
-			baseLabel, tag := parseTaggedLabel(label)
-			if fgSrcs, ok := g.filegroups[baseLabel]; ok {
-				for _, fg := range fgSrcs {
-					expanded = append(expanded, g.expandGlob(fg)...)
-				}
-			} else if tag != "" && len(g.taggedOutputs[baseLabel+":"+tag]) > 0 {
-				expanded = append(expanded, g.taggedOutputs[baseLabel+":"+tag]...)
-			} else if outs, ok := g.moduleOutputs[baseLabel]; ok {
-				if tag != "" {
-					var matched []string
-					for _, out := range outs {
-						if filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
-							matched = append(matched, out)
-						}
-					}
-					if len(matched) > 0 {
-						expanded = append(expanded, matched...)
-					} else {
-						expanded = append(expanded, outs...)
-					}
-				} else {
-					expanded = append(expanded, outs...)
-				}
-			} else if genMod, ok := g.moduleMap[baseLabel]; ok && (genMod.Type == "genrule" || genMod.Type == "java_genrule" || genMod.Type == "gensrcs") {
-				var genOuts []string
-				for _, out := range genMod.GetStringList("out") {
-					fullOut := filepath.Join(g.opts.OutDir, "gen", baseLabel, out)
-					if tag == "" || filepath.Base(out) == tag || strings.HasSuffix(out, tag) {
-						genOuts = append(genOuts, fullOut)
-					}
-				}
-				if len(genOuts) == 0 {
-					for _, out := range genMod.GetStringList("out") {
-						genOuts = append(genOuts, filepath.Join(g.opts.OutDir, "gen", baseLabel, out))
-					}
-				}
-				expanded = append(expanded, genOuts...)
-			} else if baseLabel == "current_android_jar" || baseLabel == "system_android_jar" {
-				expanded = append(expanded, g.resolveCurrentAndroidJar())
-			} else {
-				expanded = append(expanded, s)
+		if strings.HasPrefix(s, ":") || strings.HasPrefix(s, "//") {
+			for _, ref := range g.resolveReference(s) {
+				expanded = append(expanded, g.expandGlob(ref)...)
 			}
 		} else if outs, ok := g.moduleOutputs[s]; ok {
 			expanded = append(expanded, outs...)

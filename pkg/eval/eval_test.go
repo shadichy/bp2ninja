@@ -868,3 +868,60 @@ cc_library_shared {
 		t.Errorf("expected target.android srcs rebased to ../android_only.cpp, got %v", androidSrcs)
 	}
 }
+
+func TestResolveGlobalDefaults(t *testing.T) {
+	ctx := NewContext(nil, "x86_64")
+
+	// File 1 evaluated first: references a defaults module not yet defined
+	bp1 := `
+aidl_interface {
+    name: "my_consumer_aidl",
+    defaults: ["my_global_aidl_defaults"],
+    srcs: ["IMyConsumer.aidl"],
+}
+`
+	f1, errs := parser.Parse("consumer/Android.bp", strings.NewReader(bp1), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error f1: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(f1, "consumer"); err != nil {
+		t.Fatalf("EvalFileInDir f1 failed: %v", err)
+	}
+
+	// File 2 evaluated second: defines the defaults module
+	bp2 := `
+aidl_interface_defaults {
+    name: "my_global_aidl_defaults",
+    imports: ["imported.interface-V1"],
+}
+`
+	f2, errs := parser.Parse("defaults/Android.bp", strings.NewReader(bp2), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error f2: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(f2, "defaults"); err != nil {
+		t.Fatalf("EvalFileInDir f2 failed: %v", err)
+	}
+
+	// ResolveGlobalDefaults resolves across files
+	ctx.ResolveGlobalDefaults()
+
+	var mod *EvaluatedModule
+	for _, m := range ctx.Modules {
+		if m.Name == "my_consumer_aidl" {
+			mod = m
+			break
+		}
+	}
+	if mod == nil {
+		t.Fatalf("my_consumer_aidl not found")
+	}
+
+	imports := mod.GetStringList("imports")
+	if len(imports) != 1 || imports[0] != "imported.interface-V1" {
+		t.Errorf("Expected imports ['imported.interface-V1'], got %v", imports)
+	}
+	if _, hasDef := mod.Properties["defaults"]; hasDef {
+		t.Errorf("Expected 'defaults' property to be cleared after ResolveGlobalDefaults")
+	}
+}

@@ -48,12 +48,22 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		if idx := strings.Index(imp, "-V"); idx != -1 {
 			baseName = imp[:idx]
 		}
-		if impMod, ok := g.moduleMap[baseName]; ok {
-			dir := impMod.Dir
-			if dir == "" {
-				dir = "."
+		for _, name := range []string{imp, baseName} {
+			if impMod, ok := g.moduleMap[name]; ok {
+				dir := impMod.Dir
+				if dir == "" {
+					dir = "."
+				}
+				incDir := impMod.GetString("local_include_dir")
+				if incDir != "" {
+					if !filepath.IsAbs(incDir) && dir != "." {
+						importDirs = append(importDirs, filepath.Clean(filepath.Join(dir, incDir)))
+					} else {
+						importDirs = append(importDirs, incDir)
+					}
+				}
+				importDirs = append(importDirs, dir)
 			}
-			importDirs = append(importDirs, dir)
 		}
 		if libInfo, ok := g.aidlLibraries[imp]; ok {
 			importDirs = append(importDirs, libInfo.IncludeDirs...)

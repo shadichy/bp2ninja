@@ -229,3 +229,46 @@ func TestDroidstubsMetalava(t *testing.T) {
 		t.Errorf("Expected --stub-packages in ninja command:\n%s", ninjaContent)
 	}
 }
+
+func TestAidlInterfaceImportLocalIncludeDir(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	importedMod := &eval.EvaluatedModule{
+		Type: "aidl_interface",
+		Name: "android.media.soundtrigger.types",
+		Dir:  "system/hardware/interfaces/media",
+		Properties: map[string]interface{}{
+			"name":              "android.media.soundtrigger.types",
+			"local_include_dir": "aidl",
+			"srcs":              []interface{}{"aidl/android/media/soundtrigger/PhraseRecognitionExtra.aidl"},
+		},
+	}
+
+	consumerMod := &eval.EvaluatedModule{
+		Type: "aidl_interface",
+		Name: "soundtrigger_middleware-aidl",
+		Dir:  "frameworks/base/media/soundtrigger",
+		Properties: map[string]interface{}{
+			"name":    "soundtrigger_middleware-aidl",
+			"imports": []interface{}{"android.media.soundtrigger.types-V1"},
+			"srcs":    []interface{}{"ISoundTriggerMiddlewareService.aidl"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{importedMod, consumerMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	expectedInc := "-Isystem/hardware/interfaces/media/aidl"
+	if !strings.Contains(ninjaContent, expectedInc) {
+		t.Errorf("Expected %s in ninja imports, got:\n%s", expectedInc, ninjaContent)
+	}
+}

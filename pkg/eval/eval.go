@@ -240,19 +240,21 @@ func cloneProperty(val interface{}) interface{} {
 	}
 }
 
-func (c *Context) applyDefaults(mod *EvaluatedModule) {
+func (c *Context) applyDefaults(mod *EvaluatedModule) bool {
 	defaultsList := mod.GetStringList("defaults")
 	if len(defaultsList) == 0 {
-		return
+		return false
 	}
 	delete(mod.Properties, "defaults")
 
 	// Accumulated properties from all defaults in order
 	mergedDefaults := make(map[string]interface{})
+	var remainingDefaults []string
 
 	for _, defName := range defaultsList {
 		defMod, ok := c.Defaults[defName]
 		if !ok {
+			remainingDefaults = append(remainingDefaults, defName)
 			continue
 		}
 		// First apply any parent defaults the defaults module itself has
@@ -274,6 +276,10 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 		}
 	}
 
+	if len(remainingDefaults) > 0 {
+		mod.Properties["defaults"] = remainingDefaults
+	}
+
 	// Now merge mod's own properties on top of mergedDefaults
 	for k, defVal := range mergedDefaults {
 		if modVal, exists := mod.Properties[k]; exists {
@@ -281,6 +287,32 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) {
 		} else {
 			mod.Properties[k] = defVal
 		}
+	}
+
+	return len(remainingDefaults) < len(defaultsList)
+}
+
+// ResolveGlobalDefaults resolves any remaining defaults across all modules in Context
+// once all AST files across the workspace have been parsed.
+func (c *Context) ResolveGlobalDefaults() {
+	for iter := 0; iter < 10; iter++ {
+		changed := false
+		for _, defMod := range c.Defaults {
+			if c.applyDefaults(defMod) {
+				changed = true
+			}
+		}
+		for _, mod := range c.Modules {
+			if c.applyDefaults(mod) {
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for _, mod := range c.Modules {
+		delete(mod.Properties, "defaults")
 	}
 }
 

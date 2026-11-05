@@ -833,6 +833,8 @@ func main() {
 		fmt.Printf("[bp2ninja] Evaluated child Android.bp: %s\n", cf.path)
 	}
 
+	evalCtx.ResolveGlobalDefaults()
+
 	if len(evalCtx.Modules) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: No modules found in %s\n", bpFile)
 		os.Exit(1)

@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"bp2ninja/pkg/eval"
@@ -411,7 +412,9 @@ func (g *Generator) expandGenruleCmd(
 		i++
 	}
 
-	return sb.String(), extraInputs
+	resCmd := sb.String()
+	resCmd = regexp.MustCompile(`\bmkdir\s+(-p\s+)?`).ReplaceAllString(resCmd, "mkdir -p ")
+	return resCmd, extraInputs
 }
 
 func (g *Generator) generatePrebuilt(mod *eval.EvaluatedModule) ([]string, error) {

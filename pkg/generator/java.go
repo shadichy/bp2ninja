@@ -115,12 +115,46 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 
-	// 3. Android SDK android.jar for Android-targeted modules
+	// 3. Android SDK android.jar and Core Platform jars for Android-targeted modules
 	if !g.opts.IsHost {
 		androidJar := g.resolveCurrentAndroidJar()
 		if androidJar != "" {
 			cpEntries = append(cpEntries, androidJar)
 			cpDeps = append(cpDeps, androidJar)
+		}
+
+		sdkVer := mod.GetString("sdk_version")
+		if sdkVer == "core_platform" || strings.HasPrefix(sdkVer, "core_") || sdkVer == "none" {
+			// Resolve core platform library (art.module.public.api / art-module-lib.jar)
+			var coreJar string
+			for _, artModName := range []string{"art.module.public.api.stubs.module_lib", "art.module.public.api", "art.module.public.api.stubs"} {
+				if outs, ok := g.moduleOutputs[artModName]; ok && len(outs) > 0 {
+					coreJar = outs[0]
+					break
+				}
+			}
+			if coreJar == "" && g.opts.TopDir != "" {
+				targetApi := g.opts.APILevel
+				if targetApi <= 0 {
+					targetApi = 34
+				}
+				candList := []string{
+					filepath.Join(g.opts.TopDir, "prebuilts/target/art/share/art/art-module-lib.jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib/art.jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/module-lib/art.jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/target/libcore/share/libcore/core-libart.jar"),
+				}
+				for _, c := range candList {
+					if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+						coreJar = c
+						break
+					}
+				}
+			}
+			if coreJar != "" {
+				cpEntries = append(cpEntries, coreJar)
+				cpDeps = append(cpDeps, coreJar)
+			}
 		}
 	}
 
@@ -173,6 +207,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	var ktSrcs []string
 	var jarSrcs []string
 	var srcjarSrcs []string
+	var aidlSrcs []string
 	for _, src := range srcs {
 		if strings.HasSuffix(src, ".kt") {
 			ktSrcs = append(ktSrcs, src)
@@ -182,10 +217,12 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			srcjarSrcs = append(srcjarSrcs, src)
 		} else if strings.HasSuffix(src, ".jar") {
 			jarSrcs = append(jarSrcs, src)
+		} else if strings.HasSuffix(src, ".aidl") {
+			aidlSrcs = append(aidlSrcs, src)
 		}
 	}
 
-	allSrcs := append(append(append([]string{}, ktSrcs...), javaSrcs...), srcjarSrcs...)
+	allSrcs := append(append(append(append([]string{}, ktSrcs...), javaSrcs...), srcjarSrcs...), aidlSrcs...)
 	if len(allSrcs) == 0 {
 		return nil, nil
 	}
@@ -230,7 +267,57 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		srcjarJavaArg = " @" + classesDir + "/srcjar.list"
 	}
 
-	if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 {
+	aidlGenCmd := ""
+	aidlJavaArg := ""
+	if len(aidlSrcs) > 0 {
+		aidlDir := filepath.Join(classesDir, "aidlgen")
+		var aidlIncludes []string
+		if mod.Dir != "" && mod.Dir != "." {
+			aidlIncludes = append(aidlIncludes, "-I"+mod.Dir)
+		} else {
+			aidlIncludes = append(aidlIncludes, "-I.")
+		}
+		if aidlMap := mod.GetMap("aidl"); aidlMap != nil {
+			if incDirs, ok := aidlMap["local_include_dirs"].([]interface{}); ok {
+				for _, id := range incDirs {
+					if s, ok := id.(string); ok {
+						if mod.Dir != "" && mod.Dir != "." {
+							aidlIncludes = append(aidlIncludes, "-I"+filepath.Join(mod.Dir, s))
+						} else {
+							aidlIncludes = append(aidlIncludes, "-I"+s)
+						}
+					}
+				}
+			}
+			if incDirs, ok := aidlMap["include_dirs"].([]interface{}); ok {
+				for _, id := range incDirs {
+					if s, ok := id.(string); ok {
+						aidlIncludes = append(aidlIncludes, "-I"+s)
+					}
+				}
+			}
+		}
+		for _, commonInc := range []string{"frameworks/base/core/java", "frameworks/libs/modules-utils/java"} {
+			if g.opts.TopDir != "" {
+				if fi, err := os.Stat(filepath.Join(g.opts.TopDir, commonInc)); err == nil && fi.IsDir() {
+					aidlIncludes = append(aidlIncludes, "-I"+commonInc)
+				}
+			}
+		}
+		aidlIncludes = dedup(aidlIncludes)
+		incArgs := strings.Join(aidlIncludes, " ")
+
+		aidlGenCmd = fmt.Sprintf("mkdir -p %s && $aidl --lang=java -o %s %s %s && find %s -name '*.java' > %s/aidl.list && ",
+			aidlDir, aidlDir, incArgs, strings.Join(aidlSrcs, " "), aidlDir, classesDir)
+		aidlJavaArg = " @" + classesDir + "/aidl.list"
+	}
+
+	javaFiles := strings.Join(javaSrcs, " ")
+	if javaFiles != "" {
+		javaFiles = " " + javaFiles
+	}
+
+	if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 && len(aidlSrcs) == 0 {
 		// Pure Kotlin compilation
 		rule = "kotlinc_compile"
 		cpArg := ""
@@ -240,7 +327,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		cmd = envPrefix + "mkdir -p " + classesDir +
 			" && $kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
-	} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0) {
+	} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0 || len(aidlSrcs) > 0) {
 		// Mixed Kotlin + Java compilation:
 		rule = "kotlin_java_compile"
 		cpArg := ""
@@ -251,9 +338,9 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		if cpFlag != "" {
 			javacCp = classesDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
 		}
-		cmd = envPrefix + "mkdir -p " + classesDir + " && " + srcjarExtractCmd +
-			"$kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") + " " + strings.Join(javaSrcs, " ") +
-			" && $javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " -cp " + javacCp + " " + strings.Join(javaSrcs, " ") + srcjarJavaArg +
+		cmd = envPrefix + "mkdir -p " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd +
+			"$kotlinc -d " + classesDir + " " + cpArg + strings.Join(ktSrcs, " ") + javaFiles +
+			" && $javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	} else {
 		// Pure Java compilation
@@ -262,8 +349,8 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		if cpFlag != "" {
 			cpArg = cpFlag + " "
 		}
-		cmd = envPrefix + "mkdir -p " + classesDir + " && " + srcjarExtractCmd +
-			"$javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " " + cpArg + strings.Join(javaSrcs, " ") + srcjarJavaArg +
+		cmd = envPrefix + "mkdir -p " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd +
+			"$javac -encoding " + encoding + " " + sysModulesArg + "-d " + classesDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg +
 			" && $jar cf " + jarTarget + " -C " + classesDir + " ."
 	}
 
@@ -475,6 +562,63 @@ func (g *Generator) generateAndroidAppImport(mod *eval.EvaluatedModule) ([]strin
 		g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
 		g.taggedOutputs[mod.Name+":.aapt.jar"] = []string{libJarTarget}
 	}
+
+	return targets, nil
+}
+
+func (g *Generator) generateJavaSdkLibraryImport(mod *eval.EvaluatedModule) ([]string, error) {
+	var targets []string
+
+	extractJars := func(subName string) []string {
+		if subMap := mod.GetMap(subName); subMap != nil {
+			if rawJars, ok := subMap["jars"].([]interface{}); ok {
+				var res []string
+				for _, r := range rawJars {
+					if s, ok := r.(string); ok {
+						res = append(res, s)
+					}
+				}
+				return res
+			}
+		}
+		return nil
+	}
+
+	moduleLibJars := extractJars("module_lib")
+	systemJars := extractJars("system")
+	publicJars := extractJars("public")
+
+	bestJars := moduleLibJars
+	if len(bestJars) == 0 {
+		bestJars = systemJars
+	}
+	if len(bestJars) == 0 {
+		bestJars = publicJars
+	}
+
+	registerScope := func(suffix string, jars []string) {
+		if len(jars) == 0 {
+			return
+		}
+		srcJar := jars[0]
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcJar) {
+			srcJar = filepath.Clean(filepath.Join(mod.Dir, srcJar))
+		}
+		scopeName := mod.Name + suffix
+		targetJar := filepath.Join(g.libDir(), scopeName+".jar")
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{targetJar},
+			Rule:    "copy",
+			Inputs:  []string{srcJar},
+		})
+		targets = append(targets, targetJar)
+		g.moduleOutputs[scopeName] = []string{targetJar}
+	}
+
+	registerScope("", bestJars)
+	registerScope(".stubs", publicJars)
+	registerScope(".stubs.system", systemJars)
+	registerScope(".stubs.module_lib", moduleLibJars)
 
 	return targets, nil
 }

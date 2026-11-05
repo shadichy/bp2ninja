@@ -602,6 +602,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateJavaLibrary(mod)
 		case "java_import", "android_library_import":
 			targets, err = g.generateJavaImport(mod)
+		case "java_sdk_library_import":
+			targets, err = g.generateJavaSdkLibraryImport(mod)
 		case "java_binary", "java_binary_host":
 			if mod.IsHostOnly() {
 				if prebuilt := g.findPrebuiltHostTool(mod.Name); prebuilt != "" {

@@ -3164,3 +3164,71 @@ func TestAndroidAppImportWithPrefer(t *testing.T) {
 		t.Errorf("Expected source app to be disabled, but found %s in ninja:\n%s", unwantedApk, ninjaContent)
 	}
 }
+
+func TestJavaSdkLibraryImportAndAidlSrcs(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	sdkLibImport := &eval.EvaluatedModule{
+		Type: "java_sdk_library_import",
+		Name: "art.module.public.api",
+		Dir:  "prebuilts/target/art",
+		Properties: map[string]interface{}{
+			"name": "art.module.public.api",
+			"public": map[string]interface{}{
+				"jars": []interface{}{"share/art/art-public.jar"},
+			},
+			"module_lib": map[string]interface{}{
+				"jars": []interface{}{"share/art/art-module-lib.jar"},
+			},
+		},
+	}
+
+	javaLibWithAidl := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "my-result-receiver",
+		Dir:  "frameworks/libs",
+		Properties: map[string]interface{}{
+			"name":        "my-result-receiver",
+			"sdk_version": "core_platform",
+			"srcs": []interface{}{
+				"IReceiver.aidl",
+				"Receiver.java",
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{sdkLibImport, javaLibWithAidl}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// 1. Verify java_sdk_library_import outputs
+	moduleLibJar := filepath.Join(gen.libDir(), "art.module.public.api.stubs.module_lib.jar")
+	if !strings.Contains(ninjaContent, moduleLibJar) {
+		t.Errorf("Expected %s in ninja:\n%s", moduleLibJar, ninjaContent)
+	}
+
+	// 2. Verify aidl invocation in Java library build command
+	if !strings.Contains(ninjaContent, "$aidl --lang=java") {
+		t.Errorf("Expected $aidl in java compile rule:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "IReceiver.aidl") {
+		t.Errorf("Expected IReceiver.aidl in ninja command:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "@"+filepath.Join(outDir, "classes", "my-result-receiver", "aidl.list")) {
+		t.Errorf("Expected aidl.list argument to javac:\n%s", ninjaContent)
+	}
+
+	// 3. Verify core_platform sdk_version picks up art-module-lib.jar
+	if !strings.Contains(ninjaContent, moduleLibJar) {
+		t.Errorf("Expected classpath to contain %s:\n%s", moduleLibJar, ninjaContent)
+	}
+}

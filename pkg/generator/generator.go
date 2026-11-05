@@ -1447,6 +1447,10 @@ func (g *Generator) resolveCurrentAndroidJar() string {
 	return filepath.Join("/opt/android-sdk/platforms", fmt.Sprintf("android-%d", targetApi), "android.jar")
 }
 
+func (g *Generator) isHostModule(mod *eval.EvaluatedModule) bool {
+	return g.opts.IsHost || (mod != nil && mod.IsHostOnly())
+}
+
 // resolveTool locates the executable or output path for a named tool/module.
 func (g *Generator) resolveTool(name string) string {
 	// 1. Check if tool module outputs were already recorded
@@ -1454,7 +1458,20 @@ func (g *Generator) resolveTool(name string) string {
 		return targets[0]
 	}
 
-	// 2. Check if the module is in moduleMap
+	// 2. Check authentic prebuilt shadows (prebuilts/host/*/bin/<name> or prebuilts/build-tools/*/bin/<name>)
+	if g.opts.TopDir != "" {
+		hostPatterns := []string{
+			filepath.Join(g.opts.TopDir, "prebuilts", "host", "*", "bin", name),
+			filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "*", "bin", name),
+		}
+		for _, pat := range hostPatterns {
+			if matches, err := filepath.Glob(pat); err == nil && len(matches) > 0 {
+				return matches[0]
+			}
+		}
+	}
+
+	// 3. Check if the module is in moduleMap
 	if mod, ok := g.moduleMap[name]; ok {
 		switch mod.Type {
 		case "sh_binary", "sh_binary_host":

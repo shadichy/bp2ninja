@@ -486,9 +486,17 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 
 	includes := dedup(g.resolveIncludeDirs(mod))
 	archFlags := g.archCodegenFlags()
-	archFlags = append(archFlags, g.crossTargetFlags()...)
+	if !g.isHostModule(mod) {
+		archFlags = append(archFlags, g.crossTargetFlags()...)
+	}
 	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
 	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
+	if g.isHostModule(mod) && g.opts.ClangCxxPath != "" {
+		clangHostLib := filepath.Join(filepath.Dir(filepath.Dir(g.opts.ClangCxxPath)), "lib", "x86_64-unknown-linux-gnu")
+		if fi, err := os.Stat(clangHostLib); err == nil && fi.IsDir() {
+			cppflags = append(cppflags, "-stdlib=libc++")
+		}
+	}
 	cflags = stripIncludeFlags(cflags)
 	cppflags = stripIncludeFlags(cppflags)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
@@ -986,30 +994,32 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	var tier3 []string
 	var tier4 []string
 
-	for _, apexInc := range []string{
-		"/apex/com.android.ext.framework.base/include",
-		"/apex/include",
-	} {
-		if fi, err := os.Stat(apexInc); err == nil && fi.IsDir() {
-			tier1 = append(tier1, "-I"+apexInc)
+	if !g.isHostModule(mod) {
+		for _, apexInc := range []string{
+			"/apex/com.android.ext.framework.base/include",
+			"/apex/include",
+		} {
+			if fi, err := os.Stat(apexInc); err == nil && fi.IsDir() {
+				tier1 = append(tier1, "-I"+apexInc)
+			}
 		}
-	}
-	if g.opts.SysrootDir != "" {
-		sysInc := filepath.Join(g.opts.SysrootDir, "include")
-		if fi, err := os.Stat(sysInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
-			tier1 = append(tier1, "-I"+sysInc)
-		}
-		if g.opts.ClangPath != "" && strings.Contains(g.opts.ClangPath, "-clang") {
-			// NDK wrapper: already bakes in libc++ and sysroot search paths
-		} else if g.opts.SysrootDir != "" {
-			// Clang target mode with --sysroot: libc++ is located in usr/include/c++/v1 inside the sysroot.
-			// Clang's internal driver injects <sysroot>/usr/include/c++/v1 as internal-isystem, followed by
-			// <sysroot>/include and <sysroot>/usr/include. Adding an explicit -isystem <sysroot>/usr/include
-			// would place C headers before libc++'s C++ wrappers, breaking <cstdlib>, <cmath>, etc.
-			// Therefore, let Clang's driver order sysroot/usr/include naturally, or only inject C++ include dir if present.
-			cxxInc := filepath.Join(g.opts.SysrootDir, "usr", "include", "c++", "v1")
-			if fi, err := os.Stat(cxxInc); err == nil && fi.IsDir() {
-				tier1 = append([]string{"-isystem " + cxxInc}, tier1...)
+		if g.opts.SysrootDir != "" {
+			sysInc := filepath.Join(g.opts.SysrootDir, "include")
+			if fi, err := os.Stat(sysInc); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps {
+				tier1 = append(tier1, "-I"+sysInc)
+			}
+			if g.opts.ClangPath != "" && strings.Contains(g.opts.ClangPath, "-clang") {
+				// NDK wrapper: already bakes in libc++ and sysroot search paths
+			} else if g.opts.SysrootDir != "" {
+				// Clang target mode with --sysroot: libc++ is located in usr/include/c++/v1 inside the sysroot.
+				// Clang's internal driver injects <sysroot>/usr/include/c++/v1 as internal-isystem, followed by
+				// <sysroot>/include and <sysroot>/usr/include. Adding an explicit -isystem <sysroot>/usr/include
+				// would place C headers before libc++'s C++ wrappers, breaking <cstdlib>, <cmath>, etc.
+				// Therefore, let Clang's driver order sysroot/usr/include naturally, or only inject C++ include dir if present.
+				cxxInc := filepath.Join(g.opts.SysrootDir, "usr", "include", "c++", "v1")
+				if fi, err := os.Stat(cxxInc); err == nil && fi.IsDir() {
+					tier1 = append([]string{"-isystem " + cxxInc}, tier1...)
+				}
 			}
 		}
 	}
@@ -1514,8 +1524,15 @@ func linkerSearchDirs(flags []string) []string {
 // shared_libs and static_libs are mapped directly to -l flags and prebuilt paths.
 func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []string, libs []string) {
 	ldflags = append(mod.GetStringList("ldflags"), g.opts.ExtraLdflags...)
-	ldflags = append(ldflags, g.archCodegenFlags()...)
-	ldflags = append(ldflags, g.crossTargetFlags()...)
+	if !g.isHostModule(mod) {
+		ldflags = append(ldflags, g.archCodegenFlags()...)
+		ldflags = append(ldflags, g.crossTargetFlags()...)
+	} else if g.opts.ClangCxxPath != "" {
+		clangHostLib := filepath.Join(filepath.Dir(filepath.Dir(g.opts.ClangCxxPath)), "lib", "x86_64-unknown-linux-gnu")
+		if fi, err := os.Stat(clangHostLib); err == nil && fi.IsDir() {
+			ldflags = append(ldflags, "-stdlib=libc++", "-L"+clangHostLib, "-Wl,-rpath,"+clangHostLib)
+		}
+	}
 
 	if g.opts.PrebuiltLibDir != "" {
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)
@@ -1523,7 +1540,7 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		ldflags = append(ldflags, "-L"+g.libDir())
 	}
 
-	if g.opts.SysrootDir != "" {
+	if !g.isHostModule(mod) && g.opts.SysrootDir != "" {
 		for _, sub := range []string{archLibSub(g.opts.TargetArch), "lib64", "lib"} {
 			sysLib := filepath.Join(g.opts.SysrootDir, sub)
 			if fi, err := os.Stat(sysLib); (err == nil && fi.IsDir()) || g.opts.AllowMissingDeps || strings.HasPrefix(g.opts.SysrootDir, "/apex/") {
@@ -1565,7 +1582,7 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		if clean == "sqlite" {
 			clean = "sqlite3"
 		}
-		if g.opts.IsHost {
+		if g.isHostModule(mod) {
 			if clean == "protobuf-cpp-full" {
 				clean = "protobuf"
 			} else if clean == "protobuf-cpp-lite" {
@@ -1583,7 +1600,7 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		if clean == "sqlite" {
 			clean = "sqlite3"
 		}
-		if g.opts.IsHost {
+		if g.isHostModule(mod) {
 			if clean == "protobuf-cpp-full" {
 				clean = "protobuf"
 			} else if clean == "protobuf-cpp-lite" {

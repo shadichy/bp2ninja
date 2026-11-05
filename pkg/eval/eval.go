@@ -706,6 +706,16 @@ func (m *EvaluatedModule) IsHostSupported() bool {
 	return false
 }
 
+func (m *EvaluatedModule) IsHostOnly() bool {
+	if m == nil {
+		return false
+	}
+	if strings.HasSuffix(m.Type, "_host") || strings.Contains(m.Type, "_host_") || strings.HasPrefix(m.Type, "host_") {
+		return true
+	}
+	return !m.IsDeviceSupported() && m.IsHostSupported()
+}
+
 func (m *EvaluatedModule) IsDeviceSupported() bool {
 	if m == nil {
 		return false

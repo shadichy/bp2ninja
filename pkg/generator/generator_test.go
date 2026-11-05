@@ -3030,3 +3030,68 @@ func TestStaticLibsLinkArchives(t *testing.T) {
 		t.Errorf("expected unresolved static_libs missing to fall back to -lmissing, got:\n%s", content)
 	}
 }
+
+func TestHostModuleIsolationFromTargetSysroot(t *testing.T) {
+	opts := DefaultOptions(".", "out")
+	opts.TargetArch = "x86_64"
+	opts.TargetTriple = "x86_64-linux-android"
+	opts.APILevel = 34
+	opts.SysrootDir = "/apex/com.android.runtime.dev"
+	opts.ClangPath = "clang"
+	opts.ClangCxxPath = "clang++"
+
+	var buf bytes.Buffer
+	gen := New(opts, ninja.NewWriter(&buf), nil)
+
+	targetBin := &eval.EvaluatedModule{
+		Type: "cc_binary",
+		Name: "my_target_bin",
+		Properties: map[string]interface{}{
+			"name": "my_target_bin",
+			"srcs": []interface{}{"target.cpp"},
+		},
+	}
+	hostBin := &eval.EvaluatedModule{
+		Type: "cc_binary_host",
+		Name: "my_host_tool",
+		Properties: map[string]interface{}{
+			"name": "my_host_tool",
+			"srcs": []interface{}{"host.cpp"},
+			"shared_libs": []interface{}{"libprotobuf-cpp-full"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{targetBin, hostBin}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	content := buf.String()
+
+	// Target binary should have --target and --sysroot
+	targetIdx := strings.Index(content, "build out/bin/my_target_bin: link_binary")
+	hostIdx := strings.Index(content, "build out/bin/my_host_tool: link_binary")
+	if targetIdx == -1 || hostIdx == -1 {
+		t.Fatalf("Expected both target and host binaries in ninja:\n%s", content)
+	}
+
+	targetSection := content[targetIdx:hostIdx]
+	hostSection := content[hostIdx:]
+
+	if !strings.Contains(targetSection, "--target=x86_64-linux-android34") {
+		t.Errorf("expected target binary to contain --target=x86_64-linux-android34, got:\n%s", targetSection)
+	}
+	if !strings.Contains(targetSection, "--sysroot=/apex/com.android.runtime.dev") {
+		t.Errorf("expected target binary to contain --sysroot=/apex/com.android.runtime.dev, got:\n%s", targetSection)
+	}
+
+	// Host binary must NOT contain target triple or target sysroot
+	if strings.Contains(hostSection, "--target=x86_64-linux-android34") {
+		t.Errorf("expected host binary NOT to contain --target=x86_64-linux-android34, got:\n%s", hostSection)
+	}
+	if strings.Contains(hostSection, "--sysroot=/apex/com.android.runtime.dev") {
+		t.Errorf("expected host binary NOT to contain --sysroot=/apex/com.android.runtime.dev, got:\n%s", hostSection)
+	}
+	// Host binary should map protobuf-cpp-full to protobuf
+	if !strings.Contains(hostSection, "-lprotobuf") {
+		t.Errorf("expected host binary to link -lprotobuf, got:\n%s", hostSection)
+	}
+}

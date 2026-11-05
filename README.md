@@ -212,6 +212,10 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `-avbtool` | string | `avbtool` | Path to `avbtool` executable (or via `$AVBTOOL`). |
 | `-lpmake` | string | `lpmake` | Path to `lpmake` executable (or via `$LPMAKE`). |
 | `-compat-config` | string | `process-compat-config` | Path to `process-compat-config` executable (or via `$PROCESS_COMPAT_CONFIG`). |
+| `-bootclasspath` | string | `""` | Colon-delimited bootclasspath JAR paths prepended to the head of all classpaths (or via `$BOOTCLASSPATH`). |
+| `-prebuilt-jars` | string | `""` | Colon-delimited directories or files containing prebuilt JAR libraries (or via `$PREBUILT_JARS`). |
+| `-extra-jars` | string | `""` | Colon-delimited extra JAR files or directories to inject (or via `$EXTRA_JARS`). |
+| `-android-jar` | string | `""` | Explicit path to Android platform SDK `android.jar` (or via `$ANDROID_JAR`). |
 | `-java-encoding` | string | `UTF-8` | Explicit Java compilation character encoding (or via `$JAVA_ENCODING`). |
 | `-skip-abi-level` | int | `0` | Base Android ABI skip level threshold (derived from makeapex / apexm). |
 | `-disable-skip-abis` | bool | `false` | Disable ABI skipping; prioritize APEX platform headers and suppress shadowing VNDK paths. |
@@ -274,6 +278,10 @@ Usage: bp2ninja [options] [path/to/Android.bp | path/to/dir]
 | `BINDGEN` | Custom path to `bindgen` executable when `-bindgen-path` is omitted. |
 | `AIDL` | Custom path to `aidl` executable when `-aidl` is omitted. |
 | `METALAVA` | Custom path to `metalava` executable when `-metalava` is omitted. |
+| `BOOTCLASSPATH` | Colon-delimited bootclasspath JAR paths prepended to the head of all classpaths. |
+| `PREBUILT_JARS` | Colon-delimited list of directories or files containing prebuilt JAR libraries. |
+| `EXTRA_JARS` | Colon-delimited list of extra JAR libraries or directories to inject. |
+| `ANDROID_JAR` | Explicit path to Android platform SDK `android.jar`. |
 | `JAVA_ENCODING` | Default character encoding for Java compilation (default: `UTF-8`). |
 | `PROTOC` | Custom path to Protobuf compiler (useful for ABI pinning to Protobuf 21.12). |
 | `CLASSPATH` | Host Java classpath search path. |
@@ -364,9 +372,19 @@ ninja -f update_engine.ninja out/lib64/libupdate_metadata-protos.a
 For Android apps or libraries with mixed Kotlin + Java sources:
 
 ```bash
+# Standard compilation:
 bp2ninja -bp packages/apps/ExactCalculator -o calculator.ninja
 ninja -f calculator.ninja
+
+# Compiling platform services prioritizing authentic Extractive APEX physical JARs:
+bp2ninja -bp frameworks/base/services \
+         -prebuilt-jars prebuilts/target/art/share/art/art-module-lib.jar \
+         -bootclasspath /apex/com.android.art/share/art/art-module-lib.jar \
+         -o services.ninja
+ninja -f services.ninja
 ```
+
+`bp2ninja` employs a **7-tier classpath precedence hierarchy** that systematically discovers and prioritizes authentic physical JARs (from `-bootclasspath`, `-prebuilt-jars`, `/apex/*/share/`, or `${TopDir}/prebuilts/target/*/share/`) over synthetic phony fallback targets, resolving conceptual Blueprint aliases like `art.module.public.api.stubs.module_lib` $\to$ `art-module-lib.jar` without poison dummy targets.
 
 ### 6. AConfig Code Generation (`cc_aconfig_library`)
 

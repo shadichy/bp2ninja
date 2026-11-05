@@ -36,6 +36,26 @@ func (s *stringListFlag) Set(val string) error {
 	return nil
 }
 
+type pathListFlag []string
+
+func (p *pathListFlag) String() string {
+	return strings.Join(*p, ":")
+}
+
+func (p *pathListFlag) Set(val string) error {
+	sep := ":"
+	if strings.Contains(val, ",") && !strings.Contains(val, ":") {
+		sep = ","
+	}
+	for _, part := range strings.Split(val, sep) {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			*p = append(*p, trimmed)
+		}
+	}
+	return nil
+}
+
 func handleConvertPlugin(args []string) {
 	var target string
 	var outSo string
@@ -190,12 +210,18 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -cppflags, -cxxflags FLAGS Extra C++ compiler flags (or via $CPPFLAGS / $CXXFLAGS)\n")
 	fmt.Fprintf(out, "  -asflags FLAGS             Extra assembler flags for .s/.S files (or via $ASFLAGS)\n")
 	fmt.Fprintf(out, "  -ldflags FLAGS             Extra linker flags (or via $LDFLAGS)\n")
-	fmt.Fprintf(out, "  -java-encoding ENC         Character encoding for Java compilation (default: \"UTF-8\", or via $JAVA_ENCODING)\n")
 	fmt.Fprintf(out, "  -art-target-codegen-archs ARCHES\n")
 	fmt.Fprintf(out, "                             Space-delimited target codegen architectures for ART/VIXL\n")
 	fmt.Fprintf(out, "  -art-host-codegen-archs ARCHES\n")
 	fmt.Fprintf(out, "                             Space-delimited host codegen architectures for ART/VIXL\n")
 	fmt.Fprintf(out, "  -config KEY=VAL            Soong config variable in key=value format (can be repeated)\n\n")
+
+	fmt.Fprintf(out, "Java and Kotlin toolchain options:\n")
+	fmt.Fprintf(out, "  -bootclasspath PATHS       Colon-delimited bootclasspath JAR paths (prepended to all classpaths)\n")
+	fmt.Fprintf(out, "  -prebuilt-jars PATHS       Colon-delimited directories or files containing prebuilt JARs\n")
+	fmt.Fprintf(out, "  -extra-jars PATHS          Colon-delimited extra JAR files or directories to inject\n")
+	fmt.Fprintf(out, "  -android-jar PATH          Explicit path to SDK android.jar (or via $ANDROID_JAR)\n")
+	fmt.Fprintf(out, "  -java-encoding ENC         Character encoding for Java compilation (default: \"UTF-8\", or via $JAVA_ENCODING)\n\n")
 
 	fmt.Fprintf(out, "Rust and Cargo options (bp2cargo):\n")
 	fmt.Fprintf(out, "  -cargo                     Enable Cargo hybrid engine: synthesize Cargo.toml and compile via cargo\n")
@@ -258,6 +284,11 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  ANDROID_BUILD_TOP          Fallback path for -top\n")
 	fmt.Fprintf(out, "  ANDROID_NDK                Android NDK directory for auto-discovery\n")
 	fmt.Fprintf(out, "  ANDROID_SDK, ANDROID_HOME  Android SDK directory for android.jar resolution\n")
+	fmt.Fprintf(out, "  BOOTCLASSPATH              Default bootclasspath JAR paths (overridden by -bootclasspath)\n")
+	fmt.Fprintf(out, "  PREBUILT_JARS              Default prebuilt JAR directories/files (overridden by -prebuilt-jars)\n")
+	fmt.Fprintf(out, "  EXTRA_JARS                 Default extra JARs to inject (overridden by -extra-jars)\n")
+	fmt.Fprintf(out, "  ANDROID_JAR                Explicit path to SDK android.jar (overridden by -android-jar)\n")
+	fmt.Fprintf(out, "  JAVA_ENCODING              Character encoding for Java compilation (overridden by -java-encoding)\n")
 	fmt.Fprintf(out, "  BP2NINJA_PLUGINS_DIR       Directory containing dynamic .so plugins for auto-loading\n")
 	fmt.Fprintf(out, "  HIDL_GEN, XSDC, CONV_LINKER_CONFIG, XMLLINT, MKBOOTIMG, AVBTOOL, LPMAKE, PROCESS_COMPAT_CONFIG\n")
 	fmt.Fprintf(out, "                             Custom tool binary paths\n\n")
@@ -386,6 +417,16 @@ func main() {
 	flag.StringVar(&artTargetCodegen, "art-target-codegen-archs", "", "Space-delimited target codegen architectures for ART/VIXL")
 	flag.StringVar(&artHostCodegen, "art-host-codegen-archs", "", "Space-delimited host codegen architectures for ART/VIXL")
 	flag.Var(&configVars, "config", "Soong config variable in key=value format (can be repeated)")
+
+	// 3.5. Java and Kotlin Toolchain Options
+	var bootclasspathFlags pathListFlag
+	var prebuiltJarsFlags pathListFlag
+	var extraJarsFlags pathListFlag
+	var androidJarPath string
+	flag.Var(&bootclasspathFlags, "bootclasspath", "Colon-delimited bootclasspath JAR paths (or via $BOOTCLASSPATH)")
+	flag.Var(&prebuiltJarsFlags, "prebuilt-jars", "Colon-delimited directories or files containing prebuilt JARs (or via $PREBUILT_JARS)")
+	flag.Var(&extraJarsFlags, "extra-jars", "Colon-delimited extra JAR files or directories to inject (or via $EXTRA_JARS)")
+	flag.StringVar(&androidJarPath, "android-jar", "", "Explicit path to SDK android.jar (or via $ANDROID_JAR)")
 
 	// 4. Rust and Cargo Hybrid Options (bp2cargo)
 	flag.BoolVar(&cargo, "cargo", cargoDefault, "Enable Cargo hybrid engine (default: on when invoked as bp2cargo)")
@@ -974,6 +1015,34 @@ func main() {
 		javaEncoding = envEnc
 	}
 	opts.JavaEncoding = javaEncoding
+
+	// Merge Java/Kotlin environment variables if flags were not explicitly provided
+	if len(bootclasspathFlags) == 0 {
+		if envBCP := os.Getenv("BOOTCLASSPATH"); envBCP != "" {
+			_ = bootclasspathFlags.Set(envBCP)
+		}
+	}
+	if len(prebuiltJarsFlags) == 0 {
+		if envPJ := os.Getenv("PREBUILT_JARS"); envPJ != "" {
+			_ = prebuiltJarsFlags.Set(envPJ)
+		}
+	}
+	if len(extraJarsFlags) == 0 {
+		if envEJ := os.Getenv("EXTRA_JARS"); envEJ != "" {
+			_ = extraJarsFlags.Set(envEJ)
+		}
+	}
+	if androidJarPath == "" {
+		if envAJ := os.Getenv("ANDROID_JAR"); envAJ != "" {
+			androidJarPath = envAJ
+		}
+	}
+	opts.BootClasspath = bootclasspathFlags
+	opts.PrebuiltJarDirs = prebuiltJarsFlags
+	opts.ExtraJars = extraJarsFlags
+	if androidJarPath != "" {
+		opts.AndroidJarPath = androidJarPath
+	}
 
 	if envCargo := os.Getenv("CARGO"); envCargo != "" && cargoPath == "cargo" {
 		cargoPath = envCargo

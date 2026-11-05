@@ -17,6 +17,8 @@ func (g *Generator) generateJavaSystemModules(mod *eval.EvaluatedModule) ([]stri
 	for _, lib := range libs {
 		if outs, ok := g.moduleOutputs[lib]; ok && len(outs) > 0 {
 			inputs = append(inputs, outs[0])
+		} else if physJar := g.resolvePhysicalJar(lib); physJar != "" {
+			inputs = append(inputs, physJar)
 		} else {
 			jarPath := filepath.Join(g.libDir(), lib+".jar")
 			inputs = append(inputs, jarPath)

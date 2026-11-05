@@ -168,6 +168,9 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 		deps := GetModuleDependencies(mod)
 		for _, dep := range deps {
 			if !definedModules[dep] {
+				if g.resolvePhysicalJar(dep) != "" {
+					continue
+				}
 				missingSet[dep] = true
 			}
 		}

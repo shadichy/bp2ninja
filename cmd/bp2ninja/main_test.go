@@ -58,6 +58,7 @@ func TestPrintUsageGNUFormat(t *testing.T) {
 		"Core options:",
 		"Target architecture and NDK options:",
 		"Compiler and linker overrides:",
+		"Java and Kotlin toolchain options:",
 		"Rust and Cargo options (bp2cargo):",
 		"Platform codegen tools:",
 		"Siso execution options (bp2siso):",
@@ -67,6 +68,10 @@ func TestPrintUsageGNUFormat(t *testing.T) {
 		"Environment variables:",
 		"-cflags, -ccflags FLAGS",
 		"-cppflags, -cxxflags FLAGS",
+		"-bootclasspath PATHS",
+		"-prebuilt-jars PATHS",
+		"-extra-jars PATHS",
+		"-android-jar PATH",
 		"Report bugs to:",
 	}
 
@@ -100,5 +105,27 @@ func TestCcflagsAlias(t *testing.T) {
 	}
 	if extraCcflags != "-Wall -Werror" {
 		t.Errorf("expected extraCcflags to be '-Wall -Werror', got %q", extraCcflags)
+	}
+}
+
+func TestPathListFlag(t *testing.T) {
+	var list pathListFlag
+	if err := list.Set("/a/b.jar:/c/d.jar"); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	if len(list) != 2 || list[0] != "/a/b.jar" || list[1] != "/c/d.jar" {
+		t.Errorf("Unexpected path list: %v", list)
+	}
+	if list.String() != "/a/b.jar:/c/d.jar" {
+		t.Errorf("Unexpected string output: %s", list.String())
+	}
+
+	// Comma separated fallback
+	var commaList pathListFlag
+	if err := commaList.Set("/x.jar, /y.jar"); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	if len(commaList) != 2 || commaList[0] != "/x.jar" || commaList[1] != "/y.jar" {
+		t.Errorf("Unexpected comma path list: %v", commaList)
 	}
 }

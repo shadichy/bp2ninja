@@ -173,6 +173,14 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Path to `lpmake` dynamic partition utility. Can also be supplied via `$LPMAKE`.
 - **`-compat-config <path>`** *(default: `process-compat-config`)*:
   Path to `process-compat-config` tool. Can also be supplied via `$PROCESS_COMPAT_CONFIG`.
+- **`-bootclasspath <paths>`**:
+  Colon-delimited bootclasspath JAR paths prepended to the head of all Java and Kotlin compilation classpaths. Can also be supplied via `$BOOTCLASSPATH`.
+- **`-prebuilt-jars <paths>`**:
+  Colon-delimited list of directories or files containing prebuilt JAR libraries. Discovers and prioritizes authentic physical JARs (e.g. `prebuilts/target/art/share/art/art-module-lib.jar`) ahead of synthetic fallback targets. Can also be supplied via `$PREBUILT_JARS`.
+- **`-extra-jars <paths>`**:
+  Colon-delimited list of extra JAR libraries or directories to inject into compilation classpaths. Can also be supplied via `$EXTRA_JARS`.
+- **`-android-jar <path>`**:
+  Explicit path to the Android platform SDK `android.jar`. Can also be supplied via `$ANDROID_JAR`.
 - **`-java-encoding <encoding>`** *(default: `UTF-8`)*:
   Explicit source encoding for `javac` and `kotlinc` compilation. Can also be supplied via `$JAVA_ENCODING`.
 - **`-skip-abi-level <n>`** *(default: `0`)*:
@@ -361,13 +369,33 @@ ninja -f update_engine.ninja out/lib64/libupdate_metadata-protos.a
 
 ### 6. Compiling Android Apps & Java/Kotlin Libraries
 
-Supports pure Kotlin, pure Java, or mixed-language compilation:
+Supports pure Kotlin, pure Java, or mixed-language compilation with a **7-tier classpath precedence hierarchy**:
 
 ```bash
 bp2ninja -bp packages/apps/ExactCalculator -o calculator.ninja
 
 ninja -f calculator.ninja
 ```
+
+When building platform services or Extractive APEX components out-of-tree, physical JARs (such as `art-module-lib.jar` or `/apex/com.android.art/share/art/art-module-lib.jar`) can be injected and prioritized ahead of synthetic phony targets:
+
+```bash
+bp2ninja -bp frameworks/base/services \
+         -prebuilt-jars prebuilts/target/art/share/art/art-module-lib.jar \
+         -bootclasspath /apex/com.android.art/share/art/art-module-lib.jar \
+         -o services.ninja
+
+ninja -f services.ninja
+```
+
+#### 7-Tier Classpath Precedence Hierarchy:
+1. **Tier 0 (Explicit Bootclasspath & Extra Injections)**: Entries from `-bootclasspath` and `-extra-jars` (or `$BOOTCLASSPATH`, `$EXTRA_JARS`), placed at the very head.
+2. **Tier 1 (In-Tree / Graph-Local Module Outputs)**: Authentic outputs produced by modules in the same Ninja manifest (`g.moduleOutputs`, AIDL interfaces, Droidstubs, XSD configs, Java genrules).
+3. **Tier 2 (Extractive APEX & Shadow Prebuilt JARs)**: Physical JARs located via `-prebuilt-jars`, `/apex/*/share/*/*.jar`, and `${TopDir}/prebuilts/target/*/share/*/*.jar`. Automatically maps conceptual Blueprint dependencies (`art.module.public.api.stubs.module_lib` $\to$ `art-module-lib.jar`) and **suppresses dummy phony rule generation**.
+4. **Tier 3 (Platform SDK Boot & Core Jars)**: `sdk_version` boot libraries (`art-module-lib.jar`, `core-libart.jar`) and SDK `android.jar`.
+5. **Tier 4 (In-Tree SDK Prebuilts)**: `${TopDir}/prebuilts/sdk/<api>/public/<lib>.jar`.
+6. **Tier 5 (Host Environment `$CLASSPATH`)**: System classpath fallback.
+7. **Tier 6 (Synthetic Phony Fallback)**: Generates `out/lib64/<lib>.jar` with a phony rule only if no physical JAR was found and `-allow-missing-deps` is active.
 
 ### 7. Extractive APEX Packaging Workflows
 

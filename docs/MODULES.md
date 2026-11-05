@@ -154,6 +154,7 @@ Modules in the ART compiler ecosystem and VIXL use domain-specific types and the
 Compiles Java and Kotlin source files into a JAR archive (`out/lib64/<name>.jar`).
 - Automatically switches between pure `kotlinc`, pure `javac`, or two-stage mixed compilation.
 - `javac` always runs with `-encoding UTF-8` (Android sources are UTF-8 regardless of the host locale).
+- Employs a **7-tier classpath precedence hierarchy** that resolves and prioritizes real physical JARs from Extractive APEX shadows (`prebuilts/target/*/share/*/*.jar`, `/apex/*/share/*/*.jar`, `-prebuilt-jars`, `-bootclasspath`), mapping conceptual Soong target names like `art.module.public.api.stubs.module_lib` $\to$ `art-module-lib.jar` without generating dummy empty phony rules.
 
 ### Prebuilts (`java_import`, `android_library_import`)
 Packages existing prebuilt JAR archives into the output library directory.

@@ -75,6 +75,11 @@ type Options struct {
 	DisableSkipAbis bool   // Disable skipping base ABI libraries (force APEX resolution)
 	JavaEncoding   string // Default Java source encoding (default: UTF-8)
 
+	// Java and Kotlin classpath and prebuilt options
+	BootClasspath   []string // Explicit bootclasspath JAR paths (prepended to all classpaths)
+	ExtraJars       []string // Explicit extra JAR files or directories to inject
+	PrebuiltJarDirs []string // Directories or files containing prebuilt JARs (e.g. prebuilts/target/*/share/*)
+
 	// Siso emits Siso-specific ninja bindings (restat_content, remote_enabled,
 	// sandbox_disabled, ...) so the graph runs under `siso ninja` as a drop-in
 	// Ninja replacement. Upstream Ninja rejects those bindings, hence opt-in.
@@ -139,6 +144,7 @@ type Generator struct {
 	protoHeaders     map[string][]string
 	aconfigHeaders   map[string][]string
 	hidlPackageRoots map[string]string
+	prebuiltJarIndex map[string]string
 
 	// MissingDeps records external dependencies not found in the parsed blueprint set.
 	MissingDeps []string

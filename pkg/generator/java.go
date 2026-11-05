@@ -13,7 +13,29 @@ import (
 func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cpDeps []string) {
 	var cpEntries []string
 
-	// 1. Dependency JARs from libs and static_libs
+	// =========================================================================
+	// Tier 0: Explicit Bootclasspath and Injected Extra JARs
+	// =========================================================================
+	for _, bcp := range g.opts.BootClasspath {
+		if bcp != "" {
+			if fi, err := os.Stat(bcp); err == nil && !fi.IsDir() {
+				cpEntries = append(cpEntries, bcp)
+				cpDeps = append(cpDeps, bcp)
+			}
+		}
+	}
+	for _, ej := range g.opts.ExtraJars {
+		if ej != "" {
+			if fi, err := os.Stat(ej); err == nil && !fi.IsDir() {
+				cpEntries = append(cpEntries, ej)
+				cpDeps = append(cpDeps, ej)
+			}
+		}
+	}
+
+	// =========================================================================
+	// Tier 1 & Tier 2: Dependencies from libs and static_libs
+	// =========================================================================
 	depLibs := append(mod.GetStringList("libs"), mod.GetStringList("static_libs")...)
 	for _, lib := range depLibs {
 		if lib == "current_android_jar" || lib == ":current_android_jar" || lib == "system_android_jar" || lib == ":system_android_jar" {
@@ -28,7 +50,9 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		cleanLib := strings.TrimSuffix(lib, ".jar")
 		var targets []string
 
-		// Check if dependency has registered outputs (e.g. from genrule)
+		// ---------------------------------------------------------------------
+		// Tier 1: Graph-Local Module Outputs (Same Ninja Manifest)
+		// ---------------------------------------------------------------------
 		if outs, ok := g.moduleOutputs[lib]; ok && len(outs) > 0 {
 			for _, o := range outs {
 				if strings.HasSuffix(o, ".jar") {
@@ -82,6 +106,18 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 			}
 		}
 
+		// ---------------------------------------------------------------------
+		// Tier 2: Extractive APEX & Shadow Prebuilt Physical JARs
+		// ---------------------------------------------------------------------
+		if len(targets) == 0 {
+			if physJar := g.resolvePhysicalJar(lib); physJar != "" {
+				targets = append(targets, physJar)
+			}
+		}
+
+		// ---------------------------------------------------------------------
+		// Tier 6: Synthetic Phony Fallback (Only if no local target or physical jar)
+		// ---------------------------------------------------------------------
 		if len(targets) == 0 {
 			jarTarget := filepath.Join(g.libDir(), cleanLib+".jar")
 			targets = append(targets, jarTarget)
@@ -105,17 +141,9 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 
-	// 2. Prebuilt directory fallback
-	if g.opts.PrebuiltLibDir != "" {
-		for _, lib := range depLibs {
-			prebuilt := filepath.Join(g.opts.PrebuiltLibDir, lib+".jar")
-			if fi, err := os.Stat(prebuilt); err == nil && !fi.IsDir() {
-				cpEntries = append(cpEntries, prebuilt)
-			}
-		}
-	}
-
-	// 3. Android SDK android.jar and Core Platform jars for Android-targeted modules
+	// =========================================================================
+	// Tier 3: Android SDK android.jar and Platform Core Jars (sdk_version aware)
+	// =========================================================================
 	if !g.opts.IsHost {
 		androidJar := g.resolveCurrentAndroidJar()
 		if androidJar != "" {
@@ -124,7 +152,7 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 
 		sdkVer := mod.GetString("sdk_version")
-		if sdkVer == "core_platform" || strings.HasPrefix(sdkVer, "core_") || sdkVer == "none" {
+		if sdkVer == "core_platform" || strings.HasPrefix(sdkVer, "core_") || sdkVer == "none" || strings.Contains(sdkVer, "module_") {
 			// Resolve core platform library (art.module.public.api / art-module-lib.jar)
 			var coreJar string
 			for _, artModName := range []string{"art.module.public.api.stubs.module_lib", "art.module.public.api", "art.module.public.api.stubs"} {
@@ -132,6 +160,12 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 					coreJar = outs[0]
 					break
 				}
+			}
+			if coreJar == "" {
+				coreJar = g.resolvePhysicalJar("art.module.public.api.stubs.module_lib")
+			}
+			if coreJar == "" {
+				coreJar = g.resolvePhysicalJar("core-libart")
 			}
 			if coreJar == "" && g.opts.TopDir != "" {
 				targetApi := g.opts.APILevel
@@ -158,7 +192,9 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 
-	// 4. SDK prebuilts from TopDir
+	// =========================================================================
+	// Tier 4: In-Tree SDK Prebuilts (prebuilts/sdk/<api>/...)
+	// =========================================================================
 	if g.opts.TopDir != "" {
 		targetApi := g.opts.APILevel
 		if targetApi <= 0 {
@@ -180,7 +216,9 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 
-	// 5. Environment CLASSPATH fallback (prebuilt jars in /apex or host environment)
+	// =========================================================================
+	// Tier 5: Environment CLASSPATH fallback
+	// =========================================================================
 	if envCP := os.Getenv("CLASSPATH"); envCP != "" {
 		for _, part := range strings.Split(envCP, ":") {
 			if part != "" {

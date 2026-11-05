@@ -130,14 +130,28 @@ Path to the \fBlpmake\fR dynamic partition utility. Can also be supplied via \fB
 .BI \-compat\-config " PATH"
 Path to the \fBprocess-compat-config\fR executable. Can also be supplied via \fB$PROCESS_COMPAT_CONFIG\fR. Defaults to \fBprocess-compat-config\fR.
 .TP
-.BI \-java\-encoding " ENC"
-Character encoding for Java/Kotlin compilation (defaults to \fBUTF-8\fR). Can also be supplied via \fB$JAVA_ENCODING\fR.
-.TP
 .BI \-skip\-abi\-level " LEVEL"
 Base Android ABI skip level threshold (corresponds to makeapex / apexm \fB\-\-skip\-abi\-level\fR).
 .TP
 .B \-disable\-skip\-abis
 Disable skipping base Android ABI libraries. Enforces authentic platform header precedence (\fI/apex/include\fR, \fI/apex/com.android.ext.framework.base/include\fR) and suppresses shadowing VNDK snapshot headers.
+
+.SS Java & Kotlin Toolchain Options
+.TP
+.BI \-bootclasspath " PATHS"
+Colon-delimited list of bootclasspath JAR paths prepended to the head of all Java and Kotlin compilation classpaths. Can also be supplied via \fB$BOOTCLASSPATH\fR.
+.TP
+.BI \-prebuilt\-jars " PATHS"
+Colon-delimited list of directories or files containing prebuilt JAR libraries. Used to discover and prioritize authentic physical JARs (e.g. \fIprebuilts/target/art/share/art/art-module-lib.jar\fR) ahead of synthetic fallback targets. Can also be supplied via \fB$PREBUILT_JARS\fR.
+.TP
+.BI \-extra\-jars " PATHS"
+Colon-delimited list of extra JAR libraries or directories to inject into compilation classpaths. Can also be supplied via \fB$EXTRA_JARS\fR.
+.TP
+.BI \-android\-jar " PATH"
+Explicit path to the Android platform SDK \fBandroid.jar\fR. Can also be supplied via \fB$ANDROID_JAR\fR.
+.TP
+.BI \-java\-encoding " ENC"
+Character encoding for Java/Kotlin compilation (defaults to \fBUTF-8\fR). Can also be supplied via \fB$JAVA_ENCODING\fR.
 
 .SS Compiler Flags & Configuration
 .TP
@@ -250,6 +264,21 @@ Path to an Android NDK installation for auto-discovery.
 .TP
 .B ANDROID_SDK, ANDROID_HOME
 Root of an Android SDK installation. Used to resolve \fB:current_android_jar\fR and \fB:system_android_jar\fR to \fI<SDK>/platforms/android-<API>/android.jar\fR.
+.TP
+.B BOOTCLASSPATH
+Default colon-delimited bootclasspath JAR paths prepended to the head of all classpaths.
+.TP
+.B PREBUILT_JARS
+Default colon-delimited list of directories or files containing prebuilt JAR libraries.
+.TP
+.B EXTRA_JARS
+Default colon-delimited list of extra JAR libraries or directories to inject.
+.TP
+.B ANDROID_JAR
+Explicit path to the Android platform SDK \fBandroid.jar\fR.
+.TP
+.B JAVA_ENCODING
+Character encoding for Java/Kotlin compilation (defaults to \fBUTF-8\fR).
 .TP
 .B BP2NINJA_PLUGINS_DIR
 Directory searched automatically for \fB*.so\fR plugins in addition to \fI/usr/lib/bp2ninja/plugins\fR and \fI/usr/local/lib/bp2ninja/plugins\fR.

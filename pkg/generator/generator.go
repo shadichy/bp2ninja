@@ -582,7 +582,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateGenrule(mod)
 		case "gensrcs":
 			targets, err = g.generateGensrcs(mod)
-		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host":
+		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host", "cc_prebuilt_binary":
 			targets, err = g.generatePrebuilt(mod)
 		case "python_binary", "python_binary_host", "python_test_host":
 			targets, err = g.generatePythonBinary(mod)
@@ -965,7 +965,7 @@ func (g *Generator) emitStandardRules() error {
 	// Custom Genrule
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "genrule_cmd",
-		Command:         "bash -c \"$cmd\"",
+		Command:         "$cmd",
 		Description:     "GEN $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
@@ -1242,7 +1242,7 @@ func (g *Generator) emitStandardRules() error {
 	// AIDL Java codegen
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "aidl_java",
-		Command:         "rm -rf $out_dir && mkdir -p $out_dir && $aidl --lang=java $optional_flags --ninja -d $out.d -o $out_dir $imports $in && $jar cf $out -C $out_dir .",
+		Command:         "rm -rf $out_dir && mkdir -p $out_dir && $aidl --lang=java $optional_flags -o $out_dir $imports $in && $jar cf $out -C $out_dir .",
 		Description:     "AIDL_JAVA $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
@@ -1475,13 +1475,18 @@ func (g *Generator) findPrebuiltHostTool(name string) string {
 		return ""
 	}
 	hostPatterns := []string{
-		filepath.Join(g.opts.TopDir, "prebuilts", "host", "*", "bin", name),
-		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "*", "bin", name),
 		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "linux-x86", "bin", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "path", "linux-x86", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "host", "*", "bin", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "external", "*", "host", "bin", name),
+		filepath.Join(g.opts.TopDir, "prebuilts", "build-tools", "*", "bin", name),
 	}
 	for _, pat := range hostPatterns {
 		if matches, err := filepath.Glob(pat); err == nil && len(matches) > 0 {
 			for _, m := range matches {
+				if strings.Contains(m, "darwin") {
+					continue
+				}
 				if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
 					return m
 				}

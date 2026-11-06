@@ -971,3 +971,51 @@ platform_filegroup {
 	}
 }
 
+func TestSoongConfigModuleType(t *testing.T) {
+	bp := `
+soong_config_module_type {
+    name: "platform_filegroup",
+    module_type: "filegroup",
+    config_namespace: "ANDROID",
+    bool_variables: [
+        "crashrecovery_files_in_platform",
+    ],
+    properties: [
+        "srcs",
+    ],
+}
+
+platform_filegroup {
+    name: "framework-crashrecovery-sources",
+    soong_config_variables: {
+        crashrecovery_files_in_platform: {
+            srcs: ["java/ExplicitHealthCheckService.java"],
+        },
+    },
+}
+`
+	ctx := NewContext(map[string]string{"crashrecovery_files_in_platform": "true"}, "x86_64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+	if len(ctx.Modules) != 1 {
+		t.Fatalf("Expected 1 module, got %d", len(ctx.Modules))
+	}
+	mod := ctx.Modules[0]
+	if mod.Type != "filegroup" {
+		t.Errorf("Expected module type 'filegroup', got '%s'", mod.Type)
+	}
+	if mod.Name != "framework-crashrecovery-sources" {
+		t.Errorf("Expected module name 'framework-crashrecovery-sources', got '%s'", mod.Name)
+	}
+	srcs := mod.GetStringList("srcs")
+	if len(srcs) != 1 || srcs[0] != "java/ExplicitHealthCheckService.java" {
+		t.Errorf("Expected ExplicitHealthCheckService.java, got %v", srcs)
+	}
+}
+
+

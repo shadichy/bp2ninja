@@ -1,15 +1,50 @@
 package generator
 
 import (
+	"archive/zip"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"bp2ninja/pkg/eval"
 	"bp2ninja/pkg/ninja"
 )
+
+var patchJarExportsCache = make(map[string][]string)
+
+func collectPatchJarPackages(jarPath string) []string {
+	if pkgs, ok := patchJarExportsCache[jarPath]; ok {
+		return pkgs
+	}
+	zr, err := zip.OpenReader(jarPath)
+	if err != nil {
+		patchJarExportsCache[jarPath] = nil
+		return nil
+	}
+	defer zr.Close()
+	pkgSet := make(map[string]bool)
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, ".class") && strings.Contains(f.Name, "/") {
+			pkg := strings.ReplaceAll(filepath.Dir(f.Name), "/", ".")
+			if pkg != "" && pkg != "." && !strings.HasPrefix(pkg, "META-INF") {
+				if !strings.HasPrefix(pkg, "java.") && !strings.HasPrefix(pkg, "javax.") && !strings.HasPrefix(pkg, "jdk.") &&
+					!strings.HasPrefix(pkg, "org.w3c.") && !strings.HasPrefix(pkg, "org.xml.") && pkg != "sun.misc" {
+					pkgSet[pkg] = true
+				}
+			}
+		}
+	}
+	var pkgs []string
+	for p := range pkgSet {
+		pkgs = append(pkgs, p)
+	}
+	sort.Strings(pkgs)
+	patchJarExportsCache[jarPath] = pkgs
+	return pkgs
+}
 
 func (g *Generator) resolveJarjarRulesFile(mod *eval.EvaluatedModule, jarjarRules string) string {
 	if strings.HasPrefix(jarjarRules, ":") {
@@ -232,6 +267,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 					depLibs = append(depLibs, l)
 					if subMod, ok := g.moduleMap[l]; ok {
 						collectLibs(subMod, false)
+						if subMod.Type == "java_aconfig_library" {
+							for _, aconfigDep := range []string{"aconfig-annotations-lib", "unsupportedappusage"} {
+								if !visited[aconfigDep] {
+									visited[aconfigDep] = true
+									depLibs = append(depLibs, aconfigDep)
+								}
+							}
+						}
 					}
 				}
 			}
@@ -243,9 +286,11 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 				if subMod, ok := g.moduleMap[sl]; ok {
 					collectLibs(subMod, false)
 					if subMod.Type == "java_aconfig_library" {
-						if !visited["aconfig-annotations-lib"] {
-							visited["aconfig-annotations-lib"] = true
-							depLibs = append(depLibs, "aconfig-annotations-lib")
+						for _, aconfigDep := range []string{"aconfig-annotations-lib", "unsupportedappusage"} {
+							if !visited[aconfigDep] {
+								visited[aconfigDep] = true
+								depLibs = append(depLibs, aconfigDep)
+							}
 						}
 					}
 				}
@@ -357,13 +402,28 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 		for _, lib := range depLibs {
 			cleanLib := strings.TrimSuffix(lib, ".jar")
-			topJarCandidates := []string{
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib", cleanLib+".jar"),
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "system", cleanLib+".jar"),
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public", cleanLib+".jar"),
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/module-lib", cleanLib+".jar"),
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/system", cleanLib+".jar"),
-				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/public", cleanLib+".jar"),
+			baseLib := cleanLib
+			for _, suf := range []string{".stubs.system_server", ".stubs.module_lib", ".stubs.system", ".stubs.test", ".stubs"} {
+				if strings.HasSuffix(baseLib, suf) {
+					baseLib = strings.TrimSuffix(baseLib, suf)
+					break
+				}
+			}
+			var topJarCandidates []string
+			for _, name := range []string{cleanLib, baseLib} {
+				topJarCandidates = append(topJarCandidates,
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "system-server", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "system", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/system-server", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/module-lib", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/system", name+".jar"),
+					filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/public", name+".jar"),
+				)
+				if cleanLib == baseLib {
+					break
+				}
 			}
 			for _, c := range topJarCandidates {
 				if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
@@ -551,7 +611,22 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if patchModProp != "" {
 				patchTarget = patchModProp
 			}
-			patchModuleArg = "--patch-module " + patchTarget + "=" + strings.Join(patchJars, ":") + " --add-exports=" + patchTarget + "/java.nio=ALL-UNNAMED "
+			exportSet := map[string]bool{"java.nio": true}
+			for _, pj := range patchJars {
+				for _, pkg := range collectPatchJarPackages(pj) {
+					exportSet[pkg] = true
+				}
+			}
+			var exportPkgs []string
+			for pkg := range exportSet {
+				exportPkgs = append(exportPkgs, pkg)
+			}
+			sort.Strings(exportPkgs)
+			var addExports []string
+			for _, pkg := range exportPkgs {
+				addExports = append(addExports, "--add-exports="+patchTarget+"/"+pkg+"=ALL-UNNAMED")
+			}
+			patchModuleArg = "--patch-module " + patchTarget + "=" + strings.Join(patchJars, ":") + " " + strings.Join(addExports, " ") + " "
 			if coreJar != "" {
 				if fi, err := os.Stat(coreJar); err == nil && !fi.IsDir() {
 					patchModuleArg += "--patch-module jdk.unsupported=" + coreJar + " --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED "

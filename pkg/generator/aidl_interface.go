@@ -151,7 +151,7 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 	}
 	optFlags = append(optFlags, mod.GetStringList("flags")...)
 
-	// 2b. Extract version and frozen hash from versions_with_info per AOSP aidl_interface spec
+	// 2b. Extract version and frozen hash from versions_with_info or versions per AOSP aidl_interface spec
 	var latestVersion string
 	if vInfo, ok := mod.Properties["versions_with_info"].([]interface{}); ok && len(vInfo) > 0 {
 		for _, item := range vInfo {
@@ -162,6 +162,11 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 			}
 		}
 	}
+	if latestVersion == "" {
+		if vers := mod.GetStringList("versions"); len(vers) > 0 {
+			latestVersion = vers[len(vers)-1]
+		}
+	}
 	if latestVersion != "" {
 		latestHash := "notfrozen"
 		dir := mod.Dir
@@ -170,8 +175,10 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		}
 		hashFile := filepath.Join(g.opts.TopDir, dir, "aidl_api", mod.Name, latestVersion, ".hash")
 		if data, err := os.ReadFile(hashFile); err == nil {
-			if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
-				latestHash = trimmed
+			for _, line := range strings.Split(string(data), "\n") {
+				if trimmed := strings.TrimSpace(line); trimmed != "" {
+					latestHash = trimmed
+				}
 			}
 		}
 		optFlags = append(optFlags, "--version", latestVersion, "--hash", latestHash)

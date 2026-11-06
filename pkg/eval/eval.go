@@ -33,6 +33,7 @@ func NewScope() *Scope {
 type Context struct {
 	Scope               *Scope
 	Defaults            map[string]*EvaluatedModule
+	CustomModuleTypes   map[string]string // soong_config_module_type name -> base module_type
 	Modules             []*EvaluatedModule
 	ConfigVariables     map[string]string // e.g. "target_board_platform" -> "sm8450"
 	TargetArch          string
@@ -60,6 +61,7 @@ func NewContext(configVars map[string]string, targetArch string) *Context {
 	return &Context{
 		Scope:               NewScope(),
 		Defaults:            make(map[string]*EvaluatedModule),
+		CustomModuleTypes:   make(map[string]string),
 		Modules:             make([]*EvaluatedModule, 0),
 		ConfigVariables:     configVars,
 		TargetArch:          targetArch,
@@ -86,8 +88,19 @@ func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 			c.Scope.vars[d.Name] = val
 
 		case *parser.Module:
-			mod := c.evalModule(d, subDir)
-			if strings.HasSuffix(mod.Type, "_defaults") || mod.Type == "defaults" {
+			if d.Type == "soong_config_module_type" {
+				mod := c.evalModule(d, subDir)
+				if baseType, ok := mod.Properties["module_type"].(string); ok && baseType != "" {
+					c.CustomModuleTypes[mod.Name] = baseType
+				}
+				continue
+			}
+			resolvedType := d.Type
+			if baseType, ok := c.CustomModuleTypes[resolvedType]; ok && baseType != "" {
+				resolvedType = baseType
+			}
+			if strings.HasSuffix(resolvedType, "_defaults") || resolvedType == "defaults" {
+				mod := c.evalModule(d, subDir)
 				c.Defaults[mod.Name] = mod
 			} else {
 				deferredModules = append(deferredModules, d)
@@ -134,8 +147,12 @@ func ExtractSubdirs(file *parser.File) (subdirs []string, buildFiles []string) {
 }
 
 func (c *Context) evalModule(m *parser.Module, subDir string) *EvaluatedModule {
+	modType := m.Type
+	if baseType, ok := c.CustomModuleTypes[modType]; ok && baseType != "" {
+		modType = baseType
+	}
 	mod := &EvaluatedModule{
-		Type:               m.Type,
+		Type:               modType,
 		Dir:                subDir,
 		Properties:         make(map[string]interface{}),
 		OriginalProperties: make(map[string]interface{}),

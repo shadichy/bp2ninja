@@ -74,6 +74,8 @@ type Rule struct {
 	Pool        string
 	Restat      bool
 	Generator   bool
+	RspFile     string
+	RspContent  string
 
 	// Siso-specific bindings (only emitted in Siso mode; see EnableSiso).
 	RestatContent   bool     // restat_content: content-digest cleanliness instead of mtime
@@ -141,6 +143,16 @@ func (n *Writer) Rule(r Rule) error {
 	}
 	if r.Generator {
 		if err := n.ScopedVariable("generator", "1"); err != nil {
+			return err
+		}
+	}
+	if r.RspFile != "" {
+		if err := n.ScopedVariable("rspfile", r.RspFile); err != nil {
+			return err
+		}
+	}
+	if r.RspContent != "" {
+		if err := n.ScopedVariable("rspfile_content", r.RspContent); err != nil {
 			return err
 		}
 	}

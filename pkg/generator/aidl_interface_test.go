@@ -272,3 +272,129 @@ func TestAidlInterfaceImportLocalIncludeDir(t *testing.T) {
 		t.Errorf("Expected %s in ninja imports, got:\n%s", expectedInc, ninjaContent)
 	}
 }
+
+func TestAidlVersionsWithInfoAndTurbineHeadersOnly(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	aidlMod := &eval.EvaluatedModule{
+		Type: "aidl_interface",
+		Name: "android.media.soundtrigger.types",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "android.media.soundtrigger.types",
+			"srcs": []interface{}{"Status.aidl"},
+			"backend": map[string]interface{}{
+				"java": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+			"versions_with_info": []interface{}{
+				map[string]interface{}{"version": "1"},
+				map[string]interface{}{"version": "2"},
+			},
+		},
+	}
+
+	headersMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "framework-minus-apex-headers",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":         "framework-minus-apex-headers",
+			"srcs":         []interface{}{"Activity.java", "core/java/android/app/EventLogTags.logtags"},
+			"static_libs":  []interface{}{"android.media.soundtrigger.types-V2-java"},
+			"headers_only": true,
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{aidlMod, headersMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// 1. Verify versions_with_info creates versioned phony targets
+	if !strings.Contains(ninjaContent, "build android.media.soundtrigger.types-V1-java: phony") {
+		t.Errorf("Expected android.media.soundtrigger.types-V1-java phony in ninja:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "build android.media.soundtrigger.types-V2-java: phony") {
+		t.Errorf("Expected android.media.soundtrigger.types-V2-java phony in ninja:\n%s", ninjaContent)
+	}
+
+	// 2. Verify headers_only triggers turbine_compile
+	if !strings.Contains(ninjaContent, "build "+filepath.Join(outDir, "lib64", "framework-minus-apex-headers.jar")+": turbine_compile") {
+		t.Errorf("Expected turbine_compile rule for framework-minus-apex-headers, got:\n%s", ninjaContent)
+	}
+
+	// 3. Verify .logtags triggers logtags_compile
+	if !strings.Contains(ninjaContent, ": logtags_compile ") {
+		t.Errorf("Expected logtags_compile edge for EventLogTags.logtags, got:\n%s", ninjaContent)
+	}
+}
+
+func TestAggregateJavaLibraryMergeZips(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	depAMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "depA",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "depA",
+			"srcs": []interface{}{"A.java"},
+		},
+	}
+
+	aggMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "framework-internal-utils",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":        "framework-internal-utils",
+			"static_libs": []interface{}{"depA"},
+		},
+	}
+
+	consumerMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "consumer",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":         "consumer",
+			"srcs":         []interface{}{"C.java"},
+			"static_libs":  []interface{}{"framework-internal-utils"},
+			"headers_only": true,
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{depAMod, aggMod, consumerMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// 1. Verify merge_zips rule for framework-internal-utils
+	aggJar := filepath.Join(outDir, "lib64", "framework-internal-utils.jar")
+	if !strings.Contains(ninjaContent, "build "+aggJar+": merge_zips") {
+		t.Errorf("Expected merge_zips edge for %s, got:\n%s", aggJar, ninjaContent)
+	}
+
+	// 2. Verify consumer turbine classpath contains framework-internal-utils.jar
+	if !strings.Contains(ninjaContent, aggJar) {
+		t.Errorf("Expected consumer to depend on %s, got:\n%s", aggJar, ninjaContent)
+	}
+}

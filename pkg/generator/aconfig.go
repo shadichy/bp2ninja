@@ -36,15 +36,7 @@ func (g *Generator) generateCcAconfigLibrary(mod *eval.EvaluatedModule) ([]strin
 	// Collect sources from declMod
 	var aconfigFiles []string
 	if declMod != nil {
-		for _, s := range declMod.GetStringList("srcs") {
-			fullPattern := s
-			if declMod.Dir != "" && declMod.Dir != "." && !filepath.IsAbs(s) {
-				fullPattern = filepath.Join(declMod.Dir, s)
-			}
-			for _, m := range g.expandGlob(fullPattern) {
-				aconfigFiles = append(aconfigFiles, m)
-			}
-		}
+		aconfigFiles = g.ResolveSrcs(declMod)
 	}
 
 	// Try reading aconfig files to get package and flags
@@ -213,4 +205,135 @@ func (g *Generator) generateCcAconfigLibrary(mod *eval.EvaluatedModule) ([]strin
 	}
 
 	return targets, nil
+}
+
+func (g *Generator) generateJavaAconfigLibrary(mod *eval.EvaluatedModule) ([]string, error) {
+	if outs, ok := g.taggedOutputs[mod.Name+":.srcjars"]; ok && len(outs) > 0 {
+		return outs, nil
+	}
+
+	declName := mod.GetString("aconfig_declarations")
+	var declMod *eval.EvaluatedModule
+	if declName != "" {
+		declMod = g.moduleMap[declName]
+	}
+
+	pkg := ""
+	if declMod != nil {
+		pkg = declMod.GetString("package")
+	}
+
+	var aconfigFiles []string
+	if declMod != nil {
+		aconfigFiles = g.ResolveSrcs(declMod)
+	}
+
+	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+	if len(aconfigFiles) == 0 {
+		if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(jarTarget)
+		}
+		g.moduleOutputs[mod.Name] = []string{jarTarget}
+		g.taggedOutputs[mod.Name+":.srcjars"] = []string{jarTarget}
+		g.taggedOutputs[mod.Name+":.srcjar"] = []string{jarTarget}
+		return []string{jarTarget}, nil
+	}
+
+	// Try reading aconfig files to get package if empty
+	if pkg == "" {
+		for _, f := range aconfigFiles {
+			candidatePaths := []string{
+				filepath.Join(g.opts.BpDir, f),
+				f,
+			}
+			if g.opts.TopDir != "" {
+				candidatePaths = append(candidatePaths, filepath.Join(g.opts.TopDir, f))
+			}
+			for _, p := range candidatePaths {
+				if data, err := os.ReadFile(p); err == nil {
+					if m := reAconfigPackage.FindStringSubmatch(string(data)); len(m) > 1 {
+						pkg = m[1]
+						break
+					}
+				}
+			}
+			if pkg != "" {
+				break
+			}
+		}
+	}
+
+	outGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
+	cacheFile := filepath.Join(outGenDir, mod.Name+".cache")
+	srcGenDir := filepath.Join(outGenDir, "src")
+	srcjar := filepath.Join(outGenDir, mod.Name+".srcjar")
+
+	var declFlags []string
+	for _, f := range aconfigFiles {
+		declFlags = append(declFlags, "--declarations "+f)
+	}
+
+	vars := map[string]string{
+		"pkg":        pkg,
+		"cache_dir":  outGenDir,
+		"out_cache":  cacheFile,
+		"gen_dir":    srcGenDir,
+		"decl_flags": strings.Join(declFlags, " "),
+	}
+
+	if err := g.nw.Build(ninja.BuildEdge{
+		Outputs:   []string{srcjar},
+		Rule:      "aconfig_java",
+		Inputs:    aconfigFiles,
+		Variables: vars,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Also copy to jarTarget in libDir so downstream classpath references find it
+	_ = g.nw.Build(ninja.BuildEdge{
+		Outputs: []string{jarTarget},
+		Rule:    "copy",
+		Inputs:  []string{srcjar},
+	})
+
+	outs := []string{srcjar, jarTarget}
+	g.moduleOutputs[mod.Name] = outs
+	g.taggedOutputs[mod.Name+":.srcjars"] = []string{srcjar}
+	g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjar}
+	return outs, nil
+}
+
+func (g *Generator) generateAconfigDeclarationsGroup(mod *eval.EvaluatedModule) ([]string, error) {
+	if outs, ok := g.moduleOutputs[mod.Name]; ok && len(outs) > 0 {
+		return outs, nil
+	}
+	var allSrcjars []string
+	for _, lib := range mod.GetStringList("java_aconfig_libraries") {
+		if outs, ok := g.taggedOutputs[lib+":.srcjars"]; ok && len(outs) > 0 {
+			allSrcjars = append(allSrcjars, outs...)
+		} else if libMod, ok := g.moduleMap[lib]; ok && libMod.Type == "java_aconfig_library" {
+			outs, _ := g.generateJavaAconfigLibrary(libMod)
+			if len(outs) > 0 {
+				allSrcjars = append(allSrcjars, outs[0])
+			}
+		} else if outs, ok := g.moduleOutputs[lib]; ok && len(outs) > 0 {
+			allSrcjars = append(allSrcjars, outs[0])
+		}
+	}
+	for _, grp := range mod.GetStringList("aconfig_declarations_groups") {
+		if outs, ok := g.taggedOutputs[grp+":.srcjars"]; ok && len(outs) > 0 {
+			allSrcjars = append(allSrcjars, outs...)
+		} else if grpMod, ok := g.moduleMap[grp]; ok && grpMod.Type == "aconfig_declarations_group" {
+			outs, _ := g.generateAconfigDeclarationsGroup(grpMod)
+			allSrcjars = append(allSrcjars, outs...)
+		} else if outs, ok := g.moduleOutputs[grp]; ok && len(outs) > 0 {
+			allSrcjars = append(allSrcjars, outs...)
+		}
+	}
+	allSrcjars = dedup(allSrcjars)
+	g.moduleOutputs[mod.Name] = allSrcjars
+	g.taggedOutputs[mod.Name+":.srcjars"] = allSrcjars
+	g.taggedOutputs[mod.Name+":.srcjar"] = allSrcjars
+	return allSrcjars, nil
 }

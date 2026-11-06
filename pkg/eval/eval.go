@@ -11,11 +11,12 @@ import (
 
 // EvaluatedModule represents an Android.bp module with resolved properties and defaults.
 type EvaluatedModule struct {
-	Type       string
-	Name       string
-	Dir        string // Relative directory of this module from root (e.g. "tests", "tools", or "")
-	Properties map[string]interface{}
-	Raw        *parser.Module
+	Type               string
+	Name               string
+	Dir                string // Relative directory of this module from root (e.g. "tests", "tools", or "")
+	Properties         map[string]interface{}
+	OriginalProperties map[string]interface{}
+	Raw                *parser.Module
 }
 
 // Scope tracks variables defined in an Android.bp file.
@@ -98,16 +99,7 @@ func (c *Context) EvalFileInDir(file *parser.File, subDir string) error {
 	for _, rawMod := range deferredModules {
 		mod := c.evalModule(rawMod, subDir)
 		c.applyDefaults(mod)
-		c.applySoongConfigVariables(mod)
-		c.applyArch(mod)
-		c.applyMultilib(mod)
-		c.applyTarget(mod)
-		c.applyVariantBlock(mod)
-		c.applyCodegen(mod)
-		c.applyArtImplicitFlags(mod)
-		if c.IsHost && !isDeclarativeMetaModule(mod.Type) && !mod.IsHostSupported() {
-			mod.Properties["enabled"] = false
-		}
+		c.applyVariants(mod)
 		c.Modules = append(c.Modules, mod)
 	}
 
@@ -143,15 +135,17 @@ func ExtractSubdirs(file *parser.File) (subdirs []string, buildFiles []string) {
 
 func (c *Context) evalModule(m *parser.Module, subDir string) *EvaluatedModule {
 	mod := &EvaluatedModule{
-		Type:       m.Type,
-		Dir:        subDir,
-		Properties: make(map[string]interface{}),
-		Raw:        m,
+		Type:               m.Type,
+		Dir:                subDir,
+		Properties:         make(map[string]interface{}),
+		OriginalProperties: make(map[string]interface{}),
+		Raw:                m,
 	}
 
 	for _, prop := range m.Properties {
 		val := c.evalExpression(prop.Value)
 		mod.Properties[prop.Name] = val
+		mod.OriginalProperties[prop.Name] = cloneProperty(val)
 		if prop.Name == "name" {
 			if s, ok := val.(string); ok {
 				mod.Name = s
@@ -240,24 +234,36 @@ func cloneProperty(val interface{}) interface{} {
 	}
 }
 
+func (c *Context) applyVariants(mod *EvaluatedModule) {
+	c.applySoongConfigVariables(mod)
+	c.applyArch(mod)
+	c.applyMultilib(mod)
+	c.applyTarget(mod)
+	c.applyVariantBlock(mod)
+	c.applyCodegen(mod)
+	c.applyArtImplicitFlags(mod)
+	if c.IsHost && !isDeclarativeMetaModule(mod.Type) && !mod.IsHostSupported() {
+		mod.Properties["enabled"] = false
+	}
+}
+
 func (c *Context) applyDefaults(mod *EvaluatedModule) bool {
-	defaultsList := mod.GetStringList("defaults")
+	defaultsList := toStringList(mod.OriginalProperties["defaults"])
 	if len(defaultsList) == 0 {
 		return false
 	}
-	delete(mod.Properties, "defaults")
 
 	// Accumulated properties from all defaults in order
 	mergedDefaults := make(map[string]interface{})
-	var remainingDefaults []string
+	appliedAny := false
 
 	for _, defName := range defaultsList {
 		defMod, ok := c.Defaults[defName]
 		if !ok {
-			remainingDefaults = append(remainingDefaults, defName)
 			continue
 		}
-		// First apply any parent defaults the defaults module itself has
+		appliedAny = true
+		// Recursively apply defaults to defMod if it has any
 		c.applyDefaults(defMod)
 
 		for k, defVal := range defMod.Properties {
@@ -276,20 +282,30 @@ func (c *Context) applyDefaults(mod *EvaluatedModule) bool {
 		}
 	}
 
-	if len(remainingDefaults) > 0 {
-		mod.Properties["defaults"] = remainingDefaults
+	if !appliedAny {
+		return false
 	}
 
-	// Now merge mod's own properties on top of mergedDefaults
+	// Reset mod.Properties from mod.OriginalProperties before merging defaults
+	for k := range mod.Properties {
+		if _, inOrig := mod.OriginalProperties[k]; !inOrig {
+			delete(mod.Properties, k)
+		}
+	}
+	for k, v := range mod.OriginalProperties {
+		mod.Properties[k] = cloneProperty(v)
+	}
+
+	// Now merge mod's original properties on top of mergedDefaults
 	for k, defVal := range mergedDefaults {
-		if modVal, exists := mod.Properties[k]; exists {
-			mod.Properties[k] = mergeProperties(defVal, modVal)
+		if origVal, exists := mod.OriginalProperties[k]; exists {
+			mod.Properties[k] = mergeProperties(defVal, origVal)
 		} else {
 			mod.Properties[k] = defVal
 		}
 	}
 
-	return len(remainingDefaults) < len(defaultsList)
+	return true
 }
 
 // ResolveGlobalDefaults resolves any remaining defaults across all modules in Context
@@ -304,6 +320,7 @@ func (c *Context) ResolveGlobalDefaults() {
 		}
 		for _, mod := range c.Modules {
 			if c.applyDefaults(mod) {
+				c.applyVariants(mod)
 				changed = true
 			}
 		}
@@ -313,6 +330,9 @@ func (c *Context) ResolveGlobalDefaults() {
 	}
 	for _, mod := range c.Modules {
 		delete(mod.Properties, "defaults")
+	}
+	for _, defMod := range c.Defaults {
+		delete(defMod.Properties, "defaults")
 	}
 }
 

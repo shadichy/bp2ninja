@@ -452,10 +452,13 @@ func main() {
 	var bootclasspathFlags pathListFlag
 	var prebuiltJarsFlags pathListFlag
 	var extraJarsFlags pathListFlag
+	var platformClasspathFlags pathListFlag
 	var androidJarPath string
 	flag.Var(&bootclasspathFlags, "bootclasspath", "Colon-delimited bootclasspath JAR paths (or via $BOOTCLASSPATH)")
 	flag.Var(&prebuiltJarsFlags, "prebuilt-jars", "Colon-delimited directories or files containing prebuilt JARs (or via $PREBUILT_JARS)")
 	flag.Var(&extraJarsFlags, "extra-jars", "Colon-delimited extra JAR files or directories to inject (or via $EXTRA_JARS)")
+	flag.Var(&platformClasspathFlags, "platform-classpath", "Colon-delimited JAR paths applied to platform modules without sdk_version (or via $PLATFORM_CLASSPATH)")
+	flag.Var(&platformClasspathFlags, "platform-jars", "Alias for -platform-classpath")
 	flag.StringVar(&androidJarPath, "android-jar", "", "Explicit path to SDK android.jar (or via $ANDROID_JAR)")
 
 	// 4. Rust and Cargo Hybrid Options (bp2cargo)
@@ -872,7 +875,8 @@ func main() {
 	})
 
 	// Evaluate all discovered child files
-	for _, cf := range childFiles {
+	for i := 0; i < len(childFiles); i++ {
+		cf := childFiles[i]
 		abs, err := filepath.Abs(cf.path)
 		if err == nil {
 			if evaluatedFiles[abs] {
@@ -902,6 +906,37 @@ func main() {
 			continue
 		}
 		fmt.Printf("[bp2ninja] Evaluated child Android.bp: %s\n", cf.path)
+
+		// Discover build = [...] files and subdirs = [...] in this child
+		childDir := filepath.Dir(cf.path)
+		sDirs, bFiles := eval.ExtractSubdirs(childAst)
+		for _, bf := range bFiles {
+			bfPath := filepath.Join(childDir, bf)
+			if fi, err := os.Stat(bfPath); err == nil && !fi.IsDir() {
+				absBf, err := filepath.Abs(bfPath)
+				if err == nil && !evaluatedFiles[absBf] {
+					childFiles = append(childFiles, childFile{
+						path:   bfPath,
+						relDir: cf.relDir,
+						depth:  cf.depth,
+					})
+				}
+			}
+		}
+		for _, sd := range sDirs {
+			subBp := filepath.Join(childDir, sd, "Android.bp")
+			if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
+				absSd, err := filepath.Abs(subBp)
+				if err == nil && !evaluatedFiles[absSd] {
+					subRelDir := filepath.Clean(filepath.Join(cf.relDir, sd))
+					childFiles = append(childFiles, childFile{
+						path:   subBp,
+						relDir: subRelDir,
+						depth:  strings.Count(subRelDir, string(filepath.Separator)) + 1,
+					})
+				}
+			}
+		}
 	}
 
 	evalCtx.ResolveGlobalDefaults()
@@ -1062,6 +1097,11 @@ func main() {
 			_ = extraJarsFlags.Set(envEJ)
 		}
 	}
+	if len(platformClasspathFlags) == 0 {
+		if envPC := os.Getenv("PLATFORM_CLASSPATH"); envPC != "" {
+			_ = platformClasspathFlags.Set(envPC)
+		}
+	}
 	if androidJarPath == "" {
 		if envAJ := os.Getenv("ANDROID_JAR"); envAJ != "" {
 			androidJarPath = envAJ
@@ -1070,6 +1110,7 @@ func main() {
 	opts.BootClasspath = bootclasspathFlags
 	opts.PrebuiltJarDirs = prebuiltJarsFlags
 	opts.ExtraJars = extraJarsFlags
+	opts.PlatformClasspath = platformClasspathFlags
 	if androidJarPath != "" {
 		opts.AndroidJarPath = androidJarPath
 	}

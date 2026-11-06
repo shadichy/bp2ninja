@@ -195,3 +195,233 @@ func TestDroidstubsClasspathPhysicalJars(t *testing.T) {
 		t.Errorf("Expected metalava command to contain %s, got:\n%s", expectedArg, ninjaContent)
 	}
 }
+
+func TestMavenRepositoryJarIndexingAndCopy(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bp2ninja_m2_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create tempDir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create m2repository structure:
+	// prebuilts/sdk/current/androidx/m2repository/androidx/annotation/annotation-jvm/1.8.0-alpha01/annotation-jvm-1.8.0-alpha01.jar
+	m2Dir := filepath.Join(tempDir, "prebuilts/sdk/current/androidx/m2repository/androidx/annotation/annotation-jvm/1.8.0-alpha01")
+	if err := os.MkdirAll(m2Dir, 0755); err != nil {
+		t.Fatalf("Failed to mkdir: %v", err)
+	}
+	annotationJar := filepath.Join(m2Dir, "annotation-jvm-1.8.0-alpha01.jar")
+	if err := os.WriteFile(annotationJar, []byte("ANNOTATION_JAR"), 0644); err != nil {
+		t.Fatalf("Failed to write mock jar: %v", err)
+	}
+	sourcesJar := filepath.Join(m2Dir, "annotation-jvm-1.8.0-alpha01-sources.jar")
+	if err := os.WriteFile(sourcesJar, []byte("SOURCES_JAR"), 0644); err != nil {
+		t.Fatalf("Failed to write mock sources jar: %v", err)
+	}
+
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	// 1. Verify resolution directly
+	resolved := gen.resolvePhysicalJar("androidx.annotation_annotation")
+	if resolved != annotationJar {
+		t.Errorf("Expected androidx.annotation_annotation to resolve to %s, got %s", annotationJar, resolved)
+	}
+
+	// 2. java_library with no srcs (composite / static lib) representing androidx.annotation_annotation
+	annotationLib := &eval.EvaluatedModule{
+		Type: "java_library_static",
+		Name: "androidx.annotation_annotation",
+		Dir:  "prebuilts/sdk/current/androidx/m2repository/androidx/annotation/annotation-jvm/1.8.0-alpha01",
+		Properties: map[string]interface{}{
+			"name": "androidx.annotation_annotation",
+		},
+	}
+
+	// Consumer java_library depending on androidx.annotation_annotation via libs
+	consumerLib := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "modules-utils-build",
+		Dir:  "frameworks/libs/modules-utils/build",
+		Properties: map[string]interface{}{
+			"name": "modules-utils-build",
+			"libs": []interface{}{
+				"androidx.annotation_annotation",
+			},
+			"srcs": []interface{}{
+				"SdkLevel.java",
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{annotationLib, consumerLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// Verify that the consumer classpath has the physical annotation jar, NOT a nonexistent phony
+	if !strings.Contains(ninjaContent, annotationJar) {
+		t.Errorf("Expected consumer classpath to contain physical jar %s, got:\n%s", annotationJar, ninjaContent)
+	}
+	// Verify that the annotation lib has a copy rule, not a phony rule
+	expectedCopy := "build " + filepath.Join(outDir, "lib64/androidx.annotation_annotation.jar: copy " + annotationJar)
+	if !strings.Contains(ninjaContent, expectedCopy) {
+		t.Errorf("Expected copy rule %q in ninja file, got:\n%s", expectedCopy, ninjaContent)
+	}
+}
+
+func TestAndroidAppAaptSrcjar(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bp2ninja_aapt_srcjar_*")
+	if err != nil {
+		t.Fatalf("Failed to create tempDir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	manifestPath := filepath.Join(tempDir, "AndroidManifest.xml")
+	_ = os.WriteFile(manifestPath, []byte("<manifest/>"), 0644)
+	resDir := filepath.Join(tempDir, "res")
+	_ = os.MkdirAll(resDir, 0755)
+
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	platformResApp := &eval.EvaluatedModule{
+		Type: "android_app",
+		Name: "org.lineageos.platform-res",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":     "org.lineageos.platform-res",
+			"manifest": manifestPath,
+			"aaptflags": []interface{}{
+				"--private-symbols",
+				"org.lineageos.platform.internal",
+				"--no-auto-version",
+			},
+			"resource_dirs": []interface{}{
+				resDir,
+			},
+		},
+	}
+
+	consumerLib := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "org.lineageos.platform.internal",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "org.lineageos.platform.internal",
+			"srcs": []interface{}{
+				"NetworkTraffic.java",
+				":org.lineageos.platform-res{.aapt.srcjar}",
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{platformResApp, consumerLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	srcjarTarget := filepath.Join(outDir, "gen/org.lineageos.platform-res/org.lineageos.platform-res.srcjar")
+
+	// 1. AAPT2 link outputs srcjarTarget and uses --java and --private-symbols
+	if !strings.Contains(ninjaContent, srcjarTarget) {
+		t.Errorf("Expected ninja output to contain %s, got:\n%s", srcjarTarget, ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "--private-symbols org.lineageos.platform.internal") {
+		t.Errorf("Expected aapt2 command to contain --private-symbols, got:\n%s", ninjaContent)
+	}
+
+	// 2. Downstream consumer must include srcjarTarget in its javac edge inputs & unzipping
+	if !strings.Contains(ninjaContent, srcjarTarget) {
+		t.Errorf("Expected consumer to depend on %s", srcjarTarget)
+	}
+	if !strings.Contains(ninjaContent, "for sj in "+srcjarTarget) {
+		t.Errorf("Expected consumer javac rule to extract %s", srcjarTarget)
+	}
+}
+
+func TestJavaSdkLibraryInTreeImplementation(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bp2ninja_sdk_lib_*")
+	if err != nil {
+		t.Fatalf("Failed to create tempDir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	fg := &eval.EvaluatedModule{
+		Type: "filegroup",
+		Name: "framework-nfc-updatable-sources",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "framework-nfc-updatable-sources",
+			"srcs": []interface{}{
+				"NfcAdapter.java",
+			},
+		},
+	}
+
+	nfcSdkLib := &eval.EvaluatedModule{
+		Type: "java_sdk_library",
+		Name: "framework-nfc",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "framework-nfc",
+			"srcs": []interface{}{
+				":framework-nfc-updatable-sources",
+			},
+		},
+	}
+
+	consumerLib := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "nfc-extras",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "nfc-extras",
+			"libs": []interface{}{
+				"framework-nfc.impl",
+			},
+			"srcs": []interface{}{
+				"NfcExtras.java",
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{fg, nfcSdkLib, consumerLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	nfcJar := filepath.Join(outDir, "lib64/framework-nfc.jar")
+	nfcImplJar := filepath.Join(outDir, "lib64/framework-nfc.impl.jar")
+
+	// 1. Verify in-tree framework-nfc compiles to nfcJar
+	if !strings.Contains(ninjaContent, "build "+nfcJar) {
+		t.Errorf("Expected rule building %s in ninja file", nfcJar)
+	}
+
+	// 2. Verify framework-nfc.impl.jar copy rule
+	expectedCopy := "build " + nfcImplJar + ": copy " + nfcJar
+	if !strings.Contains(ninjaContent, expectedCopy) {
+		t.Errorf("Expected copy rule %q in ninja file, got:\n%s", expectedCopy, ninjaContent)
+	}
+
+	// 3. Verify consumer uses local nfcImplJar in classpath
+	if !strings.Contains(ninjaContent, nfcImplJar) {
+		t.Errorf("Expected consumer to include local %s on classpath", nfcImplJar)
+	}
+}

@@ -3232,3 +3232,70 @@ func TestJavaSdkLibraryImportAndAidlSrcs(t *testing.T) {
 		t.Errorf("Expected classpath to contain %s:\n%s", moduleLibJar, ninjaContent)
 	}
 }
+
+func TestSyspropLibraryJava(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	sysprop := &eval.EvaluatedModule{
+		Type: "sysprop_library",
+		Name: "PlatformProperties",
+		Properties: map[string]interface{}{
+			"name": "PlatformProperties",
+			"srcs": []interface{}{"DisplayProperties.sysprop"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{sysprop}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	ninjaContent := buf.String()
+
+	jarTarget := filepath.Join(gen.libDir(), "PlatformProperties.jar")
+	if !strings.Contains(ninjaContent, jarTarget) {
+		t.Errorf("Expected PlatformProperties.jar build edge:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "rule sysprop_library_java") {
+		t.Errorf("Expected rule sysprop_library_java in ninja:\n%s", ninjaContent)
+	}
+}
+
+func TestJavaLibraryProtoNanoCodegen(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	protoLib := &eval.EvaluatedModule{
+		Type: "java_library_static",
+		Name: "framework-protos",
+		Properties: map[string]interface{}{
+			"name": "framework-protos",
+			"proto": map[string]interface{}{
+				"type": "nano",
+			},
+			"srcs": []interface{}{"metrics_constants.proto"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{protoLib}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	ninjaContent := buf.String()
+
+	if !strings.Contains(ninjaContent, "--plugin=protoc-gen-javanano=") {
+		t.Errorf("Expected protoc-gen-javanano in command:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "--javanano_out=") {
+		t.Errorf("Expected --javanano_out in command:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "@"+filepath.Join(outDir, "classes", "framework-protos", "proto.list")) {
+		t.Errorf("Expected proto.list in javac args:\n%s", ninjaContent)
+	}
+}

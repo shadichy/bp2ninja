@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,9 +26,12 @@ var soongPrebuiltJarAliases = map[string][]string{
 	// Conscrypt & BouncyCastle
 	"conscrypt.module.platform.api.stubs": {"conscrypt-module-lib.jar", "conscrypt-coreplatform.jar"},
 	"conscrypt.module.public.api.stubs":   {"conscrypt-public.jar", "conscrypt-unbundled.jar"},
+	"conscrypt-coreplatform":              {"conscrypt-coreplatform.jar", "conscrypt.jar"},
+	"conscrypt-module-lib":                {"conscrypt-module-lib.jar", "conscrypt.jar"},
 	"conscrypt":                           {"conscrypt-unbundled.jar", "conscrypt-public.jar", "conscrypt.jar"},
 	"bouncycastle_unbundled":              {"bouncycastle-unbundled.jar"},
 	"bouncycastle":                        {"bouncycastle-unbundled.jar"},
+	"runtime-i18n":                        {"runtime-i18n.jar", "core-icu4j.jar"},
 
 	// Network & Connectivity
 	"framework-connectivity":   {"framework-connectivity.jar"},
@@ -41,6 +45,9 @@ var soongPrebuiltJarAliases = map[string][]string{
 	"framework-media":          {"framework-media.jar"},
 	"framework-statsd":         {"framework-statsd.jar"},
 	"framework-virtualization": {"framework-virtualization.jar"},
+	"framework-nfc":            {"framework-nfc.jar"},
+	"framework-permission":     {"framework-permission.jar"},
+	"framework-permission-s":   {"framework-permission-s.jar"},
 	"framework-res":            {"framework-res-package.jar", "framework-res.jar"},
 	"service-permission":       {"service-permission-stubs.jar", "service-permission.jar"},
 
@@ -49,11 +56,55 @@ var soongPrebuiltJarAliases = map[string][]string{
 	"okhttp-norepackage": {"okhttp-norepackage-2.7.5.jar", "okhttp-2.7.5.jar"},
 	"apache-xml":         {"apache-xml.jar"},
 	"libphonenumber":     {"libphonenumber.jar"},
+
+	// AndroidX and Jetpack Annotations
+	"androidx.annotation_annotation": {"annotation-jvm.jar", "annotation.jar", "androidx.annotation.jar"},
+	"androidx.annotation":            {"annotation-jvm.jar", "annotation.jar", "androidx.annotation.jar"},
+	"annotation":                     {"annotation-jvm.jar", "annotation.jar"},
+
+	// Repackaged BouncyCastle & Crypto
+	"bouncycastle-repackaged-unbundled": {"bouncycastle-unbundled.jar", "bouncycastle.jar"},
+
+	// External libraries & utils
+	"tagsoup":                 {"tagsoup.jar"},
+	"rappor":                  {"rappor.jar"},
+	"libphonenumber-platform": {"libphonenumber-platform.jar", "libphonenumber.jar"},
+	"libprotobuf-java-nano":   {"protobuf-java-3.25.3.jar", "libprotobuf-java-nano.jar"},
+	"libprotobuf-java-lite":   {"protobuf-javalite-3.25.3.jar", "libprotobuf-java-lite.jar"},
+
+	// Framework composite stubs and aggregate libraries
+	"ext": {"libphonenumber-platform.jar", "tagsoup.jar", "rappor.jar"},
+	"framework-updatable-stubs-module_libs_api": {
+		"framework-adservices.jar",
+		"framework-appsearch.jar",
+		"framework-bluetooth.jar",
+		"framework-configinfrastructure.jar",
+		"framework-connectivity.jar",
+		"framework-connectivity-t.jar",
+		"framework-devicelock.jar",
+		"framework-graphics.jar",
+		"framework-healthfitness.jar",
+		"framework-media.jar",
+		"framework-mediaprovider.jar",
+		"framework-nfc.jar",
+		"framework-ondevicepersonalization.jar",
+		"framework-permission.jar",
+		"framework-permission-s.jar",
+		"framework-scheduling.jar",
+		"framework-sdkextensions.jar",
+		"framework-sdksandbox.jar",
+		"framework-statsd.jar",
+		"framework-tethering.jar",
+		"framework-uwb.jar",
+		"framework-virtualization.jar",
+		"framework-wifi.jar",
+		"android.net.ipsec.ike.jar",
+	},
 }
 
 // indexJar adds a physical jar path to the Generator's prebuilt jar lookup index.
 func (g *Generator) indexJar(path string) {
-	if fi, err := os.Stat(path); err != nil || fi.IsDir() || !strings.HasSuffix(path, ".jar") {
+	if fi, err := os.Stat(path); err != nil || fi.IsDir() || !strings.HasSuffix(path, ".jar") || strings.HasSuffix(path, "-sources.jar") || strings.HasSuffix(path, "-src.jar") {
 		return
 	}
 	absPath, err := filepath.Abs(path)
@@ -63,19 +114,90 @@ func (g *Generator) indexJar(path string) {
 	base := filepath.Base(absPath)
 	clean := strings.TrimSuffix(base, ".jar")
 
-	if _, exists := g.prebuiltJarIndex[base]; !exists {
-		g.prebuiltJarIndex[base] = absPath
+	addKey := func(k string) {
+		if k == "" {
+			return
+		}
+		if _, exists := g.prebuiltJarIndex[k]; !exists {
+			g.prebuiltJarIndex[k] = absPath
+		}
+		lower := strings.ToLower(k)
+		if _, exists := g.prebuiltJarIndex[lower]; !exists {
+			g.prebuiltJarIndex[lower] = absPath
+		}
 	}
-	if _, exists := g.prebuiltJarIndex[clean]; !exists {
-		g.prebuiltJarIndex[clean] = absPath
+
+	addKey(base)
+	addKey(clean)
+
+	// Strip version suffix if present: e.g. "annotation-jvm-1.8.0-alpha01" -> "annotation-jvm"
+	// Also "protobuf-java-3.25.3" -> "protobuf-java"
+	for i := 0; i < len(clean); i++ {
+		if clean[i] >= '0' && clean[i] <= '9' && i > 1 && (clean[i-1] == '-' || clean[i-1] == '_') {
+			unver := clean[:i-1]
+			addKey(unver)
+			addKey(unver + ".jar")
+			if strings.HasSuffix(unver, "-jvm") || strings.HasSuffix(unver, "-android") {
+				baseUnver := strings.TrimSuffix(strings.TrimSuffix(unver, "-jvm"), "-android")
+				addKey(baseUnver)
+				addKey(baseUnver + ".jar")
+			}
+			break
+		}
 	}
-	lowerBase := strings.ToLower(base)
-	if _, exists := g.prebuiltJarIndex[lowerBase]; !exists {
-		g.prebuiltJarIndex[lowerBase] = absPath
+
+	// Extractive APEX naming conventions: <pkg>__<artifact>-<version>.jar
+	if strings.Contains(clean, "__") {
+		parts := strings.SplitN(clean, "__", 2)
+		pkgPart := parts[0]
+		artPart := parts[1]
+		addKey(pkgPart)
+		addKey(strings.ReplaceAll(pkgPart, "-", "_"))
+		addKey(strings.ReplaceAll(pkgPart, "_", "-"))
+		addKey(artPart)
+		addKey(artPart + ".jar")
+		if idx := strings.LastIndex(artPart, "-"); idx != -1 {
+			prefix := artPart[:idx]
+			addKey(prefix)
+			addKey(prefix + ".jar")
+		}
 	}
-	lowerClean := strings.ToLower(clean)
-	if _, exists := g.prebuiltJarIndex[lowerClean]; !exists {
-		g.prebuiltJarIndex[lowerClean] = absPath
+
+	// Maven repository layout indexing:
+	// e.g. .../m2repository/androidx/annotation/annotation-jvm/1.8.0-alpha01/annotation-jvm-1.8.0-alpha01.jar
+	for _, m2Marker := range []string{"/m2repository/", "/m2/repository/"} {
+		if idx := strings.Index(absPath, m2Marker); idx != -1 {
+			relM2 := absPath[idx+len(m2Marker):]
+			dirs := strings.Split(filepath.Dir(relM2), string(filepath.Separator))
+			if len(dirs) >= 3 {
+				// dirs: [..., group, artifact, version]
+				artifact := dirs[len(dirs)-2]
+				group := strings.Join(dirs[:len(dirs)-2], ".")
+				soongName := group + "_" + artifact
+				addKey(soongName)
+				addKey(soongName + ".jar")
+				addKey(group + "." + artifact)
+				cleanArtifact := strings.TrimSuffix(strings.TrimSuffix(artifact, "-jvm"), "-android")
+				if cleanArtifact != artifact {
+					addKey(group + "_" + cleanArtifact)
+					addKey(group + "_" + cleanArtifact + ".jar")
+					addKey(group + "." + cleanArtifact)
+					addKey(cleanArtifact)
+					addKey(cleanArtifact + ".jar")
+				}
+			}
+			break
+		}
+	}
+
+	// Index by parent directory name strictly if layout is share/<pkgname>/<file>.jar
+	dir := filepath.Dir(absPath)
+	grandparent := filepath.Base(filepath.Dir(dir))
+	parent := filepath.Base(dir)
+	if grandparent == "share" && parent != "" && parent != "." && parent != "share" {
+		addKey(parent)
+		addKey(strings.ReplaceAll(parent, "-", "_"))
+		addKey(strings.ReplaceAll(parent, "_", "-"))
 	}
 }
 
@@ -103,7 +225,7 @@ func (g *Generator) scanDirForJars(dir string, maxDepth int) {
 			}
 			return nil
 		}
-		if strings.HasSuffix(info.Name(), ".jar") {
+		if strings.HasSuffix(info.Name(), ".jar") && !strings.HasSuffix(info.Name(), "-sources.jar") && !strings.HasSuffix(info.Name(), "-src.jar") {
 			g.indexJar(p)
 		}
 		return nil
@@ -146,62 +268,134 @@ func (g *Generator) initPrebuiltJarIndex() {
 		g.scanDirForJars(g.opts.PrebuiltLibDir, 2)
 	}
 
-	// 3. In-tree extractive APEX prebuilts: ${TopDir}/prebuilts/target
-	if g.opts.TopDir != "" {
-		targetShadowsDir := filepath.Join(g.opts.TopDir, "prebuilts/target")
-		if fi, err := os.Stat(targetShadowsDir); err == nil && fi.IsDir() {
-			g.scanDirForJars(targetShadowsDir, 8)
+	// 3. Extracted APEX directories in sysroot / host container (/apex/*/share, /apex/share)
+	for _, apexRoot := range []string{"/apex", filepath.Join(g.opts.SysrootDir, "share")} {
+		if fi, err := os.Stat(apexRoot); err == nil && fi.IsDir() {
+			g.scanDirForJars(apexRoot, 10)
 		}
 	}
 
-	// 4. Extracted APEX directories in sysroot / host container (/apex/*/share, /apex/share)
-	for _, apexRoot := range []string{"/apex", filepath.Join(g.opts.SysrootDir, "share")} {
-		if fi, err := os.Stat(apexRoot); err == nil && fi.IsDir() {
-			g.scanDirForJars(apexRoot, 5)
+	// 4. In-tree extractive APEX prebuilts: ${TopDir}/prebuilts/target, host, external (authentic platform precedence)
+	if g.opts.TopDir != "" {
+		for _, sub := range []string{"prebuilts/target", "prebuilts/host", "prebuilts/external"} {
+			shadowDir := filepath.Join(g.opts.TopDir, sub)
+			if fi, err := os.Stat(shadowDir); err == nil && fi.IsDir() {
+				g.scanDirForJars(shadowDir, 10)
+			}
+		}
+
+		// 5. In-tree SDK fallback stubs: ${TopDir}/prebuilts/sdk/<api>/...
+		targetApi := g.opts.APILevel
+		if targetApi <= 0 {
+			targetApi = 34
+		}
+		for _, sub := range []string{
+			filepath.Join("prebuilts/sdk", fmt.Sprintf("%d", targetApi)),
+			"prebuilts/sdk/current",
+		} {
+			sdkDir := filepath.Join(g.opts.TopDir, sub)
+			if fi, err := os.Stat(sdkDir); err == nil && fi.IsDir() {
+				g.scanDirForJars(sdkDir, 10)
+			}
 		}
 	}
 }
 
-// resolvePhysicalJar attempts to resolve a conceptual Soong library name or filename
-// to an authentic physical JAR located on disk.
-func (g *Generator) resolvePhysicalJar(libName string) string {
+// resolvePhysicalJars attempts to resolve a conceptual Soong library name or filename
+// to all authentic physical JARs located on disk (supporting 1-to-many aggregate aliases).
+func (g *Generator) resolvePhysicalJars(libName string) []string {
 	g.initPrebuiltJarIndex()
 
 	cleanLib := strings.TrimSuffix(libName, ".jar")
 
-	// 1. Direct match (e.g. "art-module-lib", "art-module-lib.jar")
-	if p, ok := g.prebuiltJarIndex[libName]; ok {
-		return p
-	}
-	if p, ok := g.prebuiltJarIndex[cleanLib]; ok {
-		return p
-	}
-	if p, ok := g.prebuiltJarIndex[cleanLib+".jar"]; ok {
-		return p
-	}
-
-	// 2. Canonical Soong alias mapping (e.g. "art.module.public.api.stubs.module_lib" -> "art-module-lib.jar")
-	if aliases, ok := soongPrebuiltJarAliases[cleanLib]; ok {
-		for _, alias := range aliases {
-			if p, ok := g.prebuiltJarIndex[alias]; ok {
-				return p
-			}
-			cleanAlias := strings.TrimSuffix(alias, ".jar")
-			if p, ok := g.prebuiltJarIndex[cleanAlias]; ok {
-				return p
-			}
+	// Strip common SDK scope prefixes (e.g. "sdk_module-lib_current_framework-wifi" -> "framework-wifi")
+	for _, prefix := range []string{
+		"sdk_module-lib_current_",
+		"sdk_module-lib_34_",
+		"sdk_public_current_",
+		"sdk_public_34_",
+		"sdk_system_current_",
+		"sdk_system_34_",
+		"sdk_system-server_current_",
+		"sdk_system-server_34_",
+	} {
+		if strings.HasPrefix(cleanLib, prefix) {
+			cleanLib = strings.TrimPrefix(cleanLib, prefix)
+			break
 		}
 	}
 
-	// 3. Generic suffix stripping for standard stub scopes (.stubs.module_lib, .stubs.system, .stubs)
-	for _, suffix := range []string{".stubs.module_lib", ".stubs.system", ".stubs", "-stubs"} {
+	var results []string
+	seen := make(map[string]bool)
+	addResult := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			results = append(results, p)
+		}
+	}
+
+	// 1. Direct match (e.g. "art-module-lib", "art-module-lib.jar", "androidx.annotation_annotation")
+	if p, ok := g.prebuiltJarIndex[libName]; ok {
+		addResult(p)
+	}
+	if p, ok := g.prebuiltJarIndex[cleanLib]; ok {
+		addResult(p)
+	}
+	if p, ok := g.prebuiltJarIndex[cleanLib+".jar"]; ok {
+		addResult(p)
+	}
+	if len(results) > 0 {
+		return results
+	}
+
+	// 2. Canonical Soong alias mapping (1-to-many supported)
+	if aliases, ok := soongPrebuiltJarAliases[cleanLib]; ok {
+		for _, alias := range aliases {
+			cleanAlias := strings.TrimSuffix(alias, ".jar")
+			if p, ok := g.prebuiltJarIndex[alias]; ok {
+				addResult(p)
+			} else if p, ok := g.prebuiltJarIndex[cleanAlias]; ok {
+				addResult(p)
+			}
+		}
+		if len(results) > 0 {
+			return results
+		}
+	}
+
+	// 3. Generic suffix stripping for standard implementation and stub scopes (.impl, .stubs.*, -stubs)
+	for _, suffix := range []string{
+		".impl",
+		".stubs.exportable.module_lib",
+		".stubs.exportable.system",
+		".stubs.exportable.test",
+		".stubs.exportable",
+		".stubs.module_lib",
+		".stubs.system_server",
+		".stubs.system",
+		".stubs.test",
+		".stubs",
+		"-stubs",
+	} {
 		if strings.HasSuffix(cleanLib, suffix) {
 			baseLib := strings.TrimSuffix(cleanLib, suffix)
 			if p, ok := g.prebuiltJarIndex[baseLib+".jar"]; ok {
-				return p
+				addResult(p)
+			} else if p, ok := g.prebuiltJarIndex[baseLib]; ok {
+				addResult(p)
 			}
-			if p, ok := g.prebuiltJarIndex[baseLib]; ok {
-				return p
+			if aliases, ok := soongPrebuiltJarAliases[baseLib]; ok {
+				for _, alias := range aliases {
+					cleanAlias := strings.TrimSuffix(alias, ".jar")
+					if p, ok := g.prebuiltJarIndex[alias]; ok {
+						addResult(p)
+					} else if p, ok := g.prebuiltJarIndex[cleanAlias]; ok {
+						addResult(p)
+					}
+				}
+			}
+			if len(results) > 0 {
+				return results
 			}
 		}
 	}
@@ -209,16 +403,27 @@ func (g *Generator) resolvePhysicalJar(libName string) string {
 	// 4. Fallback: check if libName is a literal path on disk
 	if fi, err := os.Stat(libName); err == nil && !fi.IsDir() && strings.HasSuffix(libName, ".jar") {
 		if abs, err := filepath.Abs(libName); err == nil {
-			return abs
+			addResult(abs)
+		} else {
+			addResult(libName)
 		}
-		return libName
 	}
 	if g.opts.TopDir != "" {
 		topCand := filepath.Join(g.opts.TopDir, libName)
 		if fi, err := os.Stat(topCand); err == nil && !fi.IsDir() && strings.HasSuffix(topCand, ".jar") {
-			return topCand
+			addResult(topCand)
 		}
 	}
 
+	return results
+}
+
+// resolvePhysicalJar attempts to resolve a conceptual Soong library name or filename
+// to an authentic physical JAR located on disk.
+func (g *Generator) resolvePhysicalJar(libName string) string {
+	jars := g.resolvePhysicalJars(libName)
+	if len(jars) > 0 {
+		return jars[0]
+	}
 	return ""
 }

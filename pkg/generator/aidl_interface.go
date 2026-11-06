@@ -1,12 +1,34 @@
 package generator
 
 import (
+	"bufio"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"bp2ninja/pkg/eval"
 	"bp2ninja/pkg/ninja"
 )
+
+func extractAidlPackage(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "package ") && strings.HasSuffix(line, ";") {
+			pkg := strings.TrimPrefix(line, "package ")
+			pkg = strings.TrimSuffix(pkg, ";")
+			return strings.TrimSpace(pkg)
+		}
+	}
+	return ""
+}
 
 // generateAidlInterface implements the upstream `aidl_interface` module type (system/tools/aidl/build/aidl_interface.go):
 // translates .aidl interface definitions into Java, C++, NDK, and Rust bindings, registering companion
@@ -41,6 +63,38 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 
 	var importDirs []string
 	importDirs = append(importDirs, localIncDir)
+
+	for _, src := range mod.GetStringList("srcs") {
+		if strings.HasPrefix(src, ":") {
+			fgName := strings.TrimPrefix(src, ":")
+			if fgMod, ok := g.moduleMap[fgName]; ok {
+				if p := fgMod.GetString("path"); p != "" {
+					dir := fgMod.Dir
+					if dir == "" {
+						dir = "."
+					}
+					importDirs = append(importDirs, filepath.Clean(filepath.Join(dir, p)))
+				}
+			}
+		}
+	}
+
+	for _, src := range aidlFiles {
+		absPath := src
+		if !filepath.IsAbs(absPath) && g.opts.TopDir != "" {
+			absPath = filepath.Join(g.opts.TopDir, src)
+		}
+		if pkg := extractAidlPackage(absPath); pkg != "" {
+			pkgPath := strings.ReplaceAll(pkg, ".", "/")
+			expectedSuffix := "/" + pkgPath + "/" + filepath.Base(src)
+			if idx := strings.Index(src, expectedSuffix); idx != -1 {
+				baseDir := src[:idx]
+				if baseDir != "" {
+					importDirs = append(importDirs, baseDir)
+				}
+			}
+		}
+	}
 
 	imports := mod.GetStringList("imports")
 	for _, imp := range imports {
@@ -79,12 +133,39 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		importFlags = append(importFlags, "-I"+dir)
 	}
 
-	// 2. Resolve optional flags & stability
+	// 2. Resolve optional flags & stability (all aidl_interface modules are structured)
 	var optFlags []string
+	optFlags = append(optFlags, "--structured")
 	if stability := mod.GetString("stability"); stability != "" {
 		optFlags = append(optFlags, "--stability", stability)
 	}
 	optFlags = append(optFlags, mod.GetStringList("flags")...)
+
+	// 2b. Extract version and frozen hash from versions_with_info per AOSP aidl_interface spec
+	var latestVersion string
+	if vInfo, ok := mod.Properties["versions_with_info"].([]interface{}); ok && len(vInfo) > 0 {
+		for _, item := range vInfo {
+			if m, ok := item.(map[string]interface{}); ok {
+				if v, ok := m["version"].(string); ok && v != "" {
+					latestVersion = v
+				}
+			}
+		}
+	}
+	if latestVersion != "" {
+		latestHash := "notfrozen"
+		dir := mod.Dir
+		if dir == "" {
+			dir = "."
+		}
+		hashFile := filepath.Join(g.opts.TopDir, dir, "aidl_api", mod.Name, latestVersion, ".hash")
+		if data, err := os.ReadFile(hashFile); err == nil {
+			if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+				latestHash = trimmed
+			}
+		}
+		optFlags = append(optFlags, "--version", latestVersion, "--hash", latestHash)
+	}
 
 	// 3. Inspect enabled backends
 	backendMap := mod.GetMap("backend")
@@ -293,6 +374,55 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "java")
 		jarTarget := filepath.Join(g.libDir(), javaModName+".jar")
 
+		var javaImports []string
+		var javaDepTargets []string
+		for _, imp := range imports {
+			baseImp := imp
+			if idx := strings.Index(imp, "-V"); idx != -1 {
+				baseImp = imp[:idx]
+			}
+			javaImports = append(javaImports, imp+"-java", baseImp+"-java", imp, baseImp)
+			found := false
+			for _, k := range []string{imp + "-java", baseImp + "-java"} {
+				if outs, ok := g.moduleOutputs[k]; ok {
+					javaDepTargets = append(javaDepTargets, outs...)
+					found = true
+				}
+			}
+			if !found {
+				for _, k := range []string{imp, baseImp} {
+					if _, ok := g.moduleMap[k]; ok {
+						jar := filepath.Join(g.libDir(), k+"-java.jar")
+						javaDepTargets = append(javaDepTargets, jar)
+						break
+					}
+				}
+			}
+		}
+		javaImports = dedup(javaImports)
+		javaDepTargets = dedup(javaDepTargets)
+
+		var aidlCp []string
+		if g.opts.TopDir != "" {
+			targetApi := g.opts.APILevel
+			if targetApi <= 0 {
+				targetApi = 34
+			}
+			modLibJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib/android.jar")
+			if fi, err := os.Stat(modLibJar); err == nil && !fi.IsDir() {
+				aidlCp = append(aidlCp, modLibJar)
+				javaDepTargets = append(javaDepTargets, modLibJar)
+			}
+		}
+		if len(aidlCp) == 0 {
+			if cj := g.resolveCurrentAndroidJar(); cj != "" {
+				aidlCp = append(aidlCp, cj)
+				javaDepTargets = append(javaDepTargets, cj)
+			}
+		}
+		aidlCp = append(aidlCp, javaDepTargets...)
+		aidlCp = dedup(aidlCp)
+
 		vars := map[string]string{
 			"out_dir": genDir,
 			"imports": shellJoin(importFlags),
@@ -300,14 +430,26 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		if len(optFlags) > 0 {
 			vars["optional_flags"] = shellJoin(optFlags)
 		}
+		if len(aidlCp) > 0 {
+			vars["classpath"] = "-cp " + strings.Join(aidlCp, ":")
+		}
 
 		if err := g.nw.Build(ninja.BuildEdge{
 			Outputs:   []string{jarTarget},
 			Rule:      "aidl_java",
 			Inputs:    aidlFiles,
+			Implicits: javaDepTargets,
 			Variables: vars,
 		}); err != nil {
 			return nil, err
+		}
+
+		g.moduleMap[javaModName] = &eval.EvaluatedModule{
+			Name: javaModName,
+			Type: "java_library",
+			Properties: map[string]interface{}{
+				"static_libs": javaImports,
+			},
 		}
 
 		javaTargets = []string{jarTarget}
@@ -355,6 +497,16 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 
 	// 8. Register versioned target aliases (e.g. android.hardware.foo-V1-cpp)
 	versions := mod.GetStringList("versions")
+	if vInfo, ok := mod.Properties["versions_with_info"].([]interface{}); ok {
+		for _, item := range vInfo {
+			if m, ok := item.(map[string]interface{}); ok {
+				if v, ok := m["version"].(string); ok && v != "" {
+					versions = append(versions, v)
+				}
+			}
+		}
+	}
+	versions = dedup(versions)
 	for _, v := range versions {
 		vPrefix := mod.Name + "-V" + v
 		if len(cppTargets) > 0 {
@@ -378,6 +530,9 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		if len(javaTargets) > 0 {
 			vJava := vPrefix + "-java"
 			g.moduleOutputs[vJava] = javaTargets
+			if g.moduleMap[mod.Name+"-java"] != nil {
+				g.moduleMap[vJava] = g.moduleMap[mod.Name+"-java"]
+			}
 			_ = g.nw.Build(ninja.BuildEdge{
 				Outputs: []string{vJava},
 				Rule:    "phony",

@@ -45,9 +45,11 @@ func (g *Generator) autoDeriveFallback(mod *eval.EvaluatedModule) ([]string, err
 	// 5. Source compilation fallback
 	rawSrcs := mod.GetStringList("srcs")
 	if len(rawSrcs) > 0 {
+		resolvedSrcs := g.ResolveSrcs(mod)
+		allCheckSrcs := append(rawSrcs, resolvedSrcs...)
 		hasCc := false
 		hasJava := false
-		for _, s := range rawSrcs {
+		for _, s := range allCheckSrcs {
 			if strings.HasSuffix(s, ".c") || strings.HasSuffix(s, ".cpp") || strings.HasSuffix(s, ".cc") {
 				hasCc = true
 				break

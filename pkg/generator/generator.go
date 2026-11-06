@@ -34,6 +34,7 @@ type Options struct {
 	KotlincPath         string
 	JavacPath           string
 	JarPath             string
+	TurbinePath         string
 	HidlGenPath         string
 	TargetArch          string
 	TargetTriple        string
@@ -76,9 +77,10 @@ type Options struct {
 	JavaEncoding   string // Default Java source encoding (default: UTF-8)
 
 	// Java and Kotlin classpath and prebuilt options
-	BootClasspath   []string // Explicit bootclasspath JAR paths (prepended to all classpaths)
-	ExtraJars       []string // Explicit extra JAR files or directories to inject
-	PrebuiltJarDirs []string // Directories or files containing prebuilt JARs (e.g. prebuilts/target/*/share/*)
+	BootClasspath     []string // Explicit bootclasspath JAR paths (prepended to all classpaths)
+	ExtraJars         []string // Explicit extra JAR files or directories to inject
+	PlatformClasspath []string // Explicit platform JAR paths applied to modules with no sdk_version
+	PrebuiltJarDirs   []string // Directories or files containing prebuilt JARs (e.g. prebuilts/target/*/share/*)
 
 	// Siso emits Siso-specific ninja bindings (restat_content, remote_enabled,
 	// sandbox_disabled, ...) so the graph runs under `siso ninja` as a drop-in
@@ -112,6 +114,7 @@ func DefaultOptions(topDir, outDir string) Options {
 		KotlincPath:      "kotlinc",
 		JavacPath:        "javac",
 		JarPath:          "jar",
+		TurbinePath:      "turbine",
 		HidlGenPath:          "hidl-gen",
 		XsdcPath:             "xsdc",
 		ConvLinkerConfigPath: "conv_linker_config",
@@ -334,6 +337,26 @@ func (g *Generator) resolveReferenceWithVisited(ref string, visited map[string]b
 			}
 			return outs
 		}
+		if targetMod, ok := g.moduleMap[baseLabel]; ok {
+			if targetMod.Type == "aconfig_declarations_group" {
+				outs, _ := g.generateAconfigDeclarationsGroup(targetMod)
+				if tag != "" {
+					if tagged, ok := g.taggedOutputs[baseLabel+":"+tag]; ok && len(tagged) > 0 {
+						return tagged
+					}
+				}
+				return outs
+			}
+			if targetMod.Type == "java_aconfig_library" {
+				outs, _ := g.generateJavaAconfigLibrary(targetMod)
+				if tag != "" {
+					if tagged, ok := g.taggedOutputs[baseLabel+":"+tag]; ok && len(tagged) > 0 {
+						return tagged
+					}
+				}
+				return outs
+			}
+		}
 		if genMod, ok := g.moduleMap[baseLabel]; ok && (genMod.Type == "genrule" || genMod.Type == "java_genrule" || genMod.Type == "gensrcs") {
 			var genOuts []string
 			for _, out := range genMod.GetStringList("out") {
@@ -483,14 +506,6 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				fgSrcs = filterExcludeSrcs(fgSrcs, fgExcludes, mod.Dir)
 				g.filegroups[mod.Name] = fgSrcs
 			}
-			// Pre-index proto outputs for any module defining .proto sources
-			for _, src := range g.ResolveSrcs(mod) {
-				if strings.HasSuffix(src, ".proto") {
-					pbRel := strings.TrimSuffix(src, ".proto")
-					pbHdr := filepath.Join(g.opts.OutDir, "gen", mod.Name, pbRel+".pb.h")
-					g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
-				}
-			}
 			// Pre-index srcjar outputs for android_app_import or android_app
 			if mod.Type == "android_app_import" || mod.Type == "android_app" {
 				if srcjar := mod.GetString("srcjar"); srcjar != "" {
@@ -500,6 +515,41 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 					}
 					g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
 					g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
+				} else if mod.Type == "android_app" {
+					srcjarPath := filepath.Join(g.opts.OutDir, "gen", mod.Name, mod.Name+".srcjar")
+					g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
+					g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
+				}
+			}
+			// Pre-index sub-module targets for java_sdk_library
+			if mod.Type == "java_sdk_library" {
+				g.moduleMap[mod.Name+".impl"] = mod
+				g.moduleMap[mod.Name+".stubs"] = mod
+				g.moduleMap[mod.Name+".stubs.system"] = mod
+				g.moduleMap[mod.Name+".stubs.module_lib"] = mod
+				g.moduleMap[mod.Name+".stubs.test"] = mod
+			}
+		}
+	}
+
+	// Pre-index proto outputs once all modules are indexed in moduleMap
+	for _, mod := range modules {
+		if mod.Name == "" {
+			continue
+		}
+		hasProto := false
+		for _, s := range mod.GetStringList("srcs") {
+			if strings.Contains(s, ".proto") {
+				hasProto = true
+				break
+			}
+		}
+		if hasProto {
+			for _, src := range g.ResolveSrcs(mod) {
+				if strings.HasSuffix(src, ".proto") {
+					pbRel := strings.TrimSuffix(src, ".proto")
+					pbHdr := filepath.Join(g.opts.OutDir, "gen", mod.Name, pbRel+".pb.h")
+					g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
 				}
 			}
 		}
@@ -606,6 +656,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets = []string{}
 		case "java_library", "java_library_host", "android_library", "java_library_static":
 			targets, err = g.generateJavaLibrary(mod)
+		case "java_sdk_library":
+			targets, err = g.generateJavaSdkLibrary(mod)
 		case "java_import", "android_library_import":
 			targets, err = g.generateJavaImport(mod)
 		case "java_sdk_library_import":
@@ -627,11 +679,9 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		case "python_binary", "python_binary_host", "python_test_host":
 			targets, err = g.generatePythonBinary(mod)
 		case "java_aconfig_library":
-			jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
-			if g.opts.AllowMissingDeps {
-				g.emitPhonyIfNeeded(jarTarget)
-			}
-			targets = []string{jarTarget}
+			targets, err = g.generateJavaAconfigLibrary(mod)
+		case "aconfig_declarations_group":
+			targets, err = g.generateAconfigDeclarationsGroup(mod)
 		case "cc_aconfig_library":
 			targets, err = g.generateCcAconfigLibrary(mod)
 		case "xsd_config":
@@ -686,18 +736,20 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	if len(defaultTargets) == 0 && len(anyRootTargets) > 0 {
 		defaultTargets = anyRootTargets
 	}
-	if len(defaultTargets) == 0 {
+	if len(defaultTargets) == 0 && len(allTargets) <= 50 {
 		defaultTargets = allTargets
 	}
-	if len(defaultTargets) == 0 {
-		for _, outs := range g.moduleOutputs {
-			defaultTargets = append(defaultTargets, outs...)
+
+	var cleanDefaultTargets []string
+	for _, dt := range defaultTargets {
+		if strings.HasPrefix(dt, g.opts.OutDir) {
+			cleanDefaultTargets = append(cleanDefaultTargets, dt)
 		}
 	}
 
-	if len(defaultTargets) > 0 {
+	if len(cleanDefaultTargets) > 0 {
 		g.nw.BlankLine()
-		g.nw.Default(defaultTargets...)
+		g.nw.Default(cleanDefaultTargets...)
 	}
 
 	return g.nw.Flush()
@@ -761,6 +813,14 @@ func (g *Generator) emitHeader() error {
 	g.nw.Variable("kotlinc", g.opts.KotlincPath)
 	g.nw.Variable("javac", g.opts.JavacPath)
 	g.nw.Variable("jar", g.opts.JarPath)
+	turbinePath := g.opts.TurbinePath
+	if turbinePath == "" {
+		turbinePath = g.findPrebuiltHostTool("turbine")
+	}
+	if turbinePath == "" {
+		turbinePath = "turbine"
+	}
+	g.nw.Variable("turbine", turbinePath)
 	hidlGenPath := g.opts.HidlGenPath
 	if hidlGenPath == "" {
 		hidlGenPath = "hidl-gen"
@@ -934,8 +994,10 @@ func (g *Generator) emitStandardRules() error {
 	// Java Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "javac_compile",
-		Command:         "bash -c \"$cmd\"",
+		Command:         "$cmd",
 		Description:     "JAVAC $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$rspcontent",
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
@@ -944,8 +1006,10 @@ func (g *Generator) emitStandardRules() error {
 	// Kotlin Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "kotlinc_compile",
-		Command:         "bash -c \"$cmd\"",
+		Command:         "$cmd",
 		Description:     "KOTLINC $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$rspcontent",
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
@@ -954,8 +1018,32 @@ func (g *Generator) emitStandardRules() error {
 	// Kotlin + Java Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "kotlin_java_compile",
-		Command:         "bash -c \"$cmd\"",
+		Command:         "$cmd",
 		Description:     "KOTLINC/JAVAC $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$rspcontent",
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Turbine Compile (header-only compilation)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "turbine_compile",
+		Command:         "$cmd",
+		Description:     "TURBINE $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$rspcontent",
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Logtags Compile
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "logtags_compile",
+		Command:         "bash -c 'mkdir -p $$(dirname $out) && python3 $top/build/make/tools/java-event-log-tags.py -o $out $in'",
+		Description:     "LOGTAGS $out",
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
@@ -1064,10 +1152,25 @@ func (g *Generator) emitStandardRules() error {
 	}
 
 	// Sysprop C++ codegen (platform sysprop tool; pin via $SYSPROP_CLI)
+	syspropCppCmd := "$${SYSPROP_CLI:-sysprop-cli} --cpp"
+	if hostSyspropCpp := g.findPrebuiltHostTool("sysprop_cpp"); hostSyspropCpp != "" {
+		syspropCppCmd = hostSyspropCpp
+	}
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "sysprop_cpp",
-		Command:         "mkdir -p $$(dirname $out) && $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$(dirname $out)",
+		Command:         "mkdir -p $$(dirname $out) && " + syspropCppCmd + " $in $$(dirname $out)",
 		Description:     "SYSPROP $in",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Sysprop Java library codegen + compilation
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "sysprop_library_java",
+		Command:         "$cmd",
+		Description:     "SYSPROP_JAVA $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
@@ -1279,11 +1382,35 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
-	// AIDL Java codegen
+	// AIDL Java codegen & compilation
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "aidl_java",
-		Command:         "rm -rf $out_dir && mkdir -p $out_dir && $aidl --lang=java $optional_flags -o $out_dir $imports $in && $jar cf $out -C $out_dir .",
+		Command:         "bash -c 'rm -rf $out_dir && mkdir -p $out_dir/src $out_dir/classes && $aidl --lang=java $optional_flags -o $out_dir/src $imports $in && jfs=$$(find $out_dir/src -name \"*.java\") && if [ -n \"$$jfs\" ]; then javac -encoding UTF-8 -d $out_dir/classes $classpath $$jfs; fi && $jar cf $out -C $out_dir/classes .'",
 		Description:     "AIDL_JAVA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Merge Zips (for Java libraries merging static_libs or aggregation libraries)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "merge_zips",
+		Command:         "bash -c 'mkdir -p $$(dirname $out) && MZ=$$(which merge_zips 2>/dev/null || echo prebuilts/build-tools/linux-x86/bin/merge_zips) && if [ -s ${out}.rsp ]; then $$MZ -j -ignore-duplicates $out @${out}.rsp; else rm -rf ${out}.tmp && mkdir -p ${out}.tmp && $jar cf $out -C ${out}.tmp . && rm -rf ${out}.tmp; fi'",
+		Description:     "MERGE_ZIPS $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$in",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Jarjar repackaging rule
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "jarjar_process",
+		Command:         "bash -c 'mkdir -p $$(dirname $out) && JJ=$$(which jarjar 2>/dev/null || echo $top/prebuilts/host/external/jarjar/lib/jarjar.jar) && if [[ \"$$JJ\" == *.jar ]]; then java -jar $$JJ process $rules $in $out; else $$JJ process $rules $in $out; fi'",
+		Description:     "JARJAR $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
@@ -1296,6 +1423,30 @@ func (g *Generator) emitStandardRules() error {
 		Command:       "mkdir -p $out_dir && $aidl --lang=rust $optional_flags --ninja -d $out.d -o $out_dir $imports $in",
 		Description:   "AIDL_RUST $out",
 		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// AIDL Batch Java codegen (uses rspfile + xargs to prevent ARG_MAX overflow)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "aidl_batch_compile",
+		Command:         "bash -c \"rm -rf $out_dir && mkdir -p $out_dir && xargs -r -n 100 $aidl --lang=java -o $out_dir $imports < ${out}.rsp && touch $out\"",
+		Description:     "AIDL_BATCH $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$in",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Aconfig Java codegen
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "aconfig_java",
+		Command:         "bash -c \"mkdir -p $cache_dir $gen_dir && aconfig create-cache --package $pkg $decl_flags --cache $out_cache && rm -rf $gen_dir && mkdir -p $gen_dir && aconfig create-java-lib --cache $out_cache --out $gen_dir && $jar cf $out -C $gen_dir .\"",
+		Description:     "ACONFIG_JAVA $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
 	}); err != nil {
 		return err
 	}
@@ -1408,6 +1559,50 @@ func (g *Generator) crossTargetFlags() []string {
 		flags = append(flags, "--sysroot="+g.opts.SysrootDir)
 	}
 	return flags
+}
+
+// resolveCurrentAndroidJarForModule locates the platform SDK android.jar matching the module's sdk_version scope.
+func (g *Generator) resolveCurrentAndroidJarForModule(mod *eval.EvaluatedModule) string {
+	if g.opts.AndroidJarPath != "" {
+		if fi, err := os.Stat(g.opts.AndroidJarPath); err == nil && !fi.IsDir() {
+			return g.opts.AndroidJarPath
+		}
+	}
+
+	targetApi := g.opts.APILevel
+	if targetApi <= 0 {
+		targetApi = 34
+	}
+
+	sdkVer := ""
+	if mod != nil {
+		sdkVer = mod.GetString("sdk_version")
+	}
+
+	if g.opts.TopDir != "" {
+		var scopeSubdir string
+		if sdkVer == "core_platform" || strings.Contains(sdkVer, "module_") {
+			scopeSubdir = "module-lib"
+		} else if strings.Contains(sdkVer, "system_") {
+			scopeSubdir = "system"
+		} else if strings.Contains(sdkVer, "test_") {
+			scopeSubdir = "test"
+		}
+
+		if scopeSubdir != "" {
+			candList := []string{
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), scopeSubdir, "android.jar"),
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk/current", scopeSubdir, "android.jar"),
+			}
+			for _, cand := range candList {
+				if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+					return cand
+				}
+			}
+		}
+	}
+
+	return g.resolveCurrentAndroidJar()
 }
 
 // resolveCurrentAndroidJar locates the platform SDK android.jar matching APILevel or best available.
@@ -1812,4 +2007,38 @@ func (g *Generator) generateFilesystem(mod *eval.EvaluatedModule) ([]string, err
 		targets = append(targets, outPath)
 	}
 	return targets, nil
+}
+
+// IsTransitiveInputOf checks whether candidate is a direct or indirect dependency of rootModuleName.
+func (g *Generator) IsTransitiveInputOf(candidate, rootModuleName string, visited map[string]bool) bool {
+	if candidate == rootModuleName {
+		return true
+	}
+	rootMod := g.moduleMap[rootModuleName]
+	if rootMod == nil {
+		return false
+	}
+	if visited[rootModuleName] {
+		return false
+	}
+	visited[rootModuleName] = true
+
+	var deps []string
+	deps = append(deps, rootMod.GetStringList("static_libs")...)
+	deps = append(deps, rootMod.GetStringList("libs")...)
+	for _, src := range rootMod.GetStringList("srcs") {
+		if strings.HasPrefix(src, ":") {
+			deps = append(deps, strings.TrimPrefix(src, ":"))
+		}
+	}
+	for _, d := range deps {
+		cleanD := strings.TrimSuffix(d, ".jar")
+		if cleanD == candidate {
+			return true
+		}
+		if g.IsTransitiveInputOf(candidate, cleanD, visited) {
+			return true
+		}
+	}
+	return false
 }

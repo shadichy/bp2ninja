@@ -159,6 +159,12 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 					}
 				}
 			}
+			if mod.Type == "java_sdk_library" {
+				for _, sub := range []string{".impl", ".stubs", ".stubs.system", ".stubs.module_lib", ".stubs.test"} {
+					definedModules[mod.Name+sub] = true
+					moduleLookup[mod.Name+sub] = mod.Name
+				}
+			}
 		}
 	}
 

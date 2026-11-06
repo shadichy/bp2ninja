@@ -56,8 +56,16 @@ func (g *Generator) resolveJarTargets(lib string) []string {
 		}
 	}
 	if len(targets) == 0 {
-		if _, ok := g.moduleMap[cleanLib]; ok {
-			targets = append(targets, filepath.Join(g.opts.OutDir, "lib64", cleanLib+".jar"))
+		if depMod, ok := g.moduleMap[cleanLib]; ok {
+			if depMod.Dir == "tests_stubs" {
+				if physJars := g.resolvePhysicalJars(cleanLib); len(physJars) > 0 {
+					targets = append(targets, physJars...)
+				} else {
+					targets = append(targets, filepath.Join(g.opts.OutDir, "lib64", cleanLib+".jar"))
+				}
+			} else {
+				targets = append(targets, filepath.Join(g.opts.OutDir, "lib64", cleanLib+".jar"))
+			}
 		}
 	}
 
@@ -196,6 +204,10 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 	}
 	for _, ej := range g.opts.ExtraJars {
 		if ej != "" {
+			baseLib := strings.TrimSuffix(filepath.Base(ej), ".jar")
+			if mod.Name == baseLib || g.IsTransitiveInputOf(mod.Name, baseLib, make(map[string]bool)) {
+				continue
+			}
 			if fi, err := os.Stat(ej); err == nil && !fi.IsDir() {
 				cpEntries = append(cpEntries, ej)
 				cpDeps = append(cpDeps, ej)
@@ -230,6 +242,23 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 				depLibs = append(depLibs, sl)
 				if subMod, ok := g.moduleMap[sl]; ok {
 					collectLibs(subMod, false)
+					if subMod.Type == "java_aconfig_library" {
+						if !visited["aconfig-annotations-lib"] {
+							visited["aconfig-annotations-lib"] = true
+							depLibs = append(depLibs, "aconfig-annotations-lib")
+						}
+					}
+				}
+			}
+		}
+
+		for _, iface := range m.GetStringList("interfaces") {
+			ifaceJava := sanitizeHidlJavaName(iface)
+			if !visited[ifaceJava] {
+				visited[ifaceJava] = true
+				depLibs = append(depLibs, ifaceJava)
+				if subMod, ok := g.moduleMap[ifaceJava]; ok {
+					collectLibs(subMod, false)
 				}
 			}
 		}
@@ -257,6 +286,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 	}
 	collectLibs(mod, true)
+	if mod.Type == "java_sdk_library" && strings.HasPrefix(mod.Dir, "frameworks/base") {
+		for _, extra := range []string{"framework-minus-apex", "framework-configinfrastructure"} {
+			if !visited[extra] && !g.IsTransitiveInputOf(mod.Name, extra, make(map[string]bool)) {
+				visited[extra] = true
+				depLibs = append(depLibs, extra)
+			}
+		}
+	}
 	for _, lib := range depLibs {
 		targets := g.resolveJarTargets(lib)
 		cleanLib := strings.TrimSuffix(lib, ".jar")
@@ -321,7 +358,11 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		for _, lib := range depLibs {
 			cleanLib := strings.TrimSuffix(lib, ".jar")
 			topJarCandidates := []string{
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib", cleanLib+".jar"),
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "system", cleanLib+".jar"),
 				filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public", cleanLib+".jar"),
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/module-lib", cleanLib+".jar"),
+				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/system", cleanLib+".jar"),
 				filepath.Join(g.opts.TopDir, "prebuilts/sdk", "current/public", cleanLib+".jar"),
 			}
 			for _, c := range topJarCandidates {
@@ -476,19 +517,29 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	// Core platform support (--patch-module for libart/jdk internals)
 	patchModuleArg := ""
 	sdkVer := mod.GetString("sdk_version")
-	if sdkVer == "core_platform" {
+	patchModProp := mod.GetString("patch_module")
+	if patchModProp != "" || sdkVer == "" || sdkVer == "core_platform" || sdkVer == "platform_current" {
 		targetApi := g.opts.APILevel
 		if targetApi <= 0 {
 			targetApi = 34
+		}
+		var patchJars []string
+		if artJar := g.resolvePhysicalJar("art-module-lib"); artJar != "" {
+			patchJars = append(patchJars, artJar)
+			cpDeps = append(cpDeps, artJar)
+		} else if coreOj := g.resolvePhysicalJar("core-oj"); coreOj != "" {
+			patchJars = append(patchJars, coreOj)
+			cpDeps = append(cpDeps, coreOj)
 		}
 		coreJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "module-lib/core-for-system-modules.jar")
 		if fi, err := os.Stat(coreJar); err != nil || fi.IsDir() {
 			coreJar = filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/module-lib/core-for-system-modules.jar")
 		}
-		var patchJars []string
-		if fi, err := os.Stat(coreJar); err == nil && !fi.IsDir() {
-			patchJars = append(patchJars, coreJar)
-			cpDeps = append(cpDeps, coreJar)
+		if len(patchJars) == 0 {
+			if fi, err := os.Stat(coreJar); err == nil && !fi.IsDir() {
+				patchJars = append(patchJars, coreJar)
+				cpDeps = append(cpDeps, coreJar)
+			}
 		}
 		artLegacyJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/art-coreplatform-legacy.jar")
 		if fi, err := os.Stat(artLegacyJar); err == nil && !fi.IsDir() {
@@ -496,9 +547,15 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			cpDeps = append(cpDeps, artLegacyJar)
 		}
 		if len(patchJars) > 0 {
-			patchModuleArg = "--patch-module java.base=" + strings.Join(patchJars, ":") + " "
+			patchTarget := "java.base"
+			if patchModProp != "" {
+				patchTarget = patchModProp
+			}
+			patchModuleArg = "--patch-module " + patchTarget + "=" + strings.Join(patchJars, ":") + " --add-exports=" + patchTarget + "/java.nio=ALL-UNNAMED "
 			if coreJar != "" {
-				patchModuleArg += "--patch-module jdk.unsupported=" + coreJar + " --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED "
+				if fi, err := os.Stat(coreJar); err == nil && !fi.IsDir() {
+					patchModuleArg += "--patch-module jdk.unsupported=" + coreJar + " --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED "
+				}
 			}
 		}
 	}
@@ -780,6 +837,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		cmd = envPrefix + "mkdir -p " + classesDir + " && " + aidlGenCmd +
 			"$turbine " + strings.Join(turbineFlags, " ")
 	} else {
+		classOutDir := filepath.Join(classesDir, "classes")
 		if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 && len(aidlSrcs) == 0 && len(protoSrcs) == 0 {
 			// Pure Kotlin compilation
 			rule = "kotlinc_compile"
@@ -789,9 +847,9 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			}
 			ktFiles := " @" + rspFile
 			rspContent = strings.Join(ktSrcs, " ")
-			cmd = envPrefix + "mkdir -p " + classesDir +
-				" && $kotlinc -d " + classesDir + " " + cpArg + ktFiles +
-				" && $jar cf " + compileTarget + " -C " + classesDir + " ."
+			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir +
+				" && $kotlinc -d " + classOutDir + " " + cpArg + ktFiles +
+				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0 || len(aidlSrcs) > 0 || len(protoSrcs) > 0) {
 			// Mixed Kotlin + Java compilation:
 			rule = "kotlin_java_compile"
@@ -799,16 +857,16 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if cpFlag != "" {
 				cpArg = cpFlag + " "
 			}
-			javacCp := classesDir
+			javacCp := classOutDir
 			if cpFlag != "" {
-				javacCp = classesDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
+				javacCp = classOutDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
 			}
 			ktFiles := " @" + rspFile
 			rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
-			cmd = envPrefix + "mkdir -p " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$kotlinc -d " + classesDir + " " + cpArg + ktFiles +
-				" && $javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classesDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
-				" && $jar cf " + compileTarget + " -C " + classesDir + " ."
+			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
+				"$kotlinc -d " + classOutDir + " " + cpArg + ktFiles +
+				" && $javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		} else {
 			// Pure Java compilation
 			rule = "javac_compile"
@@ -816,9 +874,9 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if cpFlag != "" {
 				cpArg = cpFlag + " "
 			}
-			cmd = envPrefix + "mkdir -p " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classesDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
-				" && $jar cf " + compileTarget + " -C " + classesDir + " ."
+			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
+				"$javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		}
 
 		buildVars := map[string]string{
@@ -940,6 +998,11 @@ func (g *Generator) generateJavaImport(mod *eval.EvaluatedModule) ([]string, err
 	}
 
 	srcJar := jars[0]
+	if mod.Dir == "tests_stubs" {
+		if physJars := g.resolvePhysicalJars(mod.Name); len(physJars) > 0 {
+			srcJar = physJars[0]
+		}
+	}
 	if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcJar) {
 		srcJar = filepath.Join(mod.Dir, srcJar)
 	}
@@ -1056,8 +1119,12 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 		extraFlags = append(extraFlags, "--min-sdk-version "+minSdk)
 	}
 
-	if g.opts.AndroidJarPath != "" {
-		extraFlags = append(extraFlags, "-I "+g.opts.AndroidJarPath)
+	androidJar := g.opts.AndroidJarPath
+	if androidJar == "" {
+		androidJar = g.resolveCurrentAndroidJar()
+	}
+	if androidJar != "" {
+		extraFlags = append(extraFlags, "-I "+androidJar)
 	}
 
 	// 3. Emit AAPT2 link & .srcjar generation rule
@@ -1083,6 +1150,9 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 	aaptCmd.WriteString(fmt.Sprintf(" && touch %s/.dummy && $jar cf %s -C %s .", srcgenDir, srcjarTarget, srcgenDir))
 
 	aaptInputs := []string{manifestPath}
+	if androidJar != "" {
+		aaptInputs = append(aaptInputs, androidJar)
+	}
 	if err := g.nw.Build(ninja.BuildEdge{
 		Outputs: []string{resApk, srcjarTarget},
 		Rule:    "genrule_cmd",
@@ -1301,8 +1371,25 @@ func (g *Generator) generateJavaSdkLibraryImport(mod *eval.EvaluatedModule) ([]s
 			return
 		}
 		srcJar := jars[0]
-		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcJar) {
+		if strings.HasPrefix(srcJar, ":") {
+			dep := strings.TrimPrefix(srcJar, ":")
+			if res := g.resolveJarTargets(dep); len(res) > 0 {
+				srcJar = res[0]
+			} else if pj := g.resolvePhysicalJar(dep); pj != "" {
+				srcJar = pj
+			} else if pj := g.resolvePhysicalJar(mod.Name); pj != "" {
+				srcJar = pj
+			}
+		} else if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcJar) {
 			srcJar = filepath.Clean(filepath.Join(mod.Dir, srcJar))
+		}
+
+		if fi, err := os.Stat(srcJar); err != nil || fi.IsDir() {
+			if pj := g.resolvePhysicalJar(mod.Name); pj != "" {
+				srcJar = pj
+			} else if g.opts.AllowMissingDeps {
+				g.emitPhonyIfNeeded(srcJar)
+			}
 		}
 		scopeName := mod.Name + suffix
 		targetJar := filepath.Join(g.libDir(), scopeName+".jar")

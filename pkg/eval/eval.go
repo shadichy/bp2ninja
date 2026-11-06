@@ -439,10 +439,39 @@ func (c *Context) applySoongConfigVariables(mod *EvaluatedModule) {
 			continue
 		}
 
+		matchedBranch := false
 		if hasVar {
-			// Branch matches specific value
+			// 1. Branch matches specific value (enum/string variables: e.g. branch: { val1: { ... }, val2: { ... } })
 			if branchProps, matched := branchesMap[activeVal].(map[string]interface{}); matched {
+				matchedBranch = true
 				for propName, propVal := range branchProps {
+					if existing, found := mod.Properties[propName]; found {
+						mod.Properties[propName] = mergeProperties(existing, propVal)
+					} else {
+						mod.Properties[propName] = propVal
+					}
+				}
+			} else if activeVal == "true" || activeVal == "1" {
+				// 2. Soong bool_variables: properties sit directly under varName
+				// e.g. crashrecovery_files_in_platform: { srcs: [...] }
+				for propName, propVal := range branchesMap {
+					if propName == "conditions_default" {
+						continue
+					}
+					matchedBranch = true
+					if existing, found := mod.Properties[propName]; found {
+						mod.Properties[propName] = mergeProperties(existing, propVal)
+					} else {
+						mod.Properties[propName] = propVal
+					}
+				}
+			}
+		}
+
+		// 3. Fallback to conditions_default if variable is unset or branch didn't match
+		if !matchedBranch {
+			if defProps, hasDefault := branchesMap["conditions_default"].(map[string]interface{}); hasDefault {
+				for propName, propVal := range defProps {
 					if existing, found := mod.Properties[propName]; found {
 						mod.Properties[propName] = mergeProperties(existing, propVal)
 					} else {

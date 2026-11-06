@@ -1409,7 +1409,7 @@ func (g *Generator) emitStandardRules() error {
 	// Jarjar repackaging rule
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "jarjar_process",
-		Command:         "bash -c 'mkdir -p $$(dirname $out) && JJ=$$(which jarjar 2>/dev/null || echo $top/prebuilts/host/external/jarjar/lib/jarjar.jar) && if [[ \"$$JJ\" == *.jar ]]; then java -jar $$JJ process $rules $in $out; else $$JJ process $rules $in $out; fi'",
+		Command:         "bash -c 'mkdir -p $$(dirname $out) && JJ=$$(which jarjar 2>/dev/null || echo $top/prebuilts/host/external/jarjar/lib/jarjar.jar) && if [[ \"$$JJ\" == *.jar ]]; then java -Xmx6g -jar $$JJ process $rules $in $out; else $$JJ process $rules $in $out; fi'",
 		Description:     "JARJAR $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,
@@ -2024,6 +2024,7 @@ func (g *Generator) IsTransitiveInputOf(candidate, rootModuleName string, visite
 	visited[rootModuleName] = true
 
 	var deps []string
+	deps = append(deps, rootMod.GetStringList("defaults")...)
 	deps = append(deps, rootMod.GetStringList("static_libs")...)
 	deps = append(deps, rootMod.GetStringList("libs")...)
 	for _, src := range rootMod.GetStringList("srcs") {

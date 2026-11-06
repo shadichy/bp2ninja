@@ -425,3 +425,87 @@ func TestJavaSdkLibraryInTreeImplementation(t *testing.T) {
 		t.Errorf("Expected consumer to include local %s on classpath", nfcImplJar)
 	}
 }
+
+func TestSdkStubScopeIndexingAndDummyJarProtection(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+
+	// 1. Create dummy public jar (< 500 bytes)
+	publicDir := filepath.Join(tempDir, "prebuilts/sdk/34/public")
+	if err := os.MkdirAll(publicDir, 0755); err != nil {
+		t.Fatalf("Failed to mkdir: %v", err)
+	}
+	dummyJarPath := filepath.Join(publicDir, "service-rkp.jar")
+	if err := os.WriteFile(dummyJarPath, []byte("PK\x05\x06dummy"), 0644); err != nil {
+		t.Fatalf("Failed to write dummy jar: %v", err)
+	}
+
+	// 2. Create real system-server jar (>= 500 bytes)
+	sysServerDir := filepath.Join(tempDir, "prebuilts/sdk/34/system-server")
+	if err := os.MkdirAll(sysServerDir, 0755); err != nil {
+		t.Fatalf("Failed to mkdir: %v", err)
+	}
+	realJarPath := filepath.Join(sysServerDir, "service-rkp.jar")
+	realContent := make([]byte, 1024)
+	copy(realContent, "PK\x03\x04realjarcontent")
+	if err := os.WriteFile(realJarPath, realContent, 0644); err != nil {
+		t.Fatalf("Failed to write real jar: %v", err)
+	}
+
+	// 3. Create dummy art-module-lib for patch-module verification
+	artDir := filepath.Join(tempDir, "prebuilts/target/art/share/art")
+	if err := os.MkdirAll(artDir, 0755); err != nil {
+		t.Fatalf("Failed to mkdir: %v", err)
+	}
+	artJarPath := filepath.Join(artDir, "art-module-lib.jar")
+	artContent := make([]byte, 1024)
+	if err := os.WriteFile(artJarPath, artContent, 0644); err != nil {
+		t.Fatalf("Failed to write art jar: %v", err)
+	}
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.APILevel = 34
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	gen.initPrebuiltJarIndex()
+
+	// Verify scope-specific indexing
+	resolvedScope := gen.resolvePhysicalJar("service-rkp.stubs.system_server")
+	if resolvedScope != realJarPath {
+		t.Errorf("Expected service-rkp.stubs.system_server to resolve to %s, got %s", realJarPath, resolvedScope)
+	}
+
+	// Verify dummy jar protection replaced dummy with real jar
+	resolvedBase := gen.resolvePhysicalJar("service-rkp")
+	if resolvedBase != realJarPath {
+		t.Errorf("Expected base service-rkp to resolve to non-dummy %s, got %s", realJarPath, resolvedBase)
+	}
+
+	// 4. Verify patch-module injection for platform Java module (empty sdk_version)
+	mod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "services.core",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name": "services.core",
+			"srcs": []interface{}{
+				"Service.java",
+			},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	if !strings.Contains(ninjaContent, "--patch-module java.base="+artJarPath) {
+		t.Errorf("Expected ninja to pass --patch-module java.base with art-module-lib, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "--add-exports=java.base/java.nio=ALL-UNNAMED") {
+		t.Errorf("Expected ninja to pass --add-exports for java.nio, got:\n%s", ninjaContent)
+	}
+}
+

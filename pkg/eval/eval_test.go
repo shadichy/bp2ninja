@@ -925,3 +925,49 @@ aidl_interface_defaults {
 		t.Errorf("Expected 'defaults' property to be cleared after ResolveGlobalDefaults")
 	}
 }
+
+func TestSoongConfigVariablesBoolAndConditionsDefault(t *testing.T) {
+	bp := `
+platform_filegroup {
+    name: "services-crashrecovery-sources",
+    soong_config_variables: {
+        crashrecovery_files_in_platform: {
+            srcs: ["java/com/android/server/PackageWatchdog.java"],
+            conditions_default: {
+                srcs: ["java/com/android/server/DefaultStub.java"],
+            },
+        },
+    },
+}
+`
+	// 1. Variable set to "true"
+	ctxTrue := NewContext(map[string]string{"crashrecovery_files_in_platform": "true"}, "x86_64")
+	astTrue, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctxTrue.EvalFileInDir(astTrue, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+	modTrue := ctxTrue.Modules[0]
+	srcsTrue := modTrue.GetStringList("srcs")
+	if len(srcsTrue) != 1 || srcsTrue[0] != "java/com/android/server/PackageWatchdog.java" {
+		t.Errorf("Expected PackageWatchdog.java when true, got %v", srcsTrue)
+	}
+
+	// 2. Variable unset -> triggers conditions_default
+	ctxUnset := NewContext(map[string]string{}, "x86_64")
+	astUnset, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctxUnset.EvalFileInDir(astUnset, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+	modUnset := ctxUnset.Modules[0]
+	srcsUnset := modUnset.GetStringList("srcs")
+	if len(srcsUnset) != 1 || srcsUnset[0] != "java/com/android/server/DefaultStub.java" {
+		t.Errorf("Expected DefaultStub.java when unset, got %v", srcsUnset)
+	}
+}
+

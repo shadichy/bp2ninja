@@ -96,6 +96,16 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		}
 	}
 
+	for _, incDir := range mod.GetStringList("include_dirs") {
+		if incDir != "" {
+			if !filepath.IsAbs(incDir) && g.opts.TopDir != "" && g.opts.TopDir != "." {
+				importDirs = append(importDirs, filepath.Clean(filepath.Join(g.opts.TopDir, incDir)))
+			} else {
+				importDirs = append(importDirs, incDir)
+			}
+		}
+	}
+
 	imports := mod.GetStringList("imports")
 	for _, imp := range imports {
 		baseName := imp

@@ -49,13 +49,16 @@ var soongPrebuiltJarAliases = map[string][]string{
 	"framework-permission":     {"framework-permission.jar"},
 	"framework-permission-s":   {"framework-permission-s.jar"},
 	"framework-res":            {"framework-res-package.jar", "framework-res.jar"},
-	"service-permission":       {"service-permission-stubs.jar", "service-permission.jar"},
+	"service-permission":       {"service-permission.jar", "service-permission-stubs.jar"},
 
 	// External libraries
-	"okhttp":             {"okhttp-2.7.5.jar", "okhttp.jar"},
-	"okhttp-norepackage": {"okhttp-norepackage-2.7.5.jar", "okhttp-2.7.5.jar"},
-	"apache-xml":         {"apache-xml.jar"},
-	"libphonenumber":     {"libphonenumber.jar"},
+	"okhttp":                   {"okhttp-2.7.5.jar", "okhttp.jar"},
+	"okhttp-norepackage":       {"okhttp-norepackage-2.7.5.jar", "okhttp-2.7.5.jar"},
+	"apache-xml":               {"apache-xml.jar"},
+	"libphonenumber":           {"libphonenumber.jar"},
+	"org.apache.commons.math":  {"commons-math-2.2.jar", "commons-math.jar", "apache-commons-math.jar"},
+	"apache-commons-math":      {"commons-math-2.2.jar", "commons-math.jar", "apache-commons-math.jar"},
+	"icu4j_calendar_astronomer": {"icu4j-70.1.jar", "icu4j.jar", "runtime-i18n.jar"},
 
 	// AndroidX and Jetpack Annotations
 	"androidx.annotation_annotation": {"annotation-jvm.jar", "annotation.jar", "androidx.annotation.jar"},
@@ -114,17 +117,32 @@ func (g *Generator) indexJar(path string) {
 	base := filepath.Base(absPath)
 	clean := strings.TrimSuffix(base, ".jar")
 
+	newFi, _ := os.Stat(absPath)
+	newSize := int64(0)
+	if newFi != nil {
+		newSize = newFi.Size()
+	}
+
 	addKey := func(k string) {
 		if k == "" {
 			return
 		}
-		if _, exists := g.prebuiltJarIndex[k]; !exists {
-			g.prebuiltJarIndex[k] = absPath
+		insertOrUpdate := func(key string) {
+			if existing, exists := g.prebuiltJarIndex[key]; exists {
+				// Prevent tiny dummy jars (< 500 bytes, e.g. public empty manifests)
+				// from overriding real implementation/stub jars (>= 500 bytes).
+				if exFi, err := os.Stat(existing); err == nil {
+					if exFi.Size() < 500 && newSize >= 500 {
+						g.prebuiltJarIndex[key] = absPath
+					}
+				}
+			} else {
+				g.prebuiltJarIndex[key] = absPath
+			}
 		}
-		lower := strings.ToLower(k)
-		if _, exists := g.prebuiltJarIndex[lower]; !exists {
-			g.prebuiltJarIndex[lower] = absPath
-		}
+
+		insertOrUpdate(k)
+		insertOrUpdate(strings.ToLower(k))
 	}
 
 	addKey(base)
@@ -198,6 +216,25 @@ func (g *Generator) indexJar(path string) {
 		addKey(parent)
 		addKey(strings.ReplaceAll(parent, "-", "_"))
 		addKey(strings.ReplaceAll(parent, "_", "-"))
+	}
+
+	// Index SDK stub scopes:
+	// e.g. .../prebuilts/sdk/34/system-server/service-rkp.jar -> service-rkp.stubs.system_server, service-rkp.stubs
+	// e.g. .../prebuilts/sdk/current/module-lib/art.jar -> art.stubs.module_lib
+	if strings.Contains(absPath, "/prebuilts/sdk/") {
+		switch parent {
+		case "public", "system", "module-lib", "system-server", "test", "system_server", "module_lib":
+			normScope := strings.ReplaceAll(parent, "-", "_")
+			addKey(clean + ".stubs." + parent)
+			addKey(clean + ".stubs." + normScope)
+			addKey(clean + ".stubs")
+			baseClean := strings.TrimSuffix(clean, "-stubs")
+			if baseClean != clean {
+				addKey(baseClean + ".stubs." + parent)
+				addKey(baseClean + ".stubs." + normScope)
+				addKey(baseClean + ".stubs")
+			}
+		}
 	}
 }
 
@@ -277,7 +314,7 @@ func (g *Generator) initPrebuiltJarIndex() {
 
 	// 4. In-tree extractive APEX prebuilts: ${TopDir}/prebuilts/target, host, external (authentic platform precedence)
 	if g.opts.TopDir != "" {
-		for _, sub := range []string{"prebuilts/target", "prebuilts/host", "prebuilts/external"} {
+		for _, sub := range []string{"prebuilts/target", "prebuilts/host", "prebuilts/external", "prebuilts/misc"} {
 			shadowDir := filepath.Join(g.opts.TopDir, sub)
 			if fi, err := os.Stat(shadowDir); err == nil && fi.IsDir() {
 				g.scanDirForJars(shadowDir, 10)
@@ -292,6 +329,8 @@ func (g *Generator) initPrebuiltJarIndex() {
 		for _, sub := range []string{
 			filepath.Join("prebuilts/sdk", fmt.Sprintf("%d", targetApi)),
 			"prebuilts/sdk/current",
+			"prebuilts/sdk/extensions/11",
+			"prebuilts/sdk/extensions/7",
 		} {
 			sdkDir := filepath.Join(g.opts.TopDir, sub)
 			if fi, err := os.Stat(sdkDir); err == nil && fi.IsDir() {
@@ -352,6 +391,27 @@ func (g *Generator) resolvePhysicalJars(libName string) []string {
 	if aliases, ok := soongPrebuiltJarAliases[cleanLib]; ok {
 		for _, alias := range aliases {
 			cleanAlias := strings.TrimSuffix(alias, ".jar")
+			if strings.Contains(cleanLib, "stubs") {
+				if p, ok := g.prebuiltJarIndex[alias]; ok {
+					addResult(p)
+					continue
+				} else if p, ok := g.prebuiltJarIndex[cleanAlias]; ok {
+					addResult(p)
+					continue
+				}
+			}
+			if outs, ok := g.moduleOutputs[cleanAlias]; ok && len(outs) > 0 {
+				for _, o := range outs {
+					if strings.HasSuffix(o, ".jar") && !g.emittedPhonies[o] {
+						addResult(o)
+					}
+				}
+				continue
+			}
+			if depMod, ok := g.moduleMap[cleanAlias]; ok && depMod.Dir != "tests_stubs" {
+				addResult(filepath.Join(g.opts.OutDir, "lib64", cleanAlias+".jar"))
+				continue
+			}
 			if p, ok := g.prebuiltJarIndex[alias]; ok {
 				addResult(p)
 			} else if p, ok := g.prebuiltJarIndex[cleanAlias]; ok {

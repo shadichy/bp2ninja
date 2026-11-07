@@ -273,6 +273,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 							}
 						}
 					}
+					if l == "kotlinx_coroutines_android" || l == "kotlinx-coroutines-android" {
+						for _, coroutineDep := range []string{"kotlinx_coroutines", "kotlinx-coroutines", "kotlinx_atomicfu", "kotlinx-atomicfu"} {
+							if _, ok := g.moduleMap[coroutineDep]; ok && !visited[coroutineDep] {
+								visited[coroutineDep] = true
+								depLibs = append(depLibs, coroutineDep)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -288,6 +296,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 								visited[aconfigDep] = true
 								depLibs = append(depLibs, aconfigDep)
 							}
+						}
+					}
+				}
+				if sl == "kotlinx_coroutines_android" || sl == "kotlinx-coroutines-android" {
+					for _, coroutineDep := range []string{"kotlinx_coroutines", "kotlinx-coroutines", "kotlinx_atomicfu", "kotlinx-atomicfu"} {
+						if _, ok := g.moduleMap[coroutineDep]; ok && !visited[coroutineDep] {
+							visited[coroutineDep] = true
+							depLibs = append(depLibs, coroutineDep)
 						}
 					}
 				}

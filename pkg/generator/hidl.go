@@ -481,6 +481,17 @@ func (g *Generator) generateHidlJavaLibrary(mod *eval.EvaluatedModule) ([]string
 
 	// Also make jarTarget available under both mod.Name and mod.Name.jar
 	g.moduleOutputs[mod.Name+".jar"] = []string{jarTarget}
+	if strings.HasSuffix(mod.Name, "-java") {
+		shallowName := strings.TrimSuffix(mod.Name, "-java") + "-java-shallow"
+		g.moduleOutputs[shallowName] = []string{jarTarget}
+		g.moduleOutputs[shallowName+".jar"] = []string{jarTarget}
+		shallowJar := filepath.Join(g.libDir(), shallowName+".jar")
+		_ = g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{shallowJar},
+			Rule:    "copy",
+			Inputs:  []string{jarTarget},
+		})
+	}
 
 	return []string{jarTarget}, nil
 }

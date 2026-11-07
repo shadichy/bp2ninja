@@ -938,11 +938,11 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				javacCp = classOutDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
 			}
 			ktFiles := " @" + rspFile
-			rspContent = strings.Join(append(ktSrcs, javaSrcs...), "\n")
+			rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
 			splitJavaCmd := ""
 			if len(javaSrcs) > 0 {
 				javaListFile := filepath.Join(classesDir, "java.list")
-				splitJavaCmd = "grep '\\.java$' " + rspFile + " > " + javaListFile + " && "
+				splitJavaCmd = "tr ' ' '\\n' < " + rspFile + " | grep '\\.java$$' > " + javaListFile + " && "
 				javaFiles = " @" + javaListFile
 			} else {
 				javaFiles = ""

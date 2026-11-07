@@ -29,11 +29,8 @@ func collectPatchJarPackages(jarPath string) []string {
 	for _, f := range zr.File {
 		if strings.HasSuffix(f.Name, ".class") && strings.Contains(f.Name, "/") {
 			pkg := strings.ReplaceAll(filepath.Dir(f.Name), "/", ".")
-			if pkg != "" && pkg != "." && !strings.HasPrefix(pkg, "META-INF") {
-				if !strings.HasPrefix(pkg, "java.") && !strings.HasPrefix(pkg, "javax.") && !strings.HasPrefix(pkg, "jdk.") &&
-					!strings.HasPrefix(pkg, "org.w3c.") && !strings.HasPrefix(pkg, "org.xml.") && pkg != "sun.misc" {
-					pkgSet[pkg] = true
-				}
+			if pkg != "" && pkg != "." && !strings.HasPrefix(pkg, "META-INF") && pkg != "sun.misc" {
+				pkgSet[pkg] = true
 			}
 		}
 	}
@@ -626,7 +623,11 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			for _, pkg := range exportPkgs {
 				addExports = append(addExports, "--add-exports="+patchTarget+"/"+pkg+"=ALL-UNNAMED")
 			}
-			patchModuleArg = "--patch-module " + patchTarget + "=" + strings.Join(patchJars, ":") + " " + strings.Join(addExports, " ") + " "
+			limitMods := []string{"java.base", "jdk.unsupported"}
+			if patchTarget != "java.base" {
+				limitMods = append(limitMods, patchTarget)
+			}
+			patchModuleArg = "--limit-modules " + strings.Join(limitMods, ",") + " --patch-module " + patchTarget + "=" + strings.Join(patchJars, ":") + " " + strings.Join(addExports, " ") + " "
 			if coreJar != "" {
 				if fi, err := os.Stat(coreJar); err == nil && !fi.IsDir() {
 					patchModuleArg += "--patch-module jdk.unsupported=" + coreJar + " --add-exports=jdk.unsupported/sun.misc=ALL-UNNAMED "

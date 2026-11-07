@@ -1475,6 +1475,17 @@ func (g *Generator) generateAndroidLibrary(mod *eval.EvaluatedModule) ([]string,
 			extraFlags = append(extraFlags, "--auto-add-overlay")
 		}
 
+		hasStaticLib := false
+		for _, f := range extraFlags {
+			if strings.Contains(f, "--static-lib") {
+				hasStaticLib = true
+				break
+			}
+		}
+		if !hasStaticLib {
+			extraFlags = append(extraFlags, "--static-lib", "--merge-only")
+		}
+
 		androidJar := g.opts.AndroidJarPath
 		if androidJar == "" {
 			androidJar = g.resolveCurrentAndroidJar()

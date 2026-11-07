@@ -815,6 +815,8 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	if len(protoSrcs) > 0 {
 		protoType := "nano"
 		var outputParams []string
+		var protoLocalIncludeDirs []string
+		var protoIncludeDirs []string
 		if pMap := mod.GetMap("proto"); pMap != nil {
 			if t, ok := pMap["type"].(string); ok && t != "" {
 				protoType = t
@@ -827,6 +829,24 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				}
 			} else if op, ok := pMap["output_params"].([]string); ok {
 				outputParams = append(outputParams, op...)
+			}
+			if lid, ok := pMap["local_include_dirs"].([]interface{}); ok {
+				for _, item := range lid {
+					if s, ok := item.(string); ok && s != "" {
+						protoLocalIncludeDirs = append(protoLocalIncludeDirs, s)
+					}
+				}
+			} else if lid, ok := pMap["local_include_dirs"].([]string); ok {
+				protoLocalIncludeDirs = append(protoLocalIncludeDirs, lid...)
+			}
+			if id, ok := pMap["include_dirs"].([]interface{}); ok {
+				for _, item := range id {
+					if s, ok := item.(string); ok && s != "" {
+						protoIncludeDirs = append(protoIncludeDirs, s)
+					}
+				}
+			} else if id, ok := pMap["include_dirs"].([]string); ok {
+				protoIncludeDirs = append(protoIncludeDirs, id...)
 			}
 		}
 
@@ -850,6 +870,22 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if mod.Dir != "" && mod.Dir != "." {
 				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir))
 				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir, "src"))
+			}
+		}
+		for _, inc := range protoLocalIncludeDirs {
+			pDir := inc
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(inc) {
+				pDir = filepath.Clean(filepath.Join(mod.Dir, inc))
+			}
+			protoIncludes = append(protoIncludes, "-I"+pDir)
+			if g.opts.TopDir != "" && !filepath.IsAbs(pDir) {
+				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, pDir))
+			}
+		}
+		for _, inc := range protoIncludeDirs {
+			protoIncludes = append(protoIncludes, "-I"+inc)
+			if g.opts.TopDir != "" && !filepath.IsAbs(inc) {
+				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, inc))
 			}
 		}
 		for _, p := range protoSrcs {

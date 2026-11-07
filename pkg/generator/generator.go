@@ -1096,7 +1096,7 @@ func (g *Generator) emitStandardRules() error {
 	// AAR extract classes.jar
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "aar_extract_classes",
-		Command:       "mkdir -p $$(dirname $out) && (unzip -p $in classes.jar > $out 2>/dev/null || touch $out)",
+		Command:       "bp2ninja aar-classes -in $in -out $out",
 		Description:   "AAR_EXTRACT $out",
 		RestatContent: g.opts.Siso,
 	}); err != nil {

@@ -170,6 +170,42 @@ func handleGoWork(args []string) {
 	os.Exit(0)
 }
 
+func handleAarClasses(args []string) {
+	var inAar, outJar string
+	args = normalizeArgs(args)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-in" || arg == "--in" {
+			if i+1 < len(args) {
+				inAar = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-in=") || strings.HasPrefix(arg, "--in=") {
+			parts := strings.SplitN(arg, "=", 2)
+			inAar = parts[1]
+		} else if arg == "-out" || arg == "--out" {
+			if i+1 < len(args) {
+				outJar = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "-out=") || strings.HasPrefix(arg, "--out=") {
+			parts := strings.SplitN(arg, "=", 2)
+			outJar = parts[1]
+		}
+	}
+
+	if inAar == "" || outJar == "" {
+		fmt.Fprintf(os.Stderr, "Usage: bp2ninja aar-classes -in <input.aar> -out <output.jar>\n")
+		os.Exit(1)
+	}
+
+	if err := generator.ExtractAarClasses(inAar, outJar); err != nil {
+		fmt.Fprintf(os.Stderr, "error extracting aar classes: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 // isBp2SisoInvocation reports whether the binary was invoked as bp2siso
 // (e.g. through a symlink), which enables -siso by default.
 func isBp2SisoInvocation(argv0 string) bool {
@@ -296,7 +332,9 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "                             Convert an in-tree Soong plugin into a loadable .so plugin\n")
 	fmt.Fprintf(out, "  gowork [-tree DIR] [-remote] [-clean]\n")
 	fmt.Fprintf(out, "                             Generate or clean go.work workspace for Android Go modules\n")
-	fmt.Fprintf(out, "  clean-gowork               Remove go.work and go.work.sum workspace files\n\n")
+	fmt.Fprintf(out, "  clean-gowork               Remove go.work and go.work.sum workspace files\n")
+	fmt.Fprintf(out, "  aar-classes -in IN -out OUT\n")
+	fmt.Fprintf(out, "                             Extract classes.jar and compile R.txt into target jar\n\n")
 
 	fmt.Fprintf(out, "Environment variables:\n")
 	fmt.Fprintf(out, "  CC                         Default C compiler (overridden by -cc)\n")
@@ -338,6 +376,9 @@ func main() {
 			return
 		case "clean-gowork":
 			_ = gowork.CleanGoWork(".")
+			return
+		case "aar-classes":
+			handleAarClasses(rawArgs[1:])
 			return
 		case "help", "-help", "-h":
 			printUsage(os.Stdout, os.Args[0])

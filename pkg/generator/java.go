@@ -1513,7 +1513,7 @@ func (g *Generator) generateAndroidLibrary(mod *eval.EvaluatedModule) ([]string,
 		g.emitPhonyIfNeeded(manifestPath)
 	}
 
-	hasResources := len(resDirs) > 0 || hasManifest
+	hasResources := len(resDirs) > 0
 
 	if hasResources {
 		aaptFlags := mod.GetStringList("aaptflags")

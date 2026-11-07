@@ -588,7 +588,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	if encoding == "" {
 		encoding = "UTF-8"
 	}
-	envPrefix := "export LC_ALL=C.UTF-8 LANG=C.UTF-8 JAVA_TOOL_OPTIONS=\"-Dfile.encoding=UTF-8\" && "
+	envPrefix := "export LC_ALL=C.UTF-8 LANG=C.UTF-8 JAVA_TOOL_OPTIONS=\"-Dfile.encoding=UTF-8\" JAVA_OPTS=\"-XX:MaxRAMPercentage=75\" && "
 
 	// System modules support (--system)
 	sysModulesArg := ""

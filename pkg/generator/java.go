@@ -1096,12 +1096,28 @@ func (g *Generator) generateJavaLibrary(mod *eval.EvaluatedModule) ([]string, er
 func (g *Generator) generateJavaImport(mod *eval.EvaluatedModule) ([]string, error) {
 	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
 	jars := mod.GetStringList("jars")
-	if len(jars) == 0 {
+	aars := mod.GetStringList("aars")
+	if len(jars) == 0 && len(aars) == 0 {
 		if g.opts.AllowMissingDeps {
 			g.emitPhonyIfNeeded(jarTarget)
 			return []string{jarTarget}, nil
 		}
 		return nil, nil
+	}
+
+	if len(aars) > 0 {
+		srcAar := aars[0]
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcAar) {
+			srcAar = filepath.Join(mod.Dir, srcAar)
+		}
+		g.emitPhonyIfNeeded(srcAar)
+
+		err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{jarTarget},
+			Rule:    "aar_extract_classes",
+			Inputs:  []string{srcAar},
+		})
+		return []string{jarTarget}, err
 	}
 
 	srcJar := jars[0]

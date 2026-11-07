@@ -1076,6 +1076,16 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// AAR extract classes.jar
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "aar_extract_classes",
+		Command:       "mkdir -p $$(dirname $out) && (unzip -p $in classes.jar > $out 2>/dev/null || touch $out)",
+		Description:   "AAR_EXTRACT $out",
+		RestatContent: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
 	// Copy executable binary/script
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "copy_executable",

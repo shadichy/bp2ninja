@@ -938,10 +938,19 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				javacCp = classOutDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
 			}
 			ktFiles := " @" + rspFile
-			rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
+			rspContent = strings.Join(append(ktSrcs, javaSrcs...), "\n")
+			splitJavaCmd := ""
+			if len(javaSrcs) > 0 {
+				javaListFile := filepath.Join(classesDir, "java.list")
+				splitJavaCmd = "grep '\\.java$' " + rspFile + " > " + javaListFile + " && "
+				javaFiles = " @" + javaListFile
+			} else {
+				javaFiles = ""
+			}
 			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$kotlinc -d " + classOutDir + " " + cpArg + ktFiles +
-				" && $javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+				"$kotlinc -d " + classOutDir + " " + cpArg + ktFiles + " && " +
+				splitJavaCmd +
+				"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
 				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		} else {
 			// Pure Java compilation

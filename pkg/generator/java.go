@@ -1151,12 +1151,12 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 	// 1. Discover resource directories
 	rawResDirs := mod.GetStringList("resource_dirs")
 	if len(rawResDirs) == 0 {
-		defaultRes := "res"
+		checkRes := "res"
 		if mod.Dir != "" && mod.Dir != "." {
-			defaultRes = filepath.Join(mod.Dir, "res")
+			checkRes = filepath.Join(mod.Dir, "res")
 		}
-		if st, err := os.Stat(defaultRes); err == nil && st.IsDir() {
-			rawResDirs = []string{defaultRes}
+		if st, err := os.Stat(checkRes); err == nil && st.IsDir() {
+			rawResDirs = []string{"res"}
 		}
 	}
 	var resDirs []string
@@ -1256,6 +1256,18 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		staticJars := g.resolveStaticLibsJars(mod)
+		if len(staticJars) > 0 {
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{jarTarget},
+				Rule:    "merge_zips",
+				Inputs:  staticJars,
+			}); err != nil {
+				return nil, err
+			}
+			jarOutputs = []string{jarTarget}
+		}
 	}
 	if len(jarOutputs) == 0 {
 		if g.opts.AllowMissingDeps {
@@ -1269,6 +1281,11 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 		finalInputs = append(finalInputs, jarOutputs...)
 	}
 
+	apkRule := "copy"
+	if len(finalInputs) > 1 {
+		apkRule = "merge_zips"
+	}
+
 	vars := map[string]string{
 		"manifest": manifest,
 	}
@@ -1278,7 +1295,7 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 
 	err := g.nw.Build(ninja.BuildEdge{
 		Outputs:   []string{apkTarget},
-		Rule:      "copy",
+		Rule:      apkRule,
 		Inputs:    finalInputs,
 		Variables: vars,
 	})

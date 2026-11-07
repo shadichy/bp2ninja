@@ -509,3 +509,59 @@ func TestSdkStubScopeIndexingAndDummyJarProtection(t *testing.T) {
 	}
 }
 
+func TestAndroidLibraryWithResources(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bp2ninja_android_lib_*")
+	if err != nil {
+		t.Fatalf("Failed to create tempDir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	resDir := filepath.Join(tempDir, "res")
+	if err := os.MkdirAll(resDir, 0755); err != nil {
+		t.Fatalf("Failed to create resDir: %v", err)
+	}
+	manifestFile := filepath.Join(tempDir, "AndroidManifestLib.xml")
+	if err := os.WriteFile(manifestFile, []byte("<manifest package=\"com.test.lib\"/>"), 0644); err != nil {
+		t.Fatalf("Failed to create manifestFile: %v", err)
+	}
+	javaFile := filepath.Join(tempDir, "Foo.java")
+	if err := os.WriteFile(javaFile, []byte("package com.test.lib; public class Foo {}"), 0644); err != nil {
+		t.Fatalf("Failed to create javaFile: %v", err)
+	}
+
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "android_library",
+		Name: "TestLib",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":          "TestLib",
+			"manifest":      "AndroidManifestLib.xml",
+			"resource_dirs": []interface{}{"res"},
+			"srcs":          []interface{}{"Foo.java"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	expectedSrcjar := filepath.Join(outDir, "gen/TestLib/TestLib.srcjar")
+	if !strings.Contains(ninjaContent, expectedSrcjar) {
+		t.Errorf("Expected ninja content to reference %s, got:\n%s", expectedSrcjar, ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "$aapt2 link --manifest "+manifestFile) {
+		t.Errorf("Expected aapt2 link with manifest, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "for sj in "+expectedSrcjar) {
+		t.Errorf("Expected javac command to extract %s, got:\n%s", expectedSrcjar, ninjaContent)
+	}
+}
+

@@ -640,7 +640,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	srcjarJavaArg := ""
 	if len(srcjarSrcs) > 0 {
 		srcjarDir := filepath.Join(classesDir, "srcgen")
-		srcjarExtractCmd = "mkdir -p " + srcjarDir + " && for sj in " + strings.Join(srcjarSrcs, " ") + "; do unzip -qo -d " + srcjarDir + " $$sj 2>/dev/null || true; done && find " + srcjarDir + " -name '*.java' > " + classesDir + "/srcjar.list && "
+		srcjarExtractCmd = "rm -rf " + srcjarDir + " && mkdir -p " + srcjarDir + " && for sj in " + strings.Join(srcjarSrcs, " ") + "; do unzip -qo -d " + srcjarDir + " $$sj 2>/dev/null || true; done && find " + srcjarDir + " -name '*.java' > " + classesDir + "/srcjar.list && "
 		srcjarJavaArg = " @" + classesDir + "/srcjar.list"
 	}
 
@@ -1246,6 +1246,17 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 		}
 	}
 
+	hasOverlay := false
+	for _, f := range extraFlags {
+		if strings.Contains(f, "--auto-add-overlay") {
+			hasOverlay = true
+			break
+		}
+	}
+	if !hasOverlay {
+		extraFlags = append(extraFlags, "--auto-add-overlay")
+	}
+
 	linkParts := []string{"$aapt2 link", "--manifest " + manifestPath, "-o " + resApk, "--java " + srcgenDir}
 	if len(extraFlags) > 0 {
 		linkParts = append(linkParts, strings.Join(extraFlags, " "))
@@ -1351,6 +1362,192 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 	targets := []string{apkTarget, libJarTarget, srcjarTarget}
 	g.moduleOutputs[mod.Name] = targets
 	return targets, nil
+}
+
+func (g *Generator) generateAndroidLibrary(mod *eval.EvaluatedModule) ([]string, error) {
+	jarTarget := filepath.Join(g.libDir(), strings.TrimSuffix(mod.Name, ".jar")+".jar")
+	genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name)
+	srcgenDir := filepath.Join(genDir, "srcgen")
+	flataDir := filepath.Join(genDir, "res_flata")
+	resApk := filepath.Join(genDir, "resources.apk")
+	srcjarTarget := filepath.Join(genDir, mod.Name+".srcjar")
+
+	// 1. Discover resource directories
+	rawResDirs := mod.GetStringList("resource_dirs")
+	if len(rawResDirs) == 0 {
+		checkRes := "res"
+		if mod.Dir != "" && mod.Dir != "." {
+			checkRes = filepath.Join(mod.Dir, "res")
+		}
+		if st, err := os.Stat(checkRes); err == nil && st.IsDir() {
+			rawResDirs = []string{"res"}
+		}
+	}
+	var resDirs []string
+	for _, r := range rawResDirs {
+		resolved := r
+		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(r) {
+			resolved = filepath.Clean(filepath.Join(mod.Dir, r))
+		}
+		if st, err := os.Stat(resolved); err == nil && st.IsDir() {
+			resDirs = append(resDirs, resolved)
+		}
+	}
+
+	// 2. Discover manifest
+	manifest := mod.GetString("manifest")
+	if manifest == "" {
+		manifest = "AndroidManifest.xml"
+	}
+	manifestPath := manifest
+	if !filepath.IsAbs(manifest) {
+		if mod.Dir != "" && mod.Dir != "." {
+			manifestPath = filepath.Clean(filepath.Join(mod.Dir, manifest))
+		} else if g.opts.BpDir != "" {
+			manifestPath = filepath.Join(g.opts.BpDir, manifest)
+		}
+	}
+	hasManifest := false
+	if fi, err := os.Stat(manifestPath); err == nil && !fi.IsDir() {
+		hasManifest = true
+		g.emitPhonyIfNeeded(manifestPath)
+	}
+
+	hasResources := len(resDirs) > 0 || hasManifest
+
+	if hasResources {
+		aaptFlags := mod.GetStringList("aaptflags")
+		var extraFlags []string
+		extraFlags = append(extraFlags, aaptFlags...)
+
+		minSdk := mod.GetString("min_sdk_version")
+		if minSdk == "" {
+			minSdk = mod.GetString("sdk_version")
+		}
+		if minSdk == "" || minSdk == "current" || minSdk == "core_platform" || minSdk == "module_current" || minSdk == "system_current" {
+			if g.opts.APILevel > 0 {
+				minSdk = fmt.Sprintf("%d", g.opts.APILevel)
+			} else {
+				minSdk = "34"
+			}
+		}
+		hasMinSdk := false
+		for _, f := range aaptFlags {
+			if strings.HasPrefix(f, "--min-sdk-version") {
+				hasMinSdk = true
+				break
+			}
+		}
+		if !hasMinSdk {
+			extraFlags = append(extraFlags, "--min-sdk-version "+minSdk)
+		}
+
+		hasOverlay := false
+		for _, f := range extraFlags {
+			if strings.Contains(f, "--auto-add-overlay") {
+				hasOverlay = true
+				break
+			}
+		}
+		if !hasOverlay {
+			extraFlags = append(extraFlags, "--auto-add-overlay")
+		}
+
+		androidJar := g.opts.AndroidJarPath
+		if androidJar == "" {
+			androidJar = g.resolveCurrentAndroidJar()
+		}
+		if androidJar != "" {
+			extraFlags = append(extraFlags, "-I "+androidJar)
+		}
+
+		var aaptCmd strings.Builder
+		aaptCmd.WriteString(fmt.Sprintf("mkdir -p %s %s && ", flataDir, srcgenDir))
+		var flataInputs []string
+		if len(resDirs) > 0 {
+			for i, rd := range resDirs {
+				flataFile := filepath.Join(flataDir, fmt.Sprintf("res_%d.flata", i))
+				aaptCmd.WriteString(fmt.Sprintf("$aapt2 compile --dir %s -o %s && ", rd, flataFile))
+				flataInputs = append(flataInputs, flataFile)
+			}
+		}
+
+		genManifestCmd := ""
+		actualManifest := manifestPath
+		if !hasManifest {
+			actualManifest = filepath.Join(genDir, "AndroidManifest.xml")
+			genManifestCmd = fmt.Sprintf("echo '<manifest package=\"%s\"/>' > %s && ", mod.Name, actualManifest)
+		}
+
+		linkParts := []string{"$aapt2 link", "--manifest " + actualManifest, "-o " + resApk, "--java " + srcgenDir}
+		if len(extraFlags) > 0 {
+			linkParts = append(linkParts, strings.Join(extraFlags, " "))
+		}
+		if len(flataInputs) > 0 {
+			linkParts = append(linkParts, strings.Join(flataInputs, " "))
+		}
+		aaptCmd.WriteString(genManifestCmd)
+		aaptCmd.WriteString(strings.Join(linkParts, " "))
+		aaptCmd.WriteString(fmt.Sprintf(" && touch %s/.dummy && $jar cf %s -C %s .", srcgenDir, srcjarTarget, srcgenDir))
+
+		aaptInputs := []string{}
+		if hasManifest {
+			aaptInputs = append(aaptInputs, manifestPath)
+		}
+		if androidJar != "" {
+			aaptInputs = append(aaptInputs, androidJar)
+		}
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{resApk, srcjarTarget},
+			Rule:    "genrule_cmd",
+			Inputs:  aaptInputs,
+			Variables: map[string]string{
+				"cmd": aaptCmd.String(),
+			},
+		}); err != nil {
+			return nil, err
+		}
+
+		g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarTarget}
+		g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarTarget}
+	}
+
+	origSrcs := mod.GetStringList("srcs")
+	if hasResources {
+		mod.Properties["srcs"] = append(origSrcs, srcjarTarget)
+	}
+	outs, err := g.compileJavaKotlin(mod, jarTarget)
+	if hasResources {
+		mod.Properties["srcs"] = origSrcs
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(outs) == 0 {
+		if physJars := g.resolvePhysicalJars(mod.Name); len(physJars) > 0 {
+			if len(physJars) == 1 {
+				_ = g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{jarTarget},
+					Rule:    "copy",
+					Inputs:  physJars,
+				})
+			} else {
+				_ = g.nw.Build(ninja.BuildEdge{
+					Outputs: []string{jarTarget},
+					Rule:    "phony",
+					Inputs:  physJars,
+				})
+				g.emittedPhonies[jarTarget] = true
+			}
+			return physJars, nil
+		}
+		if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(jarTarget)
+			return []string{jarTarget}, nil
+		}
+		return nil, nil
+	}
+	return outs, nil
 }
 
 func (g *Generator) generateJavaSdkLibrary(mod *eval.EvaluatedModule) ([]string, error) {

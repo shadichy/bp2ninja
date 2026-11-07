@@ -497,7 +497,11 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				var fgSrcs []string
 				for _, s := range mod.GetStringList("srcs") {
 					srcPath := s
-					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) && !strings.HasPrefix(s, ":") {
+					outDir := g.opts.OutDir
+					if outDir == "" {
+						outDir = "out"
+					}
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) && !strings.HasPrefix(s, ":") && !strings.HasPrefix(s, outDir+"/") && s != outDir {
 						srcPath = filepath.Clean(filepath.Join(mod.Dir, s))
 					}
 					fgSrcs = append(fgSrcs, g.expandGlob(srcPath)...)
@@ -506,8 +510,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				fgSrcs = filterExcludeSrcs(fgSrcs, fgExcludes, mod.Dir)
 				g.filegroups[mod.Name] = fgSrcs
 			}
-			// Pre-index srcjar outputs for android_app_import or android_app
-			if mod.Type == "android_app_import" || mod.Type == "android_app" {
+			// Pre-index srcjar outputs for android_app_import, android_app, or android_library
+			if mod.Type == "android_app_import" || mod.Type == "android_app" || mod.Type == "android_library" {
 				if srcjar := mod.GetString("srcjar"); srcjar != "" {
 					srcjarPath := srcjar
 					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(srcjarPath) {
@@ -515,7 +519,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 					}
 					g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
 					g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
-				} else if mod.Type == "android_app" {
+				} else if mod.Type == "android_app" || mod.Type == "android_library" {
 					srcjarPath := filepath.Join(g.opts.OutDir, "gen", mod.Name, mod.Name+".srcjar")
 					g.taggedOutputs[mod.Name+":.aapt.srcjar"] = []string{srcjarPath}
 					g.taggedOutputs[mod.Name+":.srcjar"] = []string{srcjarPath}
@@ -654,7 +658,9 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		case "android_app_certificate":
 			// Certificate declarations define signing key/cert pairs, not a runnable APK
 			targets = []string{}
-		case "java_library", "java_library_host", "android_library", "java_library_static":
+		case "android_library":
+			targets, err = g.generateAndroidLibrary(mod)
+		case "java_library", "java_library_host", "java_library_static":
 			targets, err = g.generateJavaLibrary(mod)
 		case "java_sdk_library":
 			targets, err = g.generateJavaSdkLibrary(mod)
@@ -1795,7 +1801,11 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 			expanded = append(expanded, g.resolveCurrentAndroidJar())
 		} else {
 			srcPath := s
-			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+			outDir := g.opts.OutDir
+			if outDir == "" {
+				outDir = "out"
+			}
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) && !strings.HasPrefix(s, outDir+"/") && s != outDir {
 				srcPath = filepath.Clean(filepath.Join(mod.Dir, s))
 			}
 			expanded = append(expanded, g.expandGlob(srcPath)...)

@@ -236,6 +236,13 @@ func (g *Generator) indexJar(path string) {
 			}
 		}
 	}
+
+	// General stubs suffix indexing: e.g. "framework-sdksandbox-stubs" -> "framework-sdksandbox"
+	if strings.HasSuffix(clean, "-stubs") {
+		baseClean := strings.TrimSuffix(clean, "-stubs")
+		addKey(baseClean)
+		addKey(baseClean + ".jar")
+	}
 }
 
 // scanDirForJars scans a directory recursively for .jar files and indexes them.

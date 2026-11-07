@@ -1018,6 +1018,30 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			}
 		}
 
+		useCompose := false
+		for _, lib := range append(mod.GetStringList("static_libs"), mod.GetStringList("libs")...) {
+			if strings.HasPrefix(lib, "androidx.compose.runtime") {
+				useCompose = true
+				break
+			}
+		}
+		if useCompose {
+			composeJar := g.resolvePhysicalJar("androidx.compose.compiler_compiler-hosted")
+			if composeJar == "" {
+				composeJar = g.resolvePhysicalJar("androidx.compose.compiler_compiler-hosted-nodeps")
+			}
+			if composeJar == "" {
+				cand := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/androidx/m2repository/androidx/compose/compiler/compiler-hosted/1.5.9/compiler-hosted-1.5.9.jar")
+				if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+					composeJar = cand
+				}
+			}
+			if composeJar != "" {
+				extraKtFlags = append(extraKtFlags, "-Xplugin="+composeJar)
+				cpDeps = append(cpDeps, composeJar)
+			}
+		}
+
 		commonSrcsList := mod.GetStringList("common_srcs")
 		if len(commonSrcsList) > 0 {
 			var resolvedCommonSrcs []string

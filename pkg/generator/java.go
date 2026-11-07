@@ -941,7 +941,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
 			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
 				"$kotlinc -d " + classOutDir + " " + cpArg + ktFiles +
-				" && $javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+				" && $javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
 				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		} else {
 			// Pure Java compilation
@@ -951,7 +951,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				cpArg = cpFlag + " "
 			}
 			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$javac -encoding " + encoding + " " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+				"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
 				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		}
 

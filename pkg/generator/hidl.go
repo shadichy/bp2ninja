@@ -466,7 +466,7 @@ func (g *Generator) generateHidlJavaLibrary(mod *eval.EvaluatedModule) ([]string
 		cpArg = cpFlag + " "
 	}
 
-	cmd := fmt.Sprintf("rm -rf %s %s && mkdir -p %s %s && $${HIDL_GEN:-$hidl_gen} -R -p . -o %s -L java %s %s && find %s -name \"*.java\" > %s/java_sources.txt && $javac -encoding UTF-8 -d %s %s@%s/java_sources.txt && $jar cf %s -C %s .",
+	cmd := fmt.Sprintf("rm -rf %s %s && mkdir -p %s %s && $${HIDL_GEN:-$hidl_gen} -R -p . -o %s -L java %s %s && find %s -name \"*.java\" > %s/java_sources.txt && $javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options -d %s %s@%s/java_sources.txt && $jar cf %s -C %s .",
 		genDir, classesDir, genDir, classesDir, genDir, rootOpt, fqName, genDir, genDir, classesDir, cpArg, genDir, jarTarget, classesDir)
 
 	_ = g.nw.Build(ninja.BuildEdge{
@@ -515,7 +515,7 @@ func (g *Generator) generateHidlJavaConstants(mod *eval.EvaluatedModule) ([]stri
 		cpArg = cpFlag + " "
 	}
 
-	cmd := fmt.Sprintf("rm -rf %s %s && mkdir -p %s %s && $${HIDL_GEN:-$hidl_gen} -R -p . -o %s -L java-constants %s %s && find %s -name \"*.java\" > %s/java_sources.txt && $javac -encoding UTF-8 -d %s %s@%s/java_sources.txt && $jar cf %s -C %s .",
+	cmd := fmt.Sprintf("rm -rf %s %s && mkdir -p %s %s && $${HIDL_GEN:-$hidl_gen} -R -p . -o %s -L java-constants %s %s && find %s -name \"*.java\" > %s/java_sources.txt && $javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options -d %s %s@%s/java_sources.txt && $jar cf %s -C %s .",
 		genDir, classesDir, genDir, classesDir, genDir, rootOpt, fqName, genDir, genDir, classesDir, cpArg, genDir, jarTarget, classesDir)
 
 	_ = g.nw.Build(ninja.BuildEdge{

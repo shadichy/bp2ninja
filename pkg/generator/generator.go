@@ -1734,6 +1734,73 @@ func (g *Generator) resolveCurrentAndroidJar() string {
 	return filepath.Join("/opt/android-sdk/platforms", fmt.Sprintf("android-%d", targetApi), "android.jar")
 }
 
+// resolveFrameworkAidl locates the platform SDK framework.aidl matching APILevel or best available.
+func (g *Generator) resolveFrameworkAidl() string {
+	targetApi := g.opts.APILevel
+	if targetApi <= 0 {
+		targetApi = 34
+	}
+
+	// 1. Check in-tree prebuilts/sdk/<targetApi>/public/framework.aidl first
+	if g.opts.TopDir != "" {
+		treeExact := filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public/framework.aidl")
+		if fi, err := os.Stat(treeExact); err == nil && !fi.IsDir() {
+			return treeExact
+		}
+		treeCurrent := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/framework.aidl")
+		if fi, err := os.Stat(treeCurrent); err == nil && !fi.IsDir() {
+			return treeCurrent
+		}
+	}
+	cwdExact := filepath.Join("prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public/framework.aidl")
+	if fi, err := os.Stat(cwdExact); err == nil && !fi.IsDir() {
+		return cwdExact
+	}
+	cwdCurrent := filepath.Join("prebuilts/sdk/current/public/framework.aidl")
+	if fi, err := os.Stat(cwdCurrent); err == nil && !fi.IsDir() {
+		return cwdCurrent
+	}
+
+	// 2. Check Android SDK platforms directory
+	homeDir, _ := os.UserHomeDir()
+	candidates := []string{
+		os.Getenv("ANDROID_SDK"),
+		os.Getenv("ANDROID_HOME"),
+		"/opt/android-sdk",
+		filepath.Join(homeDir, "Android/Sdk"),
+	}
+
+	for _, sdk := range candidates {
+		if sdk == "" {
+			continue
+		}
+		exact := filepath.Join(sdk, "platforms", fmt.Sprintf("android-%d", targetApi), "framework.aidl")
+		if fi, err := os.Stat(exact); err == nil && !fi.IsDir() {
+			return exact
+		}
+		exactDot := filepath.Join(sdk, "platforms", fmt.Sprintf("android-%d.0", targetApi), "framework.aidl")
+		if fi, err := os.Stat(exactDot); err == nil && !fi.IsDir() {
+			return exactDot
+		}
+
+		platformsDir := filepath.Join(sdk, "platforms")
+		if entries, err := os.ReadDir(platformsDir); err == nil {
+			for _, e := range entries {
+				name := e.Name()
+				if !strings.HasPrefix(name, "android-") {
+					continue
+				}
+				aidlPath := filepath.Join(platformsDir, name, "framework.aidl")
+				if fi, err := os.Stat(aidlPath); err == nil && !fi.IsDir() {
+					return aidlPath
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
 func (g *Generator) isHostModule(mod *eval.EvaluatedModule) bool {
 	return g.opts.IsHost || (mod != nil && mod.IsHostOnly())
 }

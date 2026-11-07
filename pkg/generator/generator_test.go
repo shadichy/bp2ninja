@@ -3299,3 +3299,42 @@ func TestJavaLibraryProtoNanoCodegen(t *testing.T) {
 		t.Errorf("Expected proto.list in javac args:\n%s", ninjaContent)
 	}
 }
+
+func TestJavaAidlFrameworkAidlPreprocessed(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+
+	// Create fake framework.aidl in sdk/34
+	fakeSdkDir := filepath.Join(tempDir, "prebuilts/sdk/34/public")
+	if err := os.MkdirAll(fakeSdkDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeFrameworkAidl := filepath.Join(fakeSdkDir, "framework.aidl")
+	if err := os.WriteFile(fakeFrameworkAidl, []byte("// fake framework.aidl"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := DefaultOptions(tempDir, outDir)
+	opts.APILevel = 34
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "test-aidl-mod",
+		Properties: map[string]interface{}{
+			"name": "test-aidl-mod",
+			"srcs": []interface{}{"ITest.aidl", "Test.java"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	ninjaContent := buf.String()
+
+	if !strings.Contains(ninjaContent, "-p"+fakeFrameworkAidl) {
+		t.Errorf("Expected -p%s in ninja content, got:\n%s", fakeFrameworkAidl, ninjaContent)
+	}
+}

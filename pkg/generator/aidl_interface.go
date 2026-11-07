@@ -440,9 +440,15 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		aidlCp = append(aidlCp, javaDepTargets...)
 		aidlCp = dedup(aidlCp)
 
+		javaImportFlags := append([]string{}, importFlags...)
+		if frameworkAidl := g.resolveFrameworkAidl(); frameworkAidl != "" {
+			javaImportFlags = append(javaImportFlags, "-p"+frameworkAidl)
+			javaDepTargets = append(javaDepTargets, frameworkAidl)
+		}
+
 		vars := map[string]string{
 			"out_dir": genDir,
-			"imports": shellJoin(importFlags),
+			"imports": shellJoin(javaImportFlags),
 		}
 		if len(optFlags) > 0 {
 			vars["optional_flags"] = shellJoin(optFlags)

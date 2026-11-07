@@ -754,14 +754,20 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			}
 		}
 		aidlIncludes = dedup(aidlIncludes)
+		var aidlImplicits []string
+		if frameworkAidl := g.resolveFrameworkAidl(); frameworkAidl != "" {
+			aidlIncludes = append(aidlIncludes, "-p"+frameworkAidl)
+			aidlImplicits = append(aidlImplicits, frameworkAidl)
+		}
 		incArgs := strings.Join(aidlIncludes, " ")
 
 		// Emit dedicated aidl_batch_compile edge (xargs-batched via rspfile)
 		aidlStamp := filepath.Join(classesDir, "aidlgen.stamp")
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs: []string{aidlStamp},
-			Rule:    "aidl_batch_compile",
-			Inputs:  aidlSrcs,
+			Outputs:   []string{aidlStamp},
+			Rule:      "aidl_batch_compile",
+			Inputs:    aidlSrcs,
+			Implicits: aidlImplicits,
 			Variables: map[string]string{
 				"out_dir": aidlDir,
 				"imports": incArgs,

@@ -1385,7 +1385,7 @@ func (g *Generator) emitStandardRules() error {
 	// AIDL Java codegen & compilation
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "aidl_java",
-		Command:         "bash -c 'rm -rf $out_dir && mkdir -p $out_dir/src $out_dir/classes && $aidl --lang=java $optional_flags -o $out_dir/src $imports $in && jfs=$$(find $out_dir/src -name \"*.java\") && if [ -n \"$$jfs\" ]; then javac -encoding UTF-8 -d $out_dir/classes $classpath $$jfs; fi && $jar cf $out -C $out_dir/classes .'",
+		Command:         "bash -c 'rm -rf $out_dir && mkdir -p $out_dir/src $out_dir/classes && $aidl --lang=java $optional_flags -o $out_dir/src $imports $in && jfs=$$(find $out_dir/src -name \"*.java\") && if [ -n \"$$jfs\" ]; then javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options -d $out_dir/classes $classpath $$jfs; fi && $jar cf $out -C $out_dir/classes .'",
 		Description:     "AIDL_JAVA $out",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,

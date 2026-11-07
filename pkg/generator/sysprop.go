@@ -111,7 +111,7 @@ func (g *Generator) emitSyspropJavaBuildEdge(mod *eval.EvaluatedModule, propFile
 	stubCompileCmd := ""
 	cpArg := ""
 	if len(stubSources) > 0 {
-		stubCompileCmd = "javac -d $$tmpdir/stub " + strings.Join(stubSources, " ") + " && "
+		stubCompileCmd = "javac -source 17 -target 17 -Xlint:-options -d $$tmpdir/stub " + strings.Join(stubSources, " ") + " && "
 		cpArg = "-cp $$tmpdir/stub "
 	}
 
@@ -121,7 +121,7 @@ func (g *Generator) emitSyspropJavaBuildEdge(mod *eval.EvaluatedModule, propFile
 		"for f in " + strings.Join(propFiles, " ") + "; do " + syspropJava + " --scope " + scope + " --java-output-dir $$tmpdir/src $$f; done && " +
 		"find $$tmpdir/src -name '*.java' > $$tmpdir/sources.txt && " +
 		"if [ -s $$tmpdir/sources.txt ]; then " +
-		"javac -encoding UTF-8 " + cpArg + "-d $$tmpdir/classes @$$tmpdir/sources.txt && " +
+		"javac -source 17 -target 17 -Xlint:-options -encoding UTF-8 " + cpArg + "-d $$tmpdir/classes @$$tmpdir/sources.txt && " +
 		"jar cf " + jarTarget + " -C $$tmpdir/classes .; " +
 		"else " +
 		"jar cf " + jarTarget + " -C $$tmpdir/classes .; " +

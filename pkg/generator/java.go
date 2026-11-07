@@ -817,7 +817,8 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		var outputParams []string
 		var protoLocalIncludeDirs []string
 		var protoIncludeDirs []string
-		if pMap := mod.GetMap("proto"); pMap != nil {
+		pMap := mod.GetMap("proto")
+		if pMap != nil {
 			if t, ok := pMap["type"].(string); ok && t != "" {
 				protoType = t
 			}
@@ -859,18 +860,23 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			protoc = "aprotoc"
 		}
 
+		canonicalPathFromRoot := true
+		if pMap != nil {
+			if cpfr, ok := pMap["canonical_path_from_root"].(bool); ok {
+				canonicalPathFromRoot = cpfr
+			}
+		}
+
 		var protoIncludes []string
-		if mod.Dir != "" && mod.Dir != "." {
+		if !canonicalPathFromRoot && mod.Dir != "" && mod.Dir != "." {
 			protoIncludes = append(protoIncludes, "-I"+mod.Dir)
-			protoIncludes = append(protoIncludes, "-I"+filepath.Join(mod.Dir, "src"))
+			if g.opts.TopDir != "" {
+				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir))
+			}
 		}
 		protoIncludes = append(protoIncludes, "-I.")
 		if g.opts.TopDir != "" {
 			protoIncludes = append(protoIncludes, "-I"+g.opts.TopDir)
-			if mod.Dir != "" && mod.Dir != "." {
-				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir))
-				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir, "src"))
-			}
 		}
 		for _, inc := range protoLocalIncludeDirs {
 			pDir := inc
@@ -887,9 +893,6 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if g.opts.TopDir != "" && !filepath.IsAbs(inc) {
 				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, inc))
 			}
-		}
-		for _, p := range protoSrcs {
-			protoIncludes = append(protoIncludes, "-I"+filepath.Dir(p))
 		}
 		protoIncludes = dedup(protoIncludes)
 

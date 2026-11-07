@@ -680,7 +680,8 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateGenrule(mod)
 		case "gensrcs":
 			targets, err = g.generateGensrcs(mod)
-		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host", "cc_prebuilt_binary":
+		case "prebuilt_etc", "prebuilt_etc_host", "sh_binary", "sh_binary_host", "cc_prebuilt_binary",
+			"cc_prebuilt_library", "cc_prebuilt_library_shared", "cc_prebuilt_library_static":
 			targets, err = g.generatePrebuilt(mod)
 		case "python_binary", "python_binary_host", "python_test_host":
 			targets, err = g.generatePythonBinary(mod)
@@ -1624,6 +1625,18 @@ func (g *Generator) resolveCurrentAndroidJar() string {
 		targetApi = 34
 	}
 
+	// 1. Check in-tree prebuilts/sdk/<targetApi>/public/android.jar first
+	if g.opts.TopDir != "" {
+		treeExact := filepath.Join(g.opts.TopDir, "prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public/android.jar")
+		if fi, err := os.Stat(treeExact); err == nil && !fi.IsDir() {
+			return treeExact
+		}
+	}
+	cwdExact := filepath.Join("prebuilts/sdk", fmt.Sprintf("%d", targetApi), "public/android.jar")
+	if fi, err := os.Stat(cwdExact); err == nil && !fi.IsDir() {
+		return cwdExact
+	}
+
 	homeDir, _ := os.UserHomeDir()
 	candidates := []string{
 		os.Getenv("ANDROID_SDK"),
@@ -1632,7 +1645,7 @@ func (g *Generator) resolveCurrentAndroidJar() string {
 		filepath.Join(homeDir, "Android/Sdk"),
 	}
 
-	// 1. Look for <SDK>/platforms/android-<version>/android.jar
+	// 2. Look for <SDK>/platforms/android-<version>/android.jar
 	for _, sdk := range candidates {
 		if sdk == "" {
 			continue
@@ -1685,12 +1698,16 @@ func (g *Generator) resolveCurrentAndroidJar() string {
 		}
 	}
 
-	// 2. In-tree prebuilts/sdk/current/public/android.jar
+	// 3. In-tree prebuilts/sdk/current/public/android.jar
 	if g.opts.TopDir != "" {
 		treeJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/android.jar")
 		if fi, err := os.Stat(treeJar); err == nil && !fi.IsDir() {
 			return treeJar
 		}
+	}
+	cwdCurrent := filepath.Join("prebuilts/sdk/current/public/android.jar")
+	if fi, err := os.Stat(cwdCurrent); err == nil && !fi.IsDir() {
+		return cwdCurrent
 	}
 
 	// 3. Fallback: <SDK>/android.jar if present

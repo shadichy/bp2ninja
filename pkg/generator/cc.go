@@ -308,7 +308,9 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 
 	if buildShared {
 		sharedTarget := filepath.Join(g.libDir(), libBaseName+".so")
-		if len(sharedObjs) > 0 {
+		wholeLibs := sharedMod.GetStringList("whole_static_libs")
+		staticLibs := sharedMod.GetStringList("static_libs")
+		if len(sharedObjs) > 0 || len(wholeLibs) > 0 || len(staticLibs) > 0 {
 			ldflags, libs := g.resolveLinkerArgs(sharedMod)
 			vars := map[string]string{}
 			if len(ldflags) > 0 {
@@ -321,10 +323,24 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 
 			implicits := g.collectLinkImplicits(sharedMod)
 
+			var inputs []string
+			if len(sharedObjs) > 0 {
+				inputs = sharedObjs
+			} else {
+				for _, wl := range wholeLibs {
+					archivePath := g.resolveStaticLibPath(wl)
+					inputs = append(inputs, archivePath)
+				}
+				for _, sl := range staticLibs {
+					archivePath := g.resolveStaticLibPath(sl)
+					inputs = append(inputs, archivePath)
+				}
+			}
+
 			if err := g.nw.Build(ninja.BuildEdge{
 				Outputs:   []string{sharedTarget},
 				Rule:      "link_shared",
-				Inputs:    sharedObjs,
+				Inputs:    inputs,
 				Implicits: implicits,
 				Variables: vars,
 			}); err != nil {

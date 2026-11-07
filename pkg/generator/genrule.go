@@ -465,9 +465,15 @@ func (g *Generator) generatePrebuilt(mod *eval.EvaluatedModule) ([]string, error
 
 	var rule string = "copy"
 	var destDir string
-	if mod.Type == "sh_binary" || mod.Type == "sh_binary_host" {
+	if mod.Type == "sh_binary" || mod.Type == "sh_binary_host" || mod.Type == "cc_prebuilt_binary" {
 		destDir = g.binDir()
 		rule = "copy_executable"
+	} else if mod.Type == "cc_prebuilt_library" || mod.Type == "cc_prebuilt_library_shared" || mod.Type == "cc_prebuilt_library_static" {
+		destDir = g.libDir()
+		rule = "copy"
+		if mod.GetString("filename") == "" {
+			filename = filepath.Base(src)
+		}
 	} else {
 		subDir := mod.GetString("sub_dir")
 		destDir = filepath.Join(g.opts.OutDir, "etc", subDir)

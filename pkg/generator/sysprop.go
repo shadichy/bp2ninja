@@ -80,7 +80,8 @@ func (g *Generator) generateSyspropLibrary(mod *eval.EvaluatedModule) ([]string,
 func (g *Generator) emitSyspropJavaBuildEdge(mod *eval.EvaluatedModule, propFiles []string, genDir string, jarTarget string) error {
 	syspropJava := g.findPrebuiltHostTool("sysprop_java")
 	if syspropJava == "" {
-		syspropJava = "${SYSPROP_JAVA:-sysprop_java}"
+		// Ninja consumes one $ layer, so $$ emits a literal $ to the shell.
+		syspropJava = "$${SYSPROP_JAVA:-sysprop_java}"
 	}
 
 	var stubSources []string

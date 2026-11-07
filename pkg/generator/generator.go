@@ -817,7 +817,24 @@ func (g *Generator) emitHeader() error {
 	}
 	g.nw.Variable("strip", stripPath)
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
-	g.nw.Variable("kotlinc", g.opts.KotlincPath)
+	kotlincPath := g.opts.KotlincPath
+	if kotlincPath == "" || kotlincPath == "kotlinc" {
+		if g.opts.TopDir != "" {
+			cand := filepath.Join(g.opts.TopDir, "external", "kotlinc", "bin", "kotlinc")
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				kotlincPath = cand
+			}
+		}
+		if kotlincPath == "" || kotlincPath == "kotlinc" {
+			if prebuilt := g.findPrebuiltHostTool("kotlinc"); prebuilt != "" {
+				kotlincPath = prebuilt
+			}
+		}
+	}
+	if kotlincPath == "" {
+		kotlincPath = "kotlinc"
+	}
+	g.nw.Variable("kotlinc", kotlincPath)
 	g.nw.Variable("javac", g.opts.JavacPath)
 	g.nw.Variable("jar", g.opts.JarPath)
 	turbinePath := g.opts.TurbinePath
@@ -1468,6 +1485,17 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// Aconfig Java class compilation & jar packaging
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "aconfig_compile_java",
+		Command:         "bash -c \"$cmd\"",
+		Description:     "ACONFIG_JAVAC $out",
+		RestatContent:   g.opts.Siso,
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
 	// Metalava stubs generation
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "metalava_stubs",
@@ -1879,6 +1907,7 @@ func (g *Generator) resolveTool(name string) string {
 func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 	rawSrcs := mod.GetStringList("srcs")
 	rawSrcs = append(rawSrcs, mod.GetStringList("generated_sources")...)
+	rawSrcs = append(rawSrcs, mod.GetStringList("common_srcs")...)
 	if len(rawSrcs) == 0 {
 		return nil
 	}

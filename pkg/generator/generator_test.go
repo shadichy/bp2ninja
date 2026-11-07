@@ -884,6 +884,81 @@ func TestKotlinJavaMixedCompilation(t *testing.T) {
 	}
 }
 
+func TestKotlinMultiplatformCompilation(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "multiplatform_lib",
+		Properties: map[string]interface{}{
+			"name":         "multiplatform_lib",
+			"srcs":         []interface{}{"Platform.kt"},
+			"common_srcs":  []interface{}{"Common.kt"},
+			"kotlincflags": []interface{}{"-Xjvm-default=all", "-opt-in=kotlin.ExperimentalStdlibApi"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "-Xmulti-platform") {
+		t.Errorf("Expected -Xmulti-platform in kotlinc flags, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-Xcommon-sources=Common.kt") {
+		t.Errorf("Expected -Xcommon-sources in kotlinc flags, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-Xjvm-default=all") {
+		t.Errorf("Expected -Xjvm-default=all in kotlinc flags, got:\n%s", content)
+	}
+}
+
+func TestJavaAconfigLibraryCompilation(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	declMod := &eval.EvaluatedModule{
+		Type: "aconfig_declarations",
+		Name: "test.flags-aconfig",
+		Properties: map[string]interface{}{
+			"name":    "test.flags-aconfig",
+			"package": "com.test.flags",
+			"srcs":    []interface{}{"flags.aconfig"},
+		},
+	}
+
+	libMod := &eval.EvaluatedModule{
+		Type: "java_aconfig_library",
+		Name: "test_flags_lib",
+		Properties: map[string]interface{}{
+			"name":                 "test_flags_lib",
+			"aconfig_declarations": "test.flags-aconfig",
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{declMod, libMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, "build out/gen/test_flags_lib/test_flags_lib.srcjar: aconfig_java") {
+		t.Errorf("Expected aconfig_java rule for srcjar, got:\n%s", content)
+	}
+	if !strings.Contains(content, "build out/lib64/test_flags_lib.jar: aconfig_compile_java out/gen/test_flags_lib/test_flags_lib.srcjar") {
+		t.Errorf("Expected aconfig_compile_java rule for jar, got:\n%s", content)
+	}
+	if !strings.Contains(content, "out/lib64/aconfig-annotations-lib.jar") {
+		t.Errorf("Expected aconfig-annotations-lib.jar in classpath/implicits, got:\n%s", content)
+	}
+}
+
 func TestJavaPureCompilationWithClasspath(t *testing.T) {
 	var buf bytes.Buffer
 	nw := ninja.NewWriter(&buf)

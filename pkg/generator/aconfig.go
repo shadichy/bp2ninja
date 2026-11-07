@@ -290,12 +290,65 @@ func (g *Generator) generateJavaAconfigLibrary(mod *eval.EvaluatedModule) ([]str
 		return nil, err
 	}
 
-	// Also copy to jarTarget in libDir so downstream classpath references find it
-	_ = g.nw.Build(ninja.BuildEdge{
-		Outputs: []string{jarTarget},
-		Rule:    "copy",
-		Inputs:  []string{srcjar},
-	})
+	// Compile the generated Java classes into jarTarget
+	classesDir := filepath.Join(g.opts.OutDir, "classes", mod.Name, "classes")
+	var cpEntries []string
+	var cpDeps []string
+
+	// aconfig annotations
+	annJar := filepath.Join(g.libDir(), "aconfig-annotations-lib.jar")
+	if g.opts.AllowMissingDeps {
+		g.emitPhonyIfNeeded(annJar)
+	}
+	cpEntries = append(cpEntries, annJar)
+	cpDeps = append(cpDeps, annJar)
+
+	// unsupportedappusage
+	unsuppJar := filepath.Join(g.libDir(), "unsupportedappusage.jar")
+	if g.opts.AllowMissingDeps {
+		g.emitPhonyIfNeeded(unsuppJar)
+	}
+	cpEntries = append(cpEntries, unsuppJar)
+	cpDeps = append(cpDeps, unsuppJar)
+
+	// Platform classpath or Android Jar
+	if len(g.opts.PlatformClasspath) > 0 {
+		for _, pj := range g.opts.PlatformClasspath {
+			if pj != "" {
+				cpEntries = append(cpEntries, pj)
+				cpDeps = append(cpDeps, pj)
+			}
+		}
+	} else if jar := g.resolveCurrentAndroidJar(); jar != "" {
+		cpEntries = append(cpEntries, jar)
+		cpDeps = append(cpDeps, jar)
+	}
+
+	compileCmd := fmt.Sprintf(
+		"export LC_ALL=C.UTF-8 LANG=C.UTF-8 JAVA_TOOL_OPTIONS=\"-Dfile.encoding=UTF-8\" && "+
+			"rm -rf %s && mkdir -p %s && "+
+			"find %s -name '*.java' > %s/sources.txt && "+
+			"$javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options -d %s -cp %s @%s/sources.txt && "+
+			"$jar cf %s -C %s .",
+		classesDir, classesDir,
+		srcGenDir, classesDir,
+		classesDir, strings.Join(cpEntries, ":"), classesDir,
+		jarTarget, classesDir,
+	)
+
+	compileVars := map[string]string{
+		"cmd": compileCmd,
+	}
+
+	if err := g.nw.Build(ninja.BuildEdge{
+		Outputs:   []string{jarTarget},
+		Rule:      "aconfig_compile_java",
+		Inputs:    []string{srcjar},
+		Implicits: cpDeps,
+		Variables: compileVars,
+	}); err != nil {
+		return nil, err
+	}
 
 	outs := []string{srcjar, jarTarget}
 	g.moduleOutputs[mod.Name] = outs

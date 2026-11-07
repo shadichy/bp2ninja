@@ -381,6 +381,19 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 				cpDeps = append(cpDeps, pj)
 			}
 		} else if sdkVer != "none" && sdkVer != "core_platform" {
+			// When platform classpath is supplied, include platform classpath first to provide
+			// newer platform symbols (e.g. MATCH_ARCHIVED_PACKAGES)
+			for _, pj := range g.opts.PlatformClasspath {
+				if pj == "" {
+					continue
+				}
+				baseLib := strings.TrimSuffix(filepath.Base(pj), ".jar")
+				if mod.Name == baseLib || g.IsTransitiveInputOf(mod.Name, baseLib, make(map[string]bool)) {
+					continue
+				}
+				cpEntries = append(cpEntries, pj)
+				cpDeps = append(cpDeps, pj)
+			}
 			androidJar := g.resolveCurrentAndroidJarForModule(mod)
 			if androidJar != "" {
 				cpEntries = append(cpEntries, androidJar)
@@ -942,6 +955,55 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			"$turbine " + strings.Join(turbineFlags, " ")
 	} else {
 		classOutDir := filepath.Join(classesDir, "classes")
+
+		var extraKtFlags []string
+		for _, f := range mod.GetStringList("kotlincflags") {
+			if f != "" {
+				extraKtFlags = append(extraKtFlags, f)
+			}
+		}
+
+		commonSrcsList := mod.GetStringList("common_srcs")
+		if len(commonSrcsList) > 0 {
+			var resolvedCommonSrcs []string
+			for _, cs := range commonSrcsList {
+				srcPath := cs
+				if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(cs) {
+					srcPath = filepath.Clean(filepath.Join(mod.Dir, cs))
+				}
+				resolvedCommonSrcs = append(resolvedCommonSrcs, g.expandGlob(srcPath)...)
+			}
+			if len(resolvedCommonSrcs) > 0 {
+				hasMultiPlatform := false
+				for _, f := range extraKtFlags {
+					if f == "-Xmulti-platform" {
+						hasMultiPlatform = true
+						break
+					}
+				}
+				if !hasMultiPlatform {
+					extraKtFlags = append(extraKtFlags, "-Xmulti-platform")
+				}
+				extraKtFlags = append(extraKtFlags, "-Xcommon-sources="+strings.Join(resolvedCommonSrcs, ","))
+			}
+		}
+
+		ktFlagsArg := ""
+		if len(extraKtFlags) > 0 {
+			ktFlagsArg = strings.Join(extraKtFlags, " ") + " "
+		}
+
+		extraKtSources := ""
+		if len(aidlSrcs) > 0 {
+			extraKtSources += " @" + classesDir + "/aidl.list"
+		}
+		if len(protoSrcs) > 0 {
+			extraKtSources += " @" + classesDir + "/proto.list"
+		}
+		if len(srcjarSrcs) > 0 {
+			extraKtSources += " @" + classesDir + "/srcjar.list"
+		}
+
 		if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 && len(aidlSrcs) == 0 && len(protoSrcs) == 0 {
 			// Pure Kotlin compilation
 			rule = "kotlinc_compile"
@@ -952,7 +1014,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			ktFiles := " @" + rspFile
 			rspContent = strings.Join(ktSrcs, " ")
 			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir +
-				" && $kotlinc -d " + classOutDir + " " + cpArg + ktFiles +
+				" && $kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles +
 				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0 || len(aidlSrcs) > 0 || len(protoSrcs) > 0) {
 			// Mixed Kotlin + Java compilation:
@@ -976,7 +1038,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				javaFiles = ""
 			}
 			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$kotlinc -d " + classOutDir + " " + cpArg + ktFiles + " && " +
+				"$kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles + extraKtSources + " && " +
 				splitJavaCmd +
 				"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
 				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."

@@ -779,9 +779,19 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	protoJavaArg := ""
 	if len(protoSrcs) > 0 {
 		protoType := "nano"
+		var outputParams []string
 		if pMap := mod.GetMap("proto"); pMap != nil {
 			if t, ok := pMap["type"].(string); ok && t != "" {
 				protoType = t
+			}
+			if op, ok := pMap["output_params"].([]interface{}); ok {
+				for _, item := range op {
+					if s, ok := item.(string); ok && s != "" {
+						outputParams = append(outputParams, s)
+					}
+				}
+			} else if op, ok := pMap["output_params"].([]string); ok {
+				outputParams = append(outputParams, op...)
 			}
 		}
 
@@ -818,7 +828,11 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if plugin == "" {
 				plugin = "/usr/sbin/protoc-gen-javanano"
 			}
-			outFlag = "--plugin=protoc-gen-javanano=" + plugin + " --javanano_out=" + protoDir
+			paramPrefix := ""
+			if len(outputParams) > 0 {
+				paramPrefix = strings.Join(outputParams, ",") + ":"
+			}
+			outFlag = "--plugin=protoc-gen-javanano=" + plugin + " --javanano_out=" + paramPrefix + protoDir
 			if nanoJar := g.resolvePhysicalJar("libprotobuf-java-nano"); nanoJar != "" {
 				cpDeps = append(cpDeps, nanoJar)
 				var currentCp []string
@@ -830,7 +844,11 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				cpFlag = "-cp " + strings.Join(currentCp, ":")
 			}
 		} else if protoType == "lite" {
-			outFlag = "--java_out=lite:" + protoDir
+			paramPrefix := "lite"
+			if len(outputParams) > 0 {
+				paramPrefix += "," + strings.Join(outputParams, ",")
+			}
+			outFlag = "--java_out=" + paramPrefix + ":" + protoDir
 			if liteJar := g.resolvePhysicalJar("libprotobuf-java-lite"); liteJar != "" {
 				cpDeps = append(cpDeps, liteJar)
 				var currentCp []string
@@ -842,7 +860,11 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				cpFlag = "-cp " + strings.Join(currentCp, ":")
 			}
 		} else {
-			outFlag = "--java_out=" + protoDir
+			paramPrefix := ""
+			if len(outputParams) > 0 {
+				paramPrefix = strings.Join(outputParams, ",") + ":"
+			}
+			outFlag = "--java_out=" + paramPrefix + protoDir
 		}
 
 		protoGenCmd = "mkdir -p " + protoDir + " && " + protoc + " " + strings.Join(protoIncludes, " ") + " " + outFlag + " " + strings.Join(protoSrcs, " ") + " && find " + protoDir + " -name '*.java' > " + classesDir + "/proto.list && "

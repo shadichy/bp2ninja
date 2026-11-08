@@ -177,6 +177,8 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(content))
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 64*1024*1024)
 	var outLines []string
 
 	for scanner.Scan() {

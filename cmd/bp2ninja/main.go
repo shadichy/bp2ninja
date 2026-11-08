@@ -867,6 +867,12 @@ func main() {
 				}
 				fmt.Printf("[bp2ninja] Reusing cached build.ninja for %s (%d targets)\n", rel, len(info.AllTargets))
 				return true
+			} else {
+				rel, _ := filepath.Rel(rootDir, dirPath)
+				if rel == "" || rel == "." {
+					rel = dirPath
+				}
+				fmt.Fprintf(os.Stderr, "[bp2ninja] Warning: failed to parse cached build.ninja for %s: %v\n", rel, err)
 			}
 		}
 		return false

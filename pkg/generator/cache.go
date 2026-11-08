@@ -339,7 +339,8 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 				} else if strings.HasPrefix(f, "-B") {
 					rebased = append(rebased, "-B"+rebaseToken(f[2:]))
 				} else if strings.HasPrefix(f, "-Wl,--version-script=") {
-					rebased = append(rebased, "-Wl,--version-script="+rebaseToken(f[22:]))
+					script := strings.TrimPrefix(f, "-Wl,--version-script=")
+					rebased = append(rebased, "-Wl,--version-script="+rebaseToken(script))
 				} else {
 					rebased = append(rebased, f)
 				}
@@ -367,11 +368,11 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 			var rebased []string
 			for _, arg := range args {
 				if strings.HasPrefix(arg, "--cpp_out=") {
-					rebased = append(rebased, "--cpp_out="+rebaseToken(arg[10:]))
+					rebased = append(rebased, "--cpp_out="+rebaseToken(strings.TrimPrefix(arg, "--cpp_out=")))
 				} else if strings.HasPrefix(arg, "--java_out=") {
-					rebased = append(rebased, "--java_out="+rebaseToken(arg[11:]))
+					rebased = append(rebased, "--java_out="+rebaseToken(strings.TrimPrefix(arg, "--java_out=")))
 				} else if strings.HasPrefix(arg, "--python_out=") {
-					rebased = append(rebased, "--python_out="+rebaseToken(arg[13:]))
+					rebased = append(rebased, "--python_out="+rebaseToken(strings.TrimPrefix(arg, "--python_out=")))
 				} else if strings.HasPrefix(arg, "-I") {
 					rebased = append(rebased, rebaseImportFlag(arg))
 				} else {

@@ -3,6 +3,7 @@ package generator
 import (
 	"archive/zip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -262,6 +263,35 @@ func (g *Generator) resolveKaptJar() string {
 	return g.resolveKotlincLib("kotlin-annotation-processing.jar")
 }
 
+func extractServiceProcessors(jarPath string) []string {
+	zr, err := zip.OpenReader(jarPath)
+	if err != nil {
+		return nil
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		if f.Name == "META-INF/services/javax.annotation.processing.Processor" {
+			rc, err := f.Open()
+			if err != nil {
+				return nil
+			}
+			data, _ := io.ReadAll(rc)
+			rc.Close()
+
+			var classes []string
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					classes = append(classes, line)
+				}
+			}
+			return classes
+		}
+	}
+	return nil
+}
+
 func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []string, []string) {
 	pluginNames := mod.GetStringList("plugins")
 	// Also collect exported_plugins from static_libs and libs
@@ -293,7 +323,29 @@ func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []strin
 		}
 	}
 
+	var collectDepJars func(m *eval.EvaluatedModule)
+	visitedDeps := make(map[string]bool)
+	collectDepJars = func(m *eval.EvaluatedModule) {
+		if m == nil {
+			return
+		}
+		for _, dep := range append(m.GetStringList("static_libs"), m.GetStringList("libs")...) {
+			dep = cleanModuleName(dep)
+			if visitedDeps[dep] {
+				continue
+			}
+			visitedDeps[dep] = true
+			for _, t := range g.resolveJarTargets(dep) {
+				addJar(t)
+			}
+			if subMod, ok := g.moduleMap[dep]; ok {
+				collectDepJars(subMod)
+			}
+		}
+	}
+
 	for _, pName := range pluginNames {
+		pName = cleanModuleName(pName)
 		if pMod, ok := g.moduleMap[pName]; ok {
 			if pc := pMod.GetString("processor_class"); pc != "" {
 				procClasses = append(procClasses, pc)
@@ -301,53 +353,24 @@ func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []strin
 			for _, t := range g.resolveJarTargets(pName) {
 				addJar(t)
 			}
-			for _, sl := range g.resolveStaticLibsJars(pMod) {
-				addJar(sl)
-			}
-			for _, l := range pMod.GetStringList("libs") {
-				for _, t := range g.resolveJarTargets(l) {
-					addJar(t)
-				}
-			}
+			collectDepJars(pMod)
 		} else {
 			for _, t := range g.resolveJarTargets(pName) {
 				addJar(t)
 			}
 		}
+	}
 
-		// Known processor class fallback if module was prebuilt/imported without in-tree Blueprint
-		switch pName {
-		case "dagger2-compiler":
-			procClasses = append(procClasses, "dagger.internal.codegen.ComponentProcessor")
-		case "androidx.room_room-compiler-plugin":
-			procClasses = append(procClasses, "androidx.room.RoomProcessor")
-		case "auto_service_plugin":
-			procClasses = append(procClasses, "com.google.auto.service.processor.AutoServiceProcessor")
-		}
-
-		// Known processor requirements (e.g. Dagger 2.51 runtime dependencies)
-		if pName == "dagger2-compiler" || strings.Contains(strings.Join(procClasses, " "), "ComponentProcessor") {
-			for _, req := range []string{
-				"dagger2-compiler-lib",
-				"dagger2-android-annotation-stubs",
-				"dagger2-room-compiler-processing",
-				"kotlin-symbol-processing-api",
-				"kotlinx-metadata-jvm",
-				"dagger2",
-				"jsr330",
-				"guava",
-				"javapoet",
-				"kotlinpoet",
-				"kotlinpoet-javapoet",
-			} {
-				for _, t := range g.resolveJarTargets(req) {
-					addJar(t)
-				}
-			}
-			if stdlib := g.resolveKotlinStdlibJar(); stdlib != "" {
-				addJar(stdlib)
+	// Dynamically discover processor classes from JAR ServiceLoader manifests if not specified
+	if len(procClasses) == 0 {
+		for _, jar := range procClasspath {
+			if classes := extractServiceProcessors(jar); len(classes) > 0 {
+				procClasses = append(procClasses, classes...)
 			}
 		}
+	}
+	if stdlib := g.resolveKotlinStdlibJar(); stdlib != "" {
+		addJar(stdlib)
 	}
 
 	return dedup(procClasses), procClasspath, procDeps

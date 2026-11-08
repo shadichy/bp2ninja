@@ -186,6 +186,19 @@ func (g *Generator) resolveStaticLibsJars(mod *eval.EvaluatedModule) []string {
 				if child, ok := g.moduleMap[sl]; ok {
 					collectStatic(child)
 				}
+				if sl == "guava" {
+					for _, gDep := range []string{"jsr305", "jsr305lib"} {
+						if _, ok := g.moduleMap[gDep]; ok && !visited[gDep] {
+							visited[gDep] = true
+							targets := g.resolveJarTargets(gDep)
+							for _, t := range targets {
+								if !g.emittedPhonies[t] {
+									jars = append(jars, t)
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 
@@ -416,6 +429,14 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 						if _, ok := g.moduleMap[coroutineDep]; ok && !visited[coroutineDep] {
 							visited[coroutineDep] = true
 							depLibs = append(depLibs, coroutineDep)
+						}
+					}
+				}
+				if sl == "guava" {
+					for _, gDep := range []string{"jsr305", "jsr305lib"} {
+						if _, ok := g.moduleMap[gDep]; ok && !visited[gDep] {
+							visited[gDep] = true
+							depLibs = append(depLibs, gDep)
 						}
 					}
 				}

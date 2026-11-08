@@ -2154,8 +2154,18 @@ func (g *Generator) generateFilesystem(mod *eval.EvaluatedModule) ([]string, err
 	return targets, nil
 }
 
+func cleanModuleName(name string) string {
+	clean := strings.TrimSuffix(name, ".jar")
+	if idx := strings.LastIndex(clean, ":"); idx != -1 {
+		clean = clean[idx+1:]
+	}
+	return clean
+}
+
 // IsTransitiveInputOf checks whether candidate is a direct or indirect dependency of rootModuleName.
 func (g *Generator) IsTransitiveInputOf(candidate, rootModuleName string, visited map[string]bool) bool {
+	candidate = cleanModuleName(candidate)
+	rootModuleName = cleanModuleName(rootModuleName)
 	if candidate == rootModuleName {
 		return true
 	}
@@ -2180,7 +2190,7 @@ func (g *Generator) IsTransitiveInputOf(candidate, rootModuleName string, visite
 		}
 	}
 	for _, d := range deps {
-		cleanD := strings.TrimSuffix(d, ".jar")
+		cleanD := cleanModuleName(d)
 		if cleanD == candidate {
 			return true
 		}

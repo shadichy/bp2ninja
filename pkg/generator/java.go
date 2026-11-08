@@ -65,7 +65,7 @@ func (g *Generator) resolveJarTargets(lib string) []string {
 		return nil
 	}
 
-	cleanLib := strings.TrimSuffix(lib, ".jar")
+	cleanLib := cleanModuleName(lib)
 	var targets []string
 
 	// ---------------------------------------------------------------------
@@ -174,6 +174,7 @@ func (g *Generator) resolveStaticLibsJars(mod *eval.EvaluatedModule) []string {
 			return
 		}
 		for _, sl := range m.GetStringList("static_libs") {
+			sl = cleanModuleName(sl)
 			if !visited[sl] {
 				visited[sl] = true
 				targets := g.resolveJarTargets(sl)
@@ -253,6 +254,7 @@ func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []strin
 	// Also collect exported_plugins from static_libs and libs
 	depList := append(mod.GetStringList("static_libs"), mod.GetStringList("libs")...)
 	for _, dep := range depList {
+		dep = cleanModuleName(dep)
 		if depMod, ok := g.moduleMap[dep]; ok {
 			pluginNames = append(pluginNames, depMod.GetStringList("exported_plugins")...)
 		}
@@ -367,6 +369,7 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 		}
 		if isDirect {
 			for _, l := range m.GetStringList("libs") {
+				l = cleanModuleName(l)
 				if !visited[l] {
 					visited[l] = true
 					depLibs = append(depLibs, l)
@@ -393,6 +396,7 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 			}
 		}
 		for _, sl := range m.GetStringList("static_libs") {
+			sl = cleanModuleName(sl)
 			if !visited[sl] {
 				visited[sl] = true
 				depLibs = append(depLibs, sl)

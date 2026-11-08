@@ -76,6 +76,9 @@ var soongPrebuiltJarAliases = map[string][]string{
 	"host-libprotobuf-java-full": {"protobuf-java-3.25.3.jar", "libprotobuf-java-full.jar"},
 	"libprotobuf-java-nano":   {"protobuf-java-3.25.3.jar", "libprotobuf-java-nano.jar"},
 	"libprotobuf-java-lite":   {"protobuf-javalite-3.25.3.jar", "libprotobuf-java-lite.jar"},
+	"jsr305":                  {"jsr305.jar", "jsr305lib.jar"},
+	"jsr305lib":               {"jsr305lib.jar", "jsr305.jar"},
+	"guava":                   {"guava__guava-33.3.1-android.jar", "guava.jar", "jsr305.jar"},
 
 	// Framework composite stubs and aggregate libraries
 	"ext": {"libphonenumber-platform.jar", "tagsoup.jar", "rappor.jar"},

@@ -1351,26 +1351,26 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 					strings.Join(turbineProcArgs, " ") + " " +
 					strings.Join(turbineProcCpArgs, " ")
 
-				cmd = envPrefix + "rm -rf " + classOutDir + " " + kaptDir + " && " +
+				cmd = envPrefix + "pwd=$$(pwd) && rm -rf " + classOutDir + " " + kaptDir + " && " +
 					"mkdir -p " + classOutDir + " " + classesDir + " " + kaptStubsDir + " " + kaptSourcesDir + " " + kaptClassesDir + " " + kaptGenDir + " && " +
 					aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-					"printf '<modules>\\n  <module name=\"%s\" type=\"java-production\" outputDir=\"$$PWD/%s\">\\n' " + mod.Name + " " + kaptClassesDir + " > " + buildXml + " && " +
-					"for cp in $$(echo \"" + rawCp + "\" | tr ':' ' '); do case \"$$cp\" in /*) printf '    <classpath path=\"%s\"/>\\n' \"$$cp\" ;; *) printf '    <classpath path=\"$$PWD/%s\"/>\\n' \"$$cp\" ;; esac; done >> " + buildXml + " && " +
+					"printf '<modules>\\n  <module name=\"%s\" type=\"java-production\" outputDir=\"%s/%s\">\\n' " + mod.Name + " \"$$pwd\" " + kaptClassesDir + " > " + buildXml + " && " +
+					"for cp in $$(echo \"" + rawCp + "\" | tr ':' ' '); do case \"$$cp\" in /*) printf '    <classpath path=\"%s\"/>\\n' \"$$cp\" ;; *) printf '    <classpath path=\"%s/%s\"/>\\n' \"$$pwd\" \"$$cp\" ;; esac; done >> " + buildXml + " && " +
 					"for s in $$(cat " + rspFile + "); do " +
-					"case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$PWD/$$s\" ;; esac; " +
+					"case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$pwd/$$s\" ;; esac; " +
 					"case \"$$s\" in " +
 					"*.kt) printf '    <sources path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + " ;; " +
 					"*.java) printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + " ;; " +
 					"esac; " +
 					"done && " +
 					"for listf in " + filepath.Join(classesDir, "aidl.list") + " " + filepath.Join(classesDir, "proto.list") + " " + filepath.Join(classesDir, "srcjar.list") + "; do " +
-					"if [ -f \"$$listf\" ]; then for s in $$(cat \"$$listf\"); do case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$PWD/$$s\" ;; esac; printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + "; done; fi; " +
+					"if [ -f \"$$listf\" ]; then for s in $$(cat \"$$listf\"); do case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$pwd/$$s\" ;; esac; printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + "; done; fi; " +
 					"done && " +
 					"printf '  </module>\\n</modules>\\n' >> " + buildXml + " && " +
 					"$kotlinc " + kaptJvmFlags + " -Xplugin=" + kaptJar + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:sources=$$PWD/" + kaptSourcesDir + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:classes=$$PWD/" + kaptClassesDir + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:stubs=$$PWD/" + kaptStubsDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:sources=$$pwd/" + kaptSourcesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:classes=$$pwd/" + kaptClassesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:stubs=$$pwd/" + kaptStubsDir + " " +
 					"-P plugin:org.jetbrains.kotlin.kapt3:correctErrorTypes=true " +
 					"-P plugin:org.jetbrains.kotlin.kapt3:aptMode=stubs " +
 					strings.Join(kaptApClasspathArgs, " ") + " " +

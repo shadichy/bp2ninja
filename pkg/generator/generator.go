@@ -660,7 +660,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets = []string{}
 		case "android_library":
 			targets, err = g.generateAndroidLibrary(mod)
-		case "java_library", "java_library_host", "java_library_static":
+		case "java_library", "java_library_host", "java_library_static", "java_plugin":
 			targets, err = g.generateJavaLibrary(mod)
 		case "java_sdk_library":
 			targets, err = g.generateJavaSdkLibrary(mod)
@@ -1044,6 +1044,18 @@ func (g *Generator) emitStandardRules() error {
 		Name:            "kotlin_java_compile",
 		Command:         "$cmd",
 		Description:     "KOTLINC/JAVAC $out",
+		RspFile:         "${out}.rsp",
+		RspContent:      "$rspcontent",
+		SandboxDisabled: g.opts.Siso,
+	}); err != nil {
+		return err
+	}
+
+	// Kotlin + Java KAPT Compile
+	if err := g.nw.Rule(ninja.Rule{
+		Name:            "kotlin_java_kapt_compile",
+		Command:         "$cmd",
+		Description:     "KAPT/KOTLINC/JAVAC $out",
 		RspFile:         "${out}.rsp",
 		RspContent:      "$rspcontent",
 		SandboxDisabled: g.opts.Siso,

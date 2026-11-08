@@ -220,6 +220,112 @@ func (g *Generator) resolveStaticLibsJars(mod *eval.EvaluatedModule) []string {
 	return dedup(jars)
 }
 
+func (g *Generator) resolveKotlincLib(jarName string) string {
+	var candidates []string
+	if g.opts.TopDir != "" {
+		candidates = append(candidates, filepath.Join(g.opts.TopDir, "external", "kotlinc", "lib", jarName))
+	}
+	candidates = append(candidates, filepath.Join("external", "kotlinc", "lib", jarName))
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
+
+func (g *Generator) resolveKotlinStdlibJar() string {
+	return g.resolveKotlincLib("kotlin-stdlib.jar")
+}
+
+func (g *Generator) resolveKotlinAnnotationsJar() string {
+	return g.resolveKotlincLib("annotations-13.0.jar")
+}
+
+func (g *Generator) resolveKaptJar() string {
+	return g.resolveKotlincLib("kotlin-annotation-processing.jar")
+}
+
+func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []string, []string) {
+	pluginNames := mod.GetStringList("plugins")
+	// Also collect exported_plugins from static_libs and libs
+	depList := append(mod.GetStringList("static_libs"), mod.GetStringList("libs")...)
+	for _, dep := range depList {
+		if depMod, ok := g.moduleMap[dep]; ok {
+			pluginNames = append(pluginNames, depMod.GetStringList("exported_plugins")...)
+		}
+	}
+	pluginNames = dedup(pluginNames)
+	if len(pluginNames) == 0 {
+		return nil, nil, nil
+	}
+
+	var procClasses []string
+	var procClasspath []string
+	var procDeps []string
+	visited := make(map[string]bool)
+
+	addJar := func(p string) {
+		if p == "" || visited[p] {
+			return
+		}
+		visited[p] = true
+		procClasspath = append(procClasspath, p)
+		if !g.emittedPhonies[p] {
+			procDeps = append(procDeps, p)
+		}
+	}
+
+	for _, pName := range pluginNames {
+		if pMod, ok := g.moduleMap[pName]; ok {
+			if pc := pMod.GetString("processor_class"); pc != "" {
+				procClasses = append(procClasses, pc)
+			}
+			for _, t := range g.resolveJarTargets(pName) {
+				addJar(t)
+			}
+			for _, sl := range g.resolveStaticLibsJars(pMod) {
+				addJar(sl)
+			}
+			for _, l := range pMod.GetStringList("libs") {
+				for _, t := range g.resolveJarTargets(l) {
+					addJar(t)
+				}
+			}
+		} else {
+			for _, t := range g.resolveJarTargets(pName) {
+				addJar(t)
+			}
+		}
+
+		// Known processor requirements (e.g. Dagger 2.51 runtime dependencies)
+		if pName == "dagger2-compiler" || strings.Contains(strings.Join(procClasses, " "), "ComponentProcessor") {
+			for _, req := range []string{
+				"dagger2-compiler-lib",
+				"dagger2-android-annotation-stubs",
+				"dagger2-room-compiler-processing",
+				"kotlin-symbol-processing-api",
+				"kotlinx-metadata-jvm",
+				"dagger2",
+				"jsr330",
+				"guava",
+				"javapoet",
+				"kotlinpoet",
+				"kotlinpoet-javapoet",
+			} {
+				for _, t := range g.resolveJarTargets(req) {
+					addJar(t)
+				}
+			}
+			if stdlib := g.resolveKotlinStdlibJar(); stdlib != "" {
+				addJar(stdlib)
+			}
+		}
+	}
+
+	return dedup(procClasses), procClasspath, procDeps
+}
+
 func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cpDeps []string) {
 	var cpEntries []string
 
@@ -578,6 +684,34 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		currentCp = append(currentCp, jarSrcs...)
 		currentCp = dedup(currentCp)
 		cpFlag = "-cp " + strings.Join(currentCp, ":")
+	}
+
+	procClasses, procClasspath, procDeps := g.resolvePlugins(mod)
+	hasPlugins := len(procClasspath) > 0
+	if hasPlugins {
+		cpDeps = append(cpDeps, procDeps...)
+		if len(ktSrcs) > 0 {
+			if annotJar := g.resolveKotlinAnnotationsJar(); annotJar != "" {
+				if !strings.Contains(cpFlag, "annotations-13.0.jar") && !strings.Contains(cpFlag, "annotations.jar") {
+					cpDeps = append(cpDeps, annotJar)
+					if cpFlag != "" {
+						cpFlag += ":" + annotJar
+					} else {
+						cpFlag = "-cp " + annotJar
+					}
+				}
+			}
+			if stdlibJar := g.resolveKotlinStdlibJar(); stdlibJar != "" {
+				if !strings.Contains(cpFlag, "kotlin-stdlib.jar") {
+					cpDeps = append(cpDeps, stdlibJar)
+					if cpFlag != "" {
+						cpFlag += ":" + stdlibJar
+					} else {
+						cpFlag = "-cp " + stdlibJar
+					}
+				}
+			}
+		}
 	}
 	classesDir := filepath.Join(g.opts.OutDir, "classes", mod.Name)
 
@@ -1083,54 +1217,155 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			extraKtSources += " @" + classesDir + "/srcjar.list"
 		}
 
-		if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 && len(aidlSrcs) == 0 && len(protoSrcs) == 0 {
-			// Pure Kotlin compilation
-			rule = "kotlinc_compile"
-			cpArg := ""
-			if cpFlag != "" {
-				cpArg = cpFlag + " "
+		if len(ktSrcs) > 0 && hasPlugins {
+			kaptJar := g.resolveKaptJar()
+			if kaptJar != "" {
+				rule = "kotlin_java_kapt_compile"
+				cpDeps = append(cpDeps, kaptJar)
+
+				rawCp := strings.TrimPrefix(cpFlag, "-cp ")
+				javacCp := classOutDir
+				if cpFlag != "" {
+					javacCp = classOutDir + ":" + rawCp
+				}
+				cpArg := ""
+				if cpFlag != "" {
+					cpArg = cpFlag + " "
+				}
+
+				kaptDir := filepath.Join(classesDir, "kapt")
+				kaptStubsDir := filepath.Join(kaptDir, "stubs")
+				kaptSourcesDir := filepath.Join(kaptDir, "sources")
+				kaptClassesDir := filepath.Join(kaptDir, "classes")
+				kaptGenDir := filepath.Join(kaptDir, "gen")
+				buildXml := filepath.Join(kaptDir, "build.xml")
+				aptSourcesList := filepath.Join(kaptDir, "apt_sources.list")
+				genList := filepath.Join(kaptDir, "gen.list")
+				javacList := filepath.Join(classesDir, "javac.list")
+
+				ktFiles := " @" + rspFile
+				rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
+
+				kaptJvmFlags := "-J--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED " +
+					"-J--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED " +
+					"-J--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED " +
+					"-J--add-opens=java.base/sun.net.www.protocol.jar=ALL-UNNAMED"
+
+				var kaptApClasspathArgs []string
+				for _, jar := range procClasspath {
+					kaptApClasspathArgs = append(kaptApClasspathArgs, "-P plugin:org.jetbrains.kotlin.kapt3:apclasspath="+jar)
+				}
+				var kaptProcessorArgs []string
+				for _, p := range procClasses {
+					kaptProcessorArgs = append(kaptProcessorArgs, "-P plugin:org.jetbrains.kotlin.kapt3:processors="+p)
+				}
+
+				javacProcArg := ""
+				if len(procClasses) > 0 {
+					javacProcArg = "-processor " + strings.Join(procClasses, ",") + " "
+				}
+
+				procClasspathStr := strings.Join(procClasspath, ":")
+
+				cmd = envPrefix + "rm -rf " + classOutDir + " " + kaptDir + " && " +
+					"mkdir -p " + classOutDir + " " + classesDir + " " + kaptStubsDir + " " + kaptSourcesDir + " " + kaptClassesDir + " " + kaptGenDir + " && " +
+					aidlGenCmd + srcjarExtractCmd + protoGenCmd +
+					"printf '<modules>\\n  <module name=\"%s\" type=\"java-production\" outputDir=\"%s\">\\n' " + mod.Name + " " + kaptClassesDir + " > " + buildXml + " && " +
+					"for cp in $$(echo \"" + rawCp + "\" | tr ':' ' '); do printf '    <classpath path=\"%s\"/>\\n' \"$$cp\" >> " + buildXml + "; done && " +
+					"for s in $$(cat " + rspFile + "); do " +
+					"case \"$$s\" in " +
+					"*.kt) printf '    <sources path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + " ;; " +
+					"*.java) printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + " ;; " +
+					"esac; " +
+					"done && " +
+					"for listf in " + filepath.Join(classesDir, "aidl.list") + " " + filepath.Join(classesDir, "proto.list") + " " + filepath.Join(classesDir, "srcjar.list") + "; do " +
+					"if [ -f \"$$listf\" ]; then for s in $$(cat \"$$listf\"); do printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + "; done; fi; " +
+					"done && " +
+					"printf '  </module>\\n</modules>\\n' >> " + buildXml + " && " +
+					"$kotlinc " + kaptJvmFlags + " -Xplugin=" + kaptJar + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:sources=" + kaptSourcesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:classes=" + kaptClassesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:stubs=" + kaptStubsDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:correctErrorTypes=true " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:aptMode=stubs " +
+					strings.Join(kaptApClasspathArgs, " ") + " " +
+					strings.Join(kaptProcessorArgs, " ") + " " +
+					"-Xbuild-file=" + buildXml + " && " +
+					"find " + kaptStubsDir + " -name \"*.java\" > " + aptSourcesList + " && " +
+					"tr ' ' '\\n' < " + rspFile + " | grep '\\.java$$' >> " + aptSourcesList + " || true && " +
+					"for listf in " + filepath.Join(classesDir, "aidl.list") + " " + filepath.Join(classesDir, "proto.list") + " " + filepath.Join(classesDir, "srcjar.list") + "; do " +
+					"if [ -f \"$$listf\" ]; then cat \"$$listf\" >> " + aptSourcesList + "; fi; " +
+					"done && " +
+					"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-cp " + rawCp + " -processorpath " + procClasspathStr + " " + javacProcArg + "-proc:only -s " + kaptGenDir + " @" + aptSourcesList + " && " +
+					"find " + kaptGenDir + " -name \"*.java\" > " + genList + " && " +
+					"$kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles + extraKtSources + " @" + genList + " && " +
+					"cat " + aptSourcesList + " " + genList + " | sort -u | grep -v " + kaptStubsDir + " > " + javacList + " || true && " +
+					"if [ -s " + javacList + " ]; then " +
+					"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-proc:none -d " + classOutDir + " -cp " + javacCp + " @" + javacList + "; " +
+					"fi && " +
+					"$jar cf " + compileTarget + " -C " + classOutDir + " ."
 			}
-			ktFiles := " @" + rspFile
-			rspContent = strings.Join(ktSrcs, " ")
-			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir +
-				" && $kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles +
-				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
-		} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0 || len(aidlSrcs) > 0 || len(protoSrcs) > 0) {
-			// Mixed Kotlin + Java compilation:
-			rule = "kotlin_java_compile"
-			cpArg := ""
-			if cpFlag != "" {
-				cpArg = cpFlag + " "
-			}
-			javacCp := classOutDir
-			if cpFlag != "" {
-				javacCp = classOutDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
-			}
-			ktFiles := " @" + rspFile
-			rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
-			splitJavaCmd := ""
-			if len(javaSrcs) > 0 {
-				javaListFile := filepath.Join(classesDir, "java.list")
-				splitJavaCmd = "tr ' ' '\\n' < " + rspFile + " | grep '\\.java$$' > " + javaListFile + " && "
-				javaFiles = " @" + javaListFile
+		}
+
+		if rule == "" {
+			if len(ktSrcs) > 0 && len(javaSrcs) == 0 && len(srcjarSrcs) == 0 && len(aidlSrcs) == 0 && len(protoSrcs) == 0 {
+				// Pure Kotlin compilation
+				rule = "kotlinc_compile"
+				cpArg := ""
+				if cpFlag != "" {
+					cpArg = cpFlag + " "
+				}
+				ktFiles := " @" + rspFile
+				rspContent = strings.Join(ktSrcs, " ")
+				cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir +
+					" && $kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles +
+					" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
+			} else if len(ktSrcs) > 0 && (len(javaSrcs) > 0 || len(srcjarSrcs) > 0 || len(aidlSrcs) > 0 || len(protoSrcs) > 0) {
+				// Mixed Kotlin + Java compilation:
+				rule = "kotlin_java_compile"
+				cpArg := ""
+				if cpFlag != "" {
+					cpArg = cpFlag + " "
+				}
+				javacCp := classOutDir
+				if cpFlag != "" {
+					javacCp = classOutDir + ":" + strings.TrimPrefix(cpFlag, "-cp ")
+				}
+				ktFiles := " @" + rspFile
+				rspContent = strings.Join(append(ktSrcs, javaSrcs...), " ")
+				splitJavaCmd := ""
+				if len(javaSrcs) > 0 {
+					javaListFile := filepath.Join(classesDir, "java.list")
+					splitJavaCmd = "tr ' ' '\\n' < " + rspFile + " | grep '\\.java$$' > " + javaListFile + " && "
+					javaFiles = " @" + javaListFile
+				} else {
+					javaFiles = ""
+				}
+				cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
+					"$kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles + extraKtSources + " && " +
+					splitJavaCmd +
+					"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+					" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 			} else {
-				javaFiles = ""
+				// Pure Java compilation
+				rule = "javac_compile"
+				cpArg := ""
+				if cpFlag != "" {
+					cpArg = cpFlag + " "
+				}
+				apArgs := ""
+				srcgenDir := filepath.Join(classesDir, "srcgen")
+				if hasPlugins {
+					apArgs = "-processorpath " + strings.Join(procClasspath, ":") + " "
+					if len(procClasses) > 0 {
+						apArgs += "-processor " + strings.Join(procClasses, ",") + " "
+					}
+					apArgs += "-s " + srcgenDir + " "
+				}
+				cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " " + srcgenDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
+					"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " " + cpArg + apArgs + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
+					" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 			}
-			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles + extraKtSources + " && " +
-				splitJavaCmd +
-				"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " -cp " + javacCp + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
-				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
-		} else {
-			// Pure Java compilation
-			rule = "javac_compile"
-			cpArg := ""
-			if cpFlag != "" {
-				cpArg = cpFlag + " "
-			}
-			cmd = envPrefix + "rm -rf " + classOutDir + " && mkdir -p " + classOutDir + " " + classesDir + " && " + aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-				"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-d " + classOutDir + " " + cpArg + javaFiles + aidlJavaArg + srcjarJavaArg + protoJavaArg +
-				" && $jar cf " + compileTarget + " -C " + classOutDir + " ."
 		}
 
 		buildVars := map[string]string{

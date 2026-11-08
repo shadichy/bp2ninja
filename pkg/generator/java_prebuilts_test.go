@@ -565,3 +565,162 @@ func TestAndroidLibraryWithResources(t *testing.T) {
 	}
 }
 
+func TestJavaPluginAndAnnotationProcessing(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Mock kotlinc libraries
+	kotlincLibDir := filepath.Join(tempDir, "external", "kotlinc", "lib")
+	if err := os.MkdirAll(kotlincLibDir, 0755); err != nil {
+		t.Fatalf("Failed to create kotlinc lib dir: %v", err)
+	}
+	kaptJar := filepath.Join(kotlincLibDir, "kotlin-annotation-processing.jar")
+	if err := os.WriteFile(kaptJar, []byte("fake-kapt-jar"), 0644); err != nil {
+		t.Fatalf("Failed to write kaptJar: %v", err)
+	}
+	stdlibJar := filepath.Join(kotlincLibDir, "kotlin-stdlib.jar")
+	if err := os.WriteFile(stdlibJar, []byte("fake-stdlib-jar"), 0644); err != nil {
+		t.Fatalf("Failed to write stdlibJar: %v", err)
+	}
+	annotJar := filepath.Join(kotlincLibDir, "annotations-13.0.jar")
+	if err := os.WriteFile(annotJar, []byte("fake-annot-jar"), 0644); err != nil {
+		t.Fatalf("Failed to write annotJar: %v", err)
+	}
+
+	// 2. Mock source files
+	ktFile := filepath.Join(tempDir, "MyComponent.kt")
+	if err := os.WriteFile(ktFile, []byte("package test\ninterface MyComponent"), 0644); err != nil {
+		t.Fatalf("Failed to write ktFile: %v", err)
+	}
+	javaFile := filepath.Join(tempDir, "MyService.java")
+	if err := os.WriteFile(javaFile, []byte("package test; public class MyService {}"), 0644); err != nil {
+		t.Fatalf("Failed to write javaFile: %v", err)
+	}
+
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tempDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	// Plugin module
+	pluginMod := &eval.EvaluatedModule{
+		Type: "java_plugin",
+		Name: "dagger2-compiler",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":            "dagger2-compiler",
+			"processor_class": "dagger.internal.codegen.ComponentProcessor",
+			"generates_api":   true,
+			"srcs":            []interface{}{"Plugin.java"},
+		},
+	}
+	pluginFile := filepath.Join(tempDir, "Plugin.java")
+	if err := os.WriteFile(pluginFile, []byte("package dagger; public class Plugin {}"), 0644); err != nil {
+		t.Fatalf("Failed to write pluginFile: %v", err)
+	}
+
+	// Mixed Kotlin + Java module with plugin
+	mixedMod := &eval.EvaluatedModule{
+		Type: "android_library",
+		Name: "SystemUIUnfoldLib",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":         "SystemUIUnfoldLib",
+			"srcs":         []interface{}{"MyComponent.kt", "MyService.java"},
+			"plugins":      []interface{}{"dagger2-compiler"},
+			"kotlincflags": []interface{}{"-Xjvm-default=all"},
+		},
+	}
+
+	// Pure Java module with plugin
+	javaMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "PureJavaLib",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":    "PureJavaLib",
+			"srcs":    []interface{}{"MyService.java"},
+			"plugins": []interface{}{"dagger2-compiler"},
+		},
+	}
+
+	// Module exporting plugin
+	exportingMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "ExportingLib",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":             "ExportingLib",
+			"srcs":             []interface{}{"MyService.java"},
+			"exported_plugins": []interface{}{"dagger2-compiler"},
+		},
+	}
+
+	// Consumer inheriting exported plugin
+	consumerMod := &eval.EvaluatedModule{
+		Type: "java_library",
+		Name: "ConsumerLib",
+		Dir:  tempDir,
+		Properties: map[string]interface{}{
+			"name":        "ConsumerLib",
+			"srcs":        []interface{}{"MyService.java"},
+			"static_libs": []interface{}{"ExportingLib"},
+		},
+	}
+
+	modules := []*eval.EvaluatedModule{pluginMod, mixedMod, javaMod, exportingMod, consumerMod}
+	if err := gen.Generate(modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// 1. Verify java_plugin generates its jar
+	pluginJar := filepath.Join(outDir, "lib64", "dagger2-compiler.jar")
+	if !strings.Contains(ninjaContent, "build "+pluginJar+": javac_compile") {
+		t.Errorf("Expected java_plugin target %s, got:\n%s", pluginJar, ninjaContent)
+	}
+
+	// 2. Verify mixed Kotlin/Java module triggers kotlin_java_kapt_compile rule
+	mixedJar := filepath.Join(outDir, "lib64", "SystemUIUnfoldLib.jar")
+	if !strings.Contains(ninjaContent, "build "+mixedJar+": kotlin_java_kapt_compile") {
+		t.Errorf("Expected kotlin_java_kapt_compile rule for SystemUIUnfoldLib, got:\n%s", ninjaContent)
+	}
+
+	// Verify KAPT stubs & javac APT command pipeline
+	if !strings.Contains(ninjaContent, "-Xplugin="+kaptJar) {
+		t.Errorf("Expected -Xplugin flag pointing to kapt jar, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "aptMode=stubs") {
+		t.Errorf("Expected aptMode=stubs in kapt command, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "dagger.internal.codegen.ComponentProcessor") {
+		t.Errorf("Expected ComponentProcessor in kapt command, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "-proc:only") {
+		t.Errorf("Expected javac -proc:only step, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "-proc:none") {
+		t.Errorf("Expected javac -proc:none final compilation step, got:\n%s", ninjaContent)
+	}
+
+	// 3. Verify pure Java module triggers javac_compile with -processorpath and -processor
+	pureJar := filepath.Join(outDir, "lib64", "PureJavaLib.jar")
+	if !strings.Contains(ninjaContent, "build "+pureJar+": javac_compile") {
+		t.Errorf("Expected javac_compile for PureJavaLib, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "-processorpath ") || !strings.Contains(ninjaContent, "-processor dagger.internal.codegen.ComponentProcessor") {
+		t.Errorf("Expected -processorpath and -processor for PureJavaLib, got:\n%s", ninjaContent)
+	}
+
+	// 4. Verify consumer module inherited exported_plugin
+	consumerClassesJar := filepath.Join(outDir, "classes", "ConsumerLib", "classes.jar")
+	if !strings.Contains(ninjaContent, "build "+consumerClassesJar+": javac_compile") {
+		t.Errorf("Expected javac_compile for ConsumerLib, got:\n%s", ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, "-processor dagger.internal.codegen.ComponentProcessor") {
+		t.Errorf("Expected inherited processor in ConsumerLib, got:\n%s", ninjaContent)
+	}
+}
+

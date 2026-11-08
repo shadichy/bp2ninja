@@ -1305,12 +1305,6 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				if len(g.opts.BootClasspath) > 0 {
 					bootCpEntries = append(bootCpEntries, g.opts.BootClasspath...)
 				}
-				if len(bootCpEntries) == 0 && g.opts.TopDir != "" {
-					artLegacyJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/art-coreplatform-legacy.jar")
-					if fi, err := os.Stat(artLegacyJar); err == nil && !fi.IsDir() {
-						bootCpEntries = append(bootCpEntries, artLegacyJar)
-					}
-				}
 				if len(bootCpEntries) == 0 {
 					if cj := g.resolveCurrentAndroidJar(); cj != "" {
 						bootCpEntries = append(bootCpEntries, cj)
@@ -1321,16 +1315,19 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				}
 
 				var turbineCpArgs []string
+				var rawParts []string
 				if rawCp != "" {
-					var rawParts []string
 					for _, p := range strings.Split(rawCp, ":") {
 						if p != "" {
 							rawParts = append(rawParts, p)
 						}
 					}
-					if len(rawParts) > 0 {
-						turbineCpArgs = append(turbineCpArgs, "--classpath", strings.Join(rawParts, " "))
-					}
+				}
+				if annotJar := g.resolveKotlinAnnotationsJar(); annotJar != "" {
+					rawParts = append(rawParts, annotJar)
+				}
+				if len(rawParts) > 0 {
+					turbineCpArgs = append(turbineCpArgs, "--classpath", strings.Join(dedup(rawParts), " "))
 				}
 
 				var turbineProcCpArgs []string

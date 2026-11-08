@@ -574,7 +574,7 @@ func main() {
 	}
 
 	if versionFlag {
-		fmt.Println("bp2ninja 0.1.2")
+		fmt.Printf("bp2ninja %s\n", generator.Version)
 		return
 	}
 

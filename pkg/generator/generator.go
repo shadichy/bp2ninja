@@ -1272,7 +1272,7 @@ func (g *Generator) emitStandardRules() error {
 	if hostSyspropCpp := g.findPrebuiltHostTool("sysprop_cpp"); hostSyspropCpp != "" {
 		syspropCppCmd = hostSyspropCpp
 	}
-	syspropCommand := "outdir=$$(dirname $${out%% *}) && mkdir -p $$outdir && " +
+	syspropCommand := "set -- $out; outdir=$$(dirname $$1) && mkdir -p $$outdir && " +
 		"if command -v " + syspropCppCmd + " >/dev/null 2>&1; then " +
 		syspropCppCmd + " --header-dir $$outdir --public-header-dir $$outdir --source-dir $$outdir --include-name $$(basename $in).h $in && " +
 		"if [ ! -f $$outdir/$$(basename $in .sysprop).h ]; then ln -sf $$(basename $in).h $$outdir/$$(basename $in .sysprop).h; fi; " +

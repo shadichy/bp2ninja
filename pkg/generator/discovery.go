@@ -14,12 +14,29 @@ type DiscoveredBp struct {
 	Depth  int
 }
 
-// DiscoverBpFiles searches rootDir recursively for all Android.bp files.
+// DiscoverBpFiles searches rootDir recursively for all Android.bp files without caching.
 // It skips hidden directories (names starting with '.'), "out", and "node_modules".
 // Discovered files are sorted primarily by directory depth (shallower directories first)
 // and secondarily by relative directory name alphabetically.
 func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
+	bps, _, err := DiscoverBpFilesWithCache(rootDir, false, "")
+	return bps, err
+}
+
+// DiscoverBpFilesWithCache searches rootDir recursively for all Android.bp files.
+// If useCache is true, any subdirectory containing a valid and fresh bp2ninja build.ninja
+// (other than outNinja) is added to cachedSubdirs and skipped entirely from recursive
+// descent, bypassing redundant parsing of that directory and all of its descendants.
+func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string) ([]DiscoveredBp, []string, error) {
 	var discovered []DiscoveredBp
+	var cachedSubdirs []string
+
+	absOutNinja := ""
+	if outNinja != "" {
+		if abs, err := filepath.Abs(outNinja); err == nil {
+			absOutNinja = abs
+		}
+	}
 
 	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -30,6 +47,16 @@ func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
 			if path != rootDir {
 				if strings.HasPrefix(name, ".") || name == "out" || name == "node_modules" {
 					return filepath.SkipDir
+				}
+				if useCache {
+					candNinja := filepath.Join(path, "build.ninja")
+					absCand, err := filepath.Abs(candNinja)
+					if err == nil && absCand != absOutNinja {
+						if fresh, _ := IsCachedNinjaFresh(path); fresh {
+							cachedSubdirs = append(cachedSubdirs, path)
+							return filepath.SkipDir
+						}
+					}
 				}
 			}
 			return nil
@@ -56,7 +83,7 @@ func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	sort.Slice(discovered, func(i, j int) bool {
@@ -66,5 +93,6 @@ func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
 		return discovered[i].RelDir < discovered[j].RelDir
 	})
 
-	return discovered, nil
+	sort.Strings(cachedSubdirs)
+	return discovered, cachedSubdirs, nil
 }

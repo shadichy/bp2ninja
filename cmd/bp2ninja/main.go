@@ -254,6 +254,8 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -prefix DIR                Runtime install prefix for deploy-relative and absolute rpaths\n")
 	fmt.Fprintf(out, "  -host                      Build for host machine instead of target device\n")
 	fmt.Fprintf(out, "  -subdirs, -r               Recursively discover nested Android.bp files across subdirectories (default: true)\n")
+	fmt.Fprintf(out, "  -cache                     Reuse valid cached build.ninja files in subdirectories (default: true)\n")
+	fmt.Fprintf(out, "  -no-cache                  Disable reusing cached build.ninja files in subdirectories\n")
 	fmt.Fprintf(out, "  -allow-missing-deps        Allow missing dependencies / inputs by generating phony rules (default: true)\n\n")
 
 	fmt.Fprintf(out, "Target architecture and NDK options:\n")
@@ -435,6 +437,8 @@ func main() {
 		bp2ninjaDir         string
 		isHost              bool
 		traceSubdirs        bool
+		useCache            bool
+		noCache             bool
 		siso                bool
 		sisoRemote          bool
 		cargo               bool
@@ -456,6 +460,8 @@ func main() {
 	flag.BoolVar(&isHost, "host", false, "Build for host machine instead of target device")
 	flag.BoolVar(&traceSubdirs, "subdirs", true, "Trace subdirectories containing Android.bp and include their build rules into one Ninja file")
 	flag.BoolVar(&traceSubdirs, "r", true, "Alias for -subdirs (recursive)")
+	flag.BoolVar(&useCache, "cache", true, "Reuse valid cached build.ninja files in subdirectories")
+	flag.BoolVar(&noCache, "no-cache", false, "Disable reusing cached build.ninja files in subdirectories")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
 
 	// 2. Target Architecture & NDK Options
@@ -574,6 +580,10 @@ func main() {
 
 	if len(positional) > 0 {
 		bpFile = positional[0]
+	}
+
+	if noCache {
+		useCache = false
 	}
 
 	// Handle NDK Info query
@@ -828,6 +838,39 @@ func main() {
 		depth  int
 	}
 	var childFiles []childFile
+	var cachedSubninjas []*generator.CachedNinjaInfo
+	cachedDirs := make(map[string]bool)
+	absOutFile, _ := filepath.Abs(outFile)
+
+	tryRegisterCache := func(dirPath string) bool {
+		if !useCache {
+			return false
+		}
+		absDir, err := filepath.Abs(dirPath)
+		if err != nil || cachedDirs[absDir] {
+			return cachedDirs[absDir]
+		}
+		candNinja := filepath.Join(dirPath, "build.ninja")
+		absCand, err := filepath.Abs(candNinja)
+		if err != nil || absCand == absOutFile {
+			return false
+		}
+		fresh, err := generator.IsCachedNinjaFresh(dirPath)
+		if err == nil && fresh {
+			cachedDirs[absDir] = true
+			info, err := generator.ParseAndRebaseCachedNinja(rootDir, dirPath, outDir)
+			if err == nil {
+				cachedSubninjas = append(cachedSubninjas, info)
+				rel, _ := filepath.Rel(rootDir, dirPath)
+				if rel == "" || rel == "." {
+					rel = dirPath
+				}
+				fmt.Printf("[bp2ninja] Reusing cached build.ninja for %s (%d targets)\n", rel, len(info.AllTargets))
+				return true
+			}
+		}
+		return false
+	}
 
 	// 1) Explicit build files (e.g. build = ["..."])
 	for _, bf := range explicitBuildFiles {
@@ -855,6 +898,10 @@ func main() {
 
 	// 2) Explicit subdirs from root Android.bp (subdirs = [...], optional_subdirs = [...])
 	for _, sDir := range explicitSubdirs {
+		subDirFullPath := filepath.Join(rootDir, sDir)
+		if tryRegisterCache(subDirFullPath) {
+			continue
+		}
 		subBp := filepath.Join(rootDir, sDir, "Android.bp")
 		if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
 			abs, err := filepath.Abs(subBp)
@@ -869,8 +916,10 @@ func main() {
 			}
 		}
 		if traceSubdirs {
-			subDirFullPath := filepath.Join(rootDir, sDir)
-			if dList, err := generator.DiscoverBpFiles(subDirFullPath); err == nil {
+			if dList, cList, err := generator.DiscoverBpFilesWithCache(subDirFullPath, useCache, outFile); err == nil {
+				for _, cDir := range cList {
+					tryRegisterCache(cDir)
+				}
 				for _, d := range dList {
 					abs, err := filepath.Abs(d.Path)
 					if err == nil && !evaluatedFiles[abs] {
@@ -891,8 +940,11 @@ func main() {
 	// If the folder does not have Android.bp, ALWAYS recursively find Android.bp in subfolders.
 	// If it does have Android.bp, recursively find if traceSubdirs is true.
 	if !hasRootBp || traceSubdirs {
-		discovered, err := generator.DiscoverBpFiles(rootDir)
+		discovered, cList, err := generator.DiscoverBpFilesWithCache(rootDir, useCache, outFile)
 		if err == nil {
+			for _, cDir := range cList {
+				tryRegisterCache(cDir)
+			}
 			for _, d := range discovered {
 				abs, err := filepath.Abs(d.Path)
 				if err == nil && evaluatedFiles[abs] {
@@ -921,6 +973,17 @@ func main() {
 		abs, err := filepath.Abs(cf.path)
 		if err == nil {
 			if evaluatedFiles[abs] {
+				continue
+			}
+			// Skip child if it sits within any cached directory
+			inCached := false
+			for cDir := range cachedDirs {
+				if strings.HasPrefix(abs, cDir+string(filepath.Separator)) || filepath.Dir(abs) == cDir {
+					inCached = true
+					break
+				}
+			}
+			if inCached {
 				continue
 			}
 			evaluatedFiles[abs] = true
@@ -965,7 +1028,11 @@ func main() {
 			}
 		}
 		for _, sd := range sDirs {
-			subBp := filepath.Join(childDir, sd, "Android.bp")
+			subDirFullPath := filepath.Join(childDir, sd)
+			if tryRegisterCache(subDirFullPath) {
+				continue
+			}
+			subBp := filepath.Join(subDirFullPath, "Android.bp")
 			if fi, err := os.Stat(subBp); err == nil && !fi.IsDir() {
 				absSd, err := filepath.Abs(subBp)
 				if err == nil && !evaluatedFiles[absSd] {
@@ -982,7 +1049,7 @@ func main() {
 
 	evalCtx.ResolveGlobalDefaults()
 
-	if len(evalCtx.Modules) == 0 {
+	if len(evalCtx.Modules) == 0 && len(cachedSubninjas) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: No modules found in %s\n", bpFile)
 		os.Exit(1)
 	}
@@ -1198,6 +1265,7 @@ func main() {
 		opts.PrebuiltLibDir = prebuiltLibs
 	}
 	opts.Prefix = prefix
+	opts.CachedSubninjas = cachedSubninjas
 
 	// Merge environment variables and CLI extra flags (per-project configuration)
 	var combinedCflags []string
@@ -1283,6 +1351,11 @@ func main() {
 			starPath, starPath)
 	}
 
-	fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",
-		bpFile, outFile, len(evalCtx.Modules))
+	if len(cachedSubninjas) > 0 {
+		fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules, %d cached subninjas reused)\n",
+			bpFile, outFile, len(evalCtx.Modules), len(cachedSubninjas))
+	} else {
+		fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",
+			bpFile, outFile, len(evalCtx.Modules))
+	}
 }

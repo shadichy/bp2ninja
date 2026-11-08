@@ -89,6 +89,10 @@ type Options struct {
 	// SisoRemote additionally marks pure compile actions remote_enabled for
 	// RBE offloading (requires a REAPI backend configured in siso.star).
 	SisoRemote bool
+
+	// CachedSubninjas contains metadata and paths for pre-existing, valid build.ninja
+	// files discovered in subdirectories that are reused via subninja directives.
+	CachedSubninjas []*CachedNinjaInfo
 }
 
 // DefaultOptions provides sensible defaults for standalone Android builds.
@@ -465,6 +469,40 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		return err
 	}
 
+	// Pre-register outputs from cached subninjas so downstream modules can resolve them
+	for _, sub := range g.opts.CachedSubninjas {
+		for modName, outs := range sub.ModuleOutputs {
+			g.moduleOutputs[modName] = outs
+			g.moduleMap[modName] = &eval.EvaluatedModule{
+				Name: modName,
+				Type: "cached_subninja",
+				Dir:  sub.SubDir,
+			}
+		}
+		for tag, outs := range sub.TaggedOutputs {
+			g.taggedOutputs[tag] = outs
+		}
+		for _, t := range sub.AllTargets {
+			g.emittedPhonies[t] = true
+		}
+	}
+
+	// Emit subninja directives for cached subdirectories
+	if len(g.opts.CachedSubninjas) > 0 {
+		g.nw.BlankLine()
+		g.nw.Comment("Cached subninja inclusions")
+		for _, sub := range g.opts.CachedSubninjas {
+			relSubninja, err := filepath.Rel(g.opts.TopDir, sub.SubninjaPath)
+			if err != nil {
+				relSubninja = sub.SubninjaPath
+			}
+			if err := g.nw.Subninja(relSubninja); err != nil {
+				return fmt.Errorf("failed to write subninja directive for %s: %w", sub.SubninjaPath, err)
+			}
+		}
+		g.nw.BlankLine()
+	}
+
 	modules = g.expandHidlInterfaces(modules)
 
 	// Sort modules by internal dependencies and report missing/circular dependencies
@@ -728,6 +766,9 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			return fmt.Errorf("failed generating module %s: %w", mod.Name, err)
 		}
 		g.moduleOutputs[mod.Name] = targets
+		if len(targets) > 0 {
+			g.nw.Comment(fmt.Sprintf("bp2ninja_module: %s %s %s", mod.Name, mod.Type, strings.Join(targets, " ")))
+		}
 		if mod.Dir == "" || mod.Dir == "." {
 			anyRootTargets = append(anyRootTargets, targets...)
 		}
@@ -735,6 +776,15 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			allTargets = append(allTargets, targets...)
 			if mod.Dir == "" || mod.Dir == "." {
 				rootTargets = append(rootTargets, targets...)
+			}
+		}
+	}
+
+	// Emit missing dependency phonies needed by cached subninjas if not already satisfied
+	if g.opts.AllowMissingDeps {
+		for _, sub := range g.opts.CachedSubninjas {
+			for _, missing := range sub.MissingDeps {
+				g.emitPhonyIfNeeded(missing)
 			}
 		}
 	}

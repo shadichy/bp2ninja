@@ -141,6 +141,12 @@ func (g *Generator) SortModules(modules []*eval.EvaluatedModule) []*eval.Evaluat
 
 	definedModules := make(map[string]bool)
 	moduleLookup := make(map[string]string)
+	for _, sub := range g.opts.CachedSubninjas {
+		for modName := range sub.ModuleOutputs {
+			definedModules[modName] = true
+			moduleLookup[modName] = modName
+		}
+	}
 	for _, mod := range modules {
 		if mod.Name != "" {
 			definedModules[mod.Name] = true

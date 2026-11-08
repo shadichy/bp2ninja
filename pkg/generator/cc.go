@@ -678,6 +678,146 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		orderOnlyDeps = append(orderOnlyDeps, modProtoHeaders...)
 	}
 
+	// 2. Process AIDL sources from aidl.libs or .aidl in srcs
+	var aidlSrcs []string
+	var aidlHdrs []string
+	var aidlIncludeDirs []string
+	var aidlFlags []string
+
+	aidlProps := mod.GetMap("aidl")
+	if aidlProps != nil {
+		visited := make(map[string]bool)
+		if libs, ok := aidlProps["libs"].([]interface{}); ok {
+			for _, l := range libs {
+				if libName, ok := l.(string); ok && libName != "" {
+					subSrcs, subHdrs, subIncs := g.collectAidlLibraryClosure(libName, visited)
+					aidlSrcs = append(aidlSrcs, subSrcs...)
+					aidlHdrs = append(aidlHdrs, subHdrs...)
+					aidlIncludeDirs = append(aidlIncludeDirs, subIncs...)
+				}
+			}
+		}
+		if incDirs, ok := aidlProps["include_dirs"].([]interface{}); ok {
+			for _, d := range incDirs {
+				if s, ok := d.(string); ok && s != "" {
+					if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(s) {
+						aidlIncludeDirs = append(aidlIncludeDirs, filepath.Clean(filepath.Join(g.opts.TopDir, s)))
+					} else {
+						aidlIncludeDirs = append(aidlIncludeDirs, s)
+					}
+				}
+			}
+		}
+		if localIncDirs, ok := aidlProps["local_include_dirs"].([]interface{}); ok {
+			for _, d := range localIncDirs {
+				if s, ok := d.(string); ok && s != "" {
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(s) {
+						aidlIncludeDirs = append(aidlIncludeDirs, filepath.Clean(filepath.Join(mod.Dir, s)))
+					} else {
+						aidlIncludeDirs = append(aidlIncludeDirs, s)
+					}
+				}
+			}
+		}
+		if flags, ok := aidlProps["flags"].([]interface{}); ok {
+			for _, f := range flags {
+				if s, ok := f.(string); ok && s != "" {
+					aidlFlags = append(aidlFlags, s)
+				}
+			}
+		}
+	}
+
+	// Filter out .aidl files from effectiveSrcs and collect them into aidlSrcs
+	var nonAidlEffectiveSrcs []string
+	for _, s := range effectiveSrcs {
+		if strings.HasSuffix(s, ".aidl") {
+			aidlSrcs = append(aidlSrcs, s)
+		} else {
+			nonAidlEffectiveSrcs = append(nonAidlEffectiveSrcs, s)
+		}
+	}
+	effectiveSrcs = nonAidlEffectiveSrcs
+	if len(aidlSrcs) > 0 {
+		if mod.Dir != "" && mod.Dir != "." {
+			aidlIncludeDirs = append(aidlIncludeDirs, mod.Dir)
+		} else {
+			aidlIncludeDirs = append(aidlIncludeDirs, ".")
+		}
+	}
+	aidlSrcs = dedup(aidlSrcs)
+	aidlHdrs = dedup(aidlHdrs)
+	aidlIncludeDirs = dedup(aidlIncludeDirs)
+
+	var modAidlHeaders []string
+	if len(aidlSrcs) > 0 {
+		aidlGenDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "aidl")
+		var aidlImports []string
+		for _, inc := range aidlIncludeDirs {
+			aidlImports = append(aidlImports, "-I"+inc)
+		}
+
+		for _, src := range aidlSrcs {
+			relPath := ""
+			for _, inc := range aidlIncludeDirs {
+				prefix := inc + "/"
+				if strings.HasPrefix(src, prefix) {
+					relPath = strings.TrimPrefix(src, prefix)
+					break
+				}
+			}
+			if relPath == "" {
+				if mod.Dir != "" && mod.Dir != "." && strings.HasPrefix(src, mod.Dir+"/") {
+					relPath = strings.TrimPrefix(src, mod.Dir+"/")
+				} else {
+					relPath = filepath.Base(src)
+				}
+			}
+
+			relDir := filepath.Dir(relPath)
+			baseName := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+			shortName := baseName
+			if len(baseName) >= 2 && baseName[0] == 'I' && strings.ToUpper(baseName[:2])[1] == baseName[1] {
+				shortName = strings.TrimPrefix(baseName, "I")
+			}
+
+			cppFile := filepath.Join(aidlGenDir, relDir, baseName+".cpp")
+			headerI := filepath.Join(aidlGenDir, relDir, baseName+".h")
+			headerBn := filepath.Join(aidlGenDir, relDir, "Bn"+shortName+".h")
+			headerBp := filepath.Join(aidlGenDir, relDir, "Bp"+shortName+".h")
+
+			vars := map[string]string{
+				"header_dir": aidlGenDir,
+				"out_dir":    aidlGenDir,
+				"imports":    shellJoin(aidlImports),
+			}
+			if len(aidlFlags) > 0 {
+				vars["optional_flags"] = shellJoin(aidlFlags)
+			}
+
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs:         []string{cppFile},
+				ImplicitOutputs: []string{headerI, headerBn, headerBp},
+				Rule:            "aidl_cpp",
+				Inputs:          []string{src},
+				Implicits:       aidlHdrs,
+				Variables:       vars,
+			}); err != nil {
+				return nil, fmt.Errorf("aidl_cpp edge: %w", err)
+			}
+
+			effectiveSrcs = append(effectiveSrcs, cppFile)
+			modAidlHeaders = append(modAidlHeaders, headerI, headerBn, headerBp)
+			g.aidlHeaders[mod.Name] = append(g.aidlHeaders[mod.Name], headerI, headerBn, headerBp)
+		}
+
+		includes = append(includes, "-I"+aidlGenDir)
+		includes = dedup(includes)
+		cflags = append(cflags, "-DLIBBINDER_EXPORTED=__attribute__((visibility(\"default\")))")
+		cflags = dedup(cflags)
+		orderOnlyDeps = append(orderOnlyDeps, modAidlHeaders...)
+	}
+
 	// Pull order-only dependencies from referenced libraries' generated proto headers
 	depLibs := append(mod.GetAllStringList("shared_libs"), mod.GetAllStringList("static_libs")...)
 	depLibs = append(depLibs, mod.GetAllStringList("whole_static_libs")...)
@@ -687,6 +827,9 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
 		}
 		if hdrs, ok := g.aconfigHeaders[lib]; ok {
+			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
+		}
+		if hdrs, ok := g.aidlHeaders[lib]; ok {
 			orderOnlyDeps = append(orderOnlyDeps, hdrs...)
 		}
 	}
@@ -864,6 +1007,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			if hasProto {
 				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
 			}
+			if aidlProps := hlMod.GetMap("aidl"); aidlProps != nil {
+				if exp, ok := aidlProps["export_aidl_headers"].(bool); ok && exp {
+					incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hlMod.Name, "aidl"))
+				}
+			}
 			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
 		} else if len(g.protoHeaders[hl]) > 0 {
 			incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
@@ -921,6 +1069,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			if hasProto {
 				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", lib))
 			}
+			if aidlProps := libMod.GetMap("aidl"); aidlProps != nil {
+				if exp, ok := aidlProps["export_aidl_headers"].(bool); ok && exp {
+					incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", libMod.Name, "aidl"))
+				}
+			}
 			for _, hl := range libMod.GetStringList("export_header_lib_headers") {
 				if !visitedHl[hl] {
 					queueHl = append(queueHl, hl)
@@ -958,6 +1111,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			}
 			if hasProto {
 				incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hl))
+			}
+			if aidlProps := hlMod.GetMap("aidl"); aidlProps != nil {
+				if exp, ok := aidlProps["export_aidl_headers"].(bool); ok && exp {
+					incs = append(incs, "-I"+filepath.Join(g.opts.OutDir, "gen", hlMod.Name, "aidl"))
+				}
 			}
 			queueHl = append(queueHl, hlMod.GetStringList("export_header_lib_headers")...)
 		} else if len(g.protoHeaders[hl]) > 0 {

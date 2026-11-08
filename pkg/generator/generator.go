@@ -150,6 +150,7 @@ type Generator struct {
 	topDirModules    map[string]string
 	protoHeaders     map[string][]string
 	aconfigHeaders   map[string][]string
+	aidlHeaders      map[string][]string
 	hidlPackageRoots map[string]string
 	prebuiltJarIndex map[string]string
 
@@ -180,6 +181,7 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		topDirModules:    nil,
 		protoHeaders:     make(map[string][]string),
 		aconfigHeaders:   make(map[string][]string),
+		aidlHeaders:      make(map[string][]string),
 		hidlPackageRoots: make(map[string]string),
 	}
 }
@@ -574,10 +576,13 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		}
 	}
 
-	// Pre-index proto outputs once all modules are indexed in moduleMap
+	// Pre-index proto outputs and aidl_library modules once all modules are indexed in moduleMap
 	for _, mod := range modules {
 		if mod.Name == "" {
 			continue
+		}
+		if mod.Type == "aidl_library" {
+			_, _ = g.generateAidlLibrary(mod)
 		}
 		hasProto := false
 		for _, s := range mod.GetStringList("srcs") {

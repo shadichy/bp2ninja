@@ -3413,3 +3413,66 @@ func TestJavaAidlFrameworkAidlPreprocessed(t *testing.T) {
 		t.Errorf("Expected -p%s in ninja content, got:\n%s", fakeFrameworkAidl, ninjaContent)
 	}
 }
+
+func TestCcLibraryAidlLibsAndCodegen(t *testing.T) {
+	tempDir := t.TempDir()
+	outDir := filepath.Join(tempDir, "out")
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+
+	opts := DefaultOptions(tempDir, outDir)
+	opts.APILevel = 34
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	aidlLib := &eval.EvaluatedModule{
+		Type: "aidl_library",
+		Name: "my_service_aidl",
+		Dir:  "core/java",
+		Properties: map[string]interface{}{
+			"name": "my_service_aidl",
+			"srcs": []interface{}{"com/example/IMyService.aidl"},
+			"hdrs": []interface{}{"com/example/MyData.aidl"},
+		},
+	}
+
+	ccMod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libmy_service",
+		Dir:  "libs/myservice",
+		Properties: map[string]interface{}{
+			"name": "libmy_service",
+			"srcs": []interface{}{"MyService.cpp"},
+			"aidl": map[string]interface{}{
+				"libs": []interface{}{"my_service_aidl"},
+			},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{aidlLib, ccMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+
+	// Verify aidl_cpp rule invocation with implicit header outputs
+	expectedAidlOut := filepath.Join(outDir, "gen/libmy_service/aidl/com/example/IMyService.cpp")
+	expectedAidlHdr := filepath.Join(outDir, "gen/libmy_service/aidl/com/example/IMyService.h")
+	if !strings.Contains(ninjaContent, expectedAidlOut) {
+		t.Errorf("Expected output %s in ninja content, got:\n%s", expectedAidlOut, ninjaContent)
+	}
+	if !strings.Contains(ninjaContent, expectedAidlHdr) {
+		t.Errorf("Expected header %s in ninja content, got:\n%s", expectedAidlHdr, ninjaContent)
+	}
+
+	// Verify -Igen/libmy_service/aidl in compile command
+	expectedInc := "-I" + filepath.Join(outDir, "gen/libmy_service/aidl")
+	if !strings.Contains(ninjaContent, expectedInc) {
+		t.Errorf("Expected include %s in ninja content, got:\n%s", expectedInc, ninjaContent)
+	}
+
+	// Verify LIBBINDER_EXPORTED definition
+	if !strings.Contains(ninjaContent, "LIBBINDER_EXPORTED") {
+		t.Errorf("Expected LIBBINDER_EXPORTED definition in ninja content, got:\n%s", ninjaContent)
+	}
+}

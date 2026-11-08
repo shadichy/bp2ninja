@@ -44,8 +44,62 @@ func (g *Generator) generateAidlLibrary(mod *eval.EvaluatedModule) ([]string, er
 		IncludeDirs: []string{incDir},
 		Deps:        mod.GetStringList("deps"),
 	}
+
+	for _, inc := range mod.GetStringList("include_dirs") {
+		if inc != "" {
+			if g.opts.TopDir != "" && g.opts.TopDir != "." && !filepath.IsAbs(inc) {
+				info.IncludeDirs = append(info.IncludeDirs, filepath.Clean(filepath.Join(g.opts.TopDir, inc)))
+			} else {
+				info.IncludeDirs = append(info.IncludeDirs, inc)
+			}
+		}
+	}
+	for _, inc := range mod.GetStringList("local_include_dirs") {
+		if inc != "" {
+			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(inc) {
+				info.IncludeDirs = append(info.IncludeDirs, filepath.Clean(filepath.Join(mod.Dir, inc)))
+			} else {
+				info.IncludeDirs = append(info.IncludeDirs, inc)
+			}
+		}
+	}
+	info.IncludeDirs = dedup(info.IncludeDirs)
+
 	g.aidlLibraries[mod.Name] = info
 
 	allFiles := append(append([]string{}, srcs...), resolvedHdrs...)
 	return allFiles, nil
+}
+
+func (g *Generator) resolveAidlLibrary(name string) *aidlLibraryInfo {
+	if info, ok := g.aidlLibraries[name]; ok {
+		return info
+	}
+	if mod, ok := g.moduleMap[name]; ok && mod.Type == "aidl_library" {
+		if _, err := g.generateAidlLibrary(mod); err == nil {
+			return g.aidlLibraries[name]
+		}
+	}
+	return nil
+}
+
+func (g *Generator) collectAidlLibraryClosure(name string, visited map[string]bool) (srcs, hdrs, incDirs []string) {
+	if visited[name] {
+		return nil, nil, nil
+	}
+	visited[name] = true
+	info := g.resolveAidlLibrary(name)
+	if info == nil {
+		return nil, nil, nil
+	}
+	srcs = append(srcs, info.Srcs...)
+	hdrs = append(hdrs, info.Hdrs...)
+	incDirs = append(incDirs, info.IncludeDirs...)
+	for _, dep := range info.Deps {
+		subSrcs, subHdrs, subIncs := g.collectAidlLibraryClosure(dep, visited)
+		srcs = append(srcs, subSrcs...)
+		hdrs = append(hdrs, subHdrs...)
+		incDirs = append(incDirs, subIncs...)
+	}
+	return dedup(srcs), dedup(hdrs), dedup(incDirs)
 }

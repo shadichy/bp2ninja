@@ -229,11 +229,20 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 				continue
 			}
 
-			targetList := strings.Fields(targetPart)
+			var targetList, implicitTargetList []string
+			if pipeIdx := strings.Index(targetPart, "|"); pipeIdx != -1 {
+				targetList = strings.Fields(targetPart[:pipeIdx])
+				implicitTargetList = strings.Fields(targetPart[pipeIdx+1:])
+			} else {
+				targetList = strings.Fields(targetPart)
+			}
 			for _, t := range targetList {
 				info.AllTargets = append(info.AllTargets, t)
 				// Infer module names and tagged outputs from canonical build targets if not explicitly set
 				inferModuleOutput(info, t, ruleName, inputsPart)
+			}
+			for _, t := range implicitTargetList {
+				info.AllTargets = append(info.AllTargets, t)
 			}
 
 			// Rebase inputs and order-only dependencies

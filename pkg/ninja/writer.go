@@ -211,12 +211,13 @@ func (n *Writer) writeSisoBindings(bindings []SisoVar) error {
 
 // BuildEdge defines a Ninja build statement.
 type BuildEdge struct {
-	Outputs   []string
-	Rule      string
-	Inputs    []string
-	Implicits []string
-	OrderOnly []string
-	Variables map[string]string
+	Outputs         []string
+	ImplicitOutputs []string
+	Rule            string
+	Inputs          []string
+	Implicits       []string
+	OrderOnly       []string
+	Variables       map[string]string
 
 	// Siso-specific bindings (only emitted in Siso mode; see EnableSiso).
 	RestatContent   bool
@@ -273,10 +274,23 @@ func (n *Writer) Build(b BuildEdge) error {
 	}
 	b.Outputs = validOutputs
 
+	var validImplicitOutputs []string
+	for _, out := range b.ImplicitOutputs {
+		if !n.definedTargets[out] {
+			validImplicitOutputs = append(validImplicitOutputs, out)
+			n.definedTargets[out] = true
+		}
+	}
+	b.ImplicitOutputs = validImplicitOutputs
+
 	var sb strings.Builder
 	sb.WriteString("build ")
 	if len(b.Outputs) > 0 {
 		sb.WriteString(strings.Join(escapePaths(b.Outputs), " "))
+	}
+	if len(b.ImplicitOutputs) > 0 {
+		sb.WriteString(" | ")
+		sb.WriteString(strings.Join(escapePaths(b.ImplicitOutputs), " "))
 	}
 	sb.WriteString(": ")
 	sb.WriteString(b.Rule)

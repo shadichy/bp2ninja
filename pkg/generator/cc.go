@@ -649,8 +649,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			effectiveSrcs = append(effectiveSrcs, pbSrc)
 		} else if ext == ".sysprop" {
 			// .sysprop sources in cc modules generate C++ via the sysprop
-			// tool (upstream cc sysprop source provider).
-			base := strings.TrimSuffix(filepath.Base(src), ".sysprop")
+			// tool (upstream cc sysprop source provider produces <name>.sysprop.cpp/h).
+			base := filepath.Base(src)
 			spCpp := filepath.Join(protoGenDir, base+".cpp")
 			spHdr := filepath.Join(protoGenDir, base+".h")
 			if err := g.nw.Build(ninja.BuildEdge{

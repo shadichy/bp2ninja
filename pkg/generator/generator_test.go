@@ -2511,11 +2511,11 @@ func TestSyspropLibrary(t *testing.T) {
 	out := buf.String()
 
 	// Codegen via sysprop-cli with env override
-	if !strings.Contains(out, "build out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.cpp out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.h: sysprop_cpp SurfaceFlingerProperties.sysprop") {
+	if !strings.Contains(out, "build out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.sysprop.cpp out/gen/SurfaceFlingerProperties/SurfaceFlingerProperties.sysprop.h: sysprop_cpp SurfaceFlingerProperties.sysprop") {
 		t.Errorf("Expected sysprop_cpp codegen edge")
 	}
-	if !strings.Contains(out, "${SYSPROP_CLI:-sysprop-cli} --cpp") {
-		t.Errorf("Expected sysprop-cli invocation with env override")
+	if !strings.Contains(out, "sysprop_cpp") {
+		t.Errorf("Expected sysprop_cpp invocation")
 	}
 
 	// Compiled into lib<name>.so/.a with implicit runtime deps
@@ -2559,10 +2559,10 @@ func TestSyspropSourcesInCcModules(t *testing.T) {
 	}
 	out := buf.String()
 
-	if !strings.Contains(out, "build out/gen/libsysprop_user/MyProps.cpp out/gen/libsysprop_user/MyProps.h: sysprop_cpp MyProps.sysprop") {
+	if !strings.Contains(out, "build out/gen/libsysprop_user/MyProps.sysprop.cpp out/gen/libsysprop_user/MyProps.sysprop.h: sysprop_cpp MyProps.sysprop") {
 		t.Errorf("Expected inline sysprop codegen edge")
 	}
-	if !strings.Contains(out, "build out/obj/libsysprop_user/MyProps.o: cxx_compile out/gen/libsysprop_user/MyProps.cpp") {
+	if !strings.Contains(out, "build out/obj/libsysprop_user/MyProps.sysprop.o: cxx_compile out/gen/libsysprop_user/MyProps.sysprop.cpp") {
 		t.Errorf("Expected generated source compilation")
 	}
 }

@@ -1267,14 +1267,19 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
-	// Sysprop C++ codegen (platform sysprop tool; pin via $SYSPROP_CLI)
-	syspropCppCmd := "$${SYSPROP_CLI:-sysprop-cli} --cpp"
+	// Sysprop C++ codegen (platform sysprop tool: sysprop_cpp or sysprop-cli)
+	syspropCppCmd := "$${SYSPROP_CPP:-sysprop_cpp}"
 	if hostSyspropCpp := g.findPrebuiltHostTool("sysprop_cpp"); hostSyspropCpp != "" {
 		syspropCppCmd = hostSyspropCpp
 	}
+	syspropCommand := "mkdir -p $$(dirname $out) && " +
+		"if command -v " + syspropCppCmd + " >/dev/null 2>&1; then " +
+		syspropCppCmd + " --header-dir $$(dirname $out) --public-header-dir $$(dirname $out) --source-dir $$(dirname $out) --include-name $$(basename $in).h $in && " +
+		"if [ ! -f $$(dirname $out)/$$(basename $in .sysprop).h ]; then ln -sf $$(basename $in).h $$(dirname $out)/$$(basename $in .sysprop).h; fi; " +
+		"else $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$(dirname $out); fi"
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "sysprop_cpp",
-		Command:         "mkdir -p $$(dirname $out) && " + syspropCppCmd + " $in $$(dirname $out)",
+		Command:         syspropCommand,
 		Description:     "SYSPROP $in",
 		RestatContent:   g.opts.Siso,
 		SandboxDisabled: g.opts.Siso,

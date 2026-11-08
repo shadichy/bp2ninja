@@ -152,7 +152,7 @@ func (g *Generator) compileSyspropSources(mod *eval.EvaluatedModule, propFiles [
 	objDir := g.objDir(mod.Name + ".sysprop")
 	var objs []string
 	for _, prop := range propFiles {
-		base := strings.TrimSuffix(filepath.Base(prop), ".sysprop")
+		base := filepath.Base(prop)
 		genCpp := filepath.Join(genDir, base+".cpp")
 		genHdr := filepath.Join(genDir, base+".h")
 

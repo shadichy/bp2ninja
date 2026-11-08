@@ -3476,3 +3476,47 @@ func TestCcLibraryAidlLibsAndCodegen(t *testing.T) {
 		t.Errorf("Expected LIBBINDER_EXPORTED definition in ninja content, got:\n%s", ninjaContent)
 	}
 }
+
+func TestMissingReferencedInputsPhonyUnderAllowMissingDeps(t *testing.T) {
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "out")
+	srcDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mainCpp := filepath.Join(srcDir, "main.cpp")
+	if err := os.WriteFile(mainCpp, []byte("int main() { return 0; }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	modules := []*eval.EvaluatedModule{
+		{
+			Name: "my_consumer",
+			Type: "cc_library_shared",
+			Dir:  "src",
+			Properties: map[string]interface{}{
+				"name":        "my_consumer",
+				"srcs":        []interface{}{"main.cpp"},
+				"static_libs": []interface{}{"nonexistent_aidl_interface-ndk"},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tmpDir, outDir)
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	if err := gen.Generate(modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	ninjaContent := buf.String()
+	expectedMissingArchive := filepath.Join(outDir, "lib64/libnonexistent_aidl_interface-ndk.a")
+	expectedPhonyLine := "build " + expectedMissingArchive + ": phony"
+	if !strings.Contains(ninjaContent, expectedPhonyLine) {
+		t.Errorf("Expected phony line %q in ninja output, got:\n%s", expectedPhonyLine, ninjaContent)
+	}
+}

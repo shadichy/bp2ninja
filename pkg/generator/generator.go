@@ -792,6 +792,20 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 				g.emitPhonyIfNeeded(missing)
 			}
 		}
+
+		for _, in := range g.nw.ReferencedInputs() {
+			if g.nw.IsTargetDefined(in) {
+				continue
+			}
+			absPath := in
+			if !filepath.IsAbs(absPath) && g.opts.TopDir != "" {
+				absPath = filepath.Join(g.opts.TopDir, in)
+			}
+			if _, err := os.Stat(absPath); err == nil {
+				continue
+			}
+			g.emitPhonyIfNeeded(in)
+		}
 	}
 
 	defaultTargets := rootTargets

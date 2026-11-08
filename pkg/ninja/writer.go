@@ -4,23 +4,26 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
 // Writer writes Ninja build files with proper indentation and escaping.
 type Writer struct {
-	w              *bufio.Writer
-	definedRules   map[string]bool
-	definedTargets map[string]bool
-	siso           bool
+	w                *bufio.Writer
+	definedRules     map[string]bool
+	definedTargets   map[string]bool
+	referencedInputs map[string]bool
+	siso             bool
 }
 
 // NewWriter creates a new Ninja writer wrapping the provided io.Writer.
 func NewWriter(w io.Writer) *Writer {
 	return &Writer{
-		w:              bufio.NewWriter(w),
-		definedRules:   make(map[string]bool),
-		definedTargets: make(map[string]bool),
+		w:                bufio.NewWriter(w),
+		definedRules:     make(map[string]bool),
+		definedTargets:   make(map[string]bool),
+		referencedInputs: make(map[string]bool),
 	}
 }
 
@@ -261,6 +264,25 @@ func (n *Writer) Build(b BuildEdge) error {
 	if n.definedTargets == nil {
 		n.definedTargets = make(map[string]bool)
 	}
+	if n.referencedInputs == nil {
+		n.referencedInputs = make(map[string]bool)
+	}
+
+	for _, in := range b.Inputs {
+		if in != "" {
+			n.referencedInputs[in] = true
+		}
+	}
+	for _, in := range b.Implicits {
+		if in != "" {
+			n.referencedInputs[in] = true
+		}
+	}
+	for _, in := range b.OrderOnly {
+		if in != "" {
+			n.referencedInputs[in] = true
+		}
+	}
 
 	var validOutputs []string
 	for _, out := range b.Outputs {
@@ -324,6 +346,36 @@ func (n *Writer) Build(b BuildEdge) error {
 		}
 	}
 	return nil
+}
+
+// IsTargetDefined returns whether the given target has been defined as a build output.
+func (n *Writer) IsTargetDefined(target string) bool {
+	if n == nil || n.definedTargets == nil {
+		return false
+	}
+	return n.definedTargets[target]
+}
+
+// DefinedTargets returns the map of defined build targets.
+func (n *Writer) DefinedTargets() map[string]bool {
+	if n == nil {
+		return nil
+	}
+	return n.definedTargets
+}
+
+// ReferencedInputs returns a sorted slice of all inputs (direct, implicit, order-only)
+// referenced by build statements written to this writer.
+func (n *Writer) ReferencedInputs() []string {
+	if n == nil || n.referencedInputs == nil {
+		return nil
+	}
+	inputs := make([]string, 0, len(n.referencedInputs))
+	for in := range n.referencedInputs {
+		inputs = append(inputs, in)
+	}
+	sort.Strings(inputs)
+	return inputs
 }
 
 // Subninja writes a subninja directive.

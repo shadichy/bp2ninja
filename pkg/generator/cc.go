@@ -779,22 +779,21 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		modDir = mod.Dir
 	}
 	incs = append(incs, "-I"+modDir)
-
-	for _, dir := range mod.GetStringList("local_include_dirs") {
+	for _, dir := range mod.GetAllStringList("local_include_dirs") {
 		incPath := dir
 		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(dir) {
 			incPath = filepath.Clean(filepath.Join(mod.Dir, dir))
 		}
 		incs = append(incs, "-I"+incPath)
 	}
-	for _, dir := range mod.GetStringList("export_include_dirs") {
+	for _, dir := range mod.GetAllStringList("export_include_dirs") {
 		incPath := dir
 		if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(dir) {
 			incPath = filepath.Clean(filepath.Join(mod.Dir, dir))
 		}
 		incs = append(incs, "-I"+incPath)
 	}
-	for _, dir := range mod.GetStringList("include_dirs") {
+	for _, dir := range mod.GetAllStringList("include_dirs") {
 		incPath := dir
 		if !filepath.IsAbs(dir) {
 			if g.opts.IncludeRoot != "" {
@@ -1131,7 +1130,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	var filteredTier4 []string
 	for _, inc := range tier4 {
 		if hasApexHeaders && (g.opts.DisableSkipAbis || g.opts.SkipAbiLevel == 0) {
-			if strings.Contains(inc, "vndk") {
+			// drop VNDK sysroot includes, but not module paths that merely
+			// contain "vndk" (e.g. libvndksupport's local_include_dirs)
+			if strings.Contains(inc, "/vndk/") || strings.Contains(inc, "/vndk-") {
 				continue
 			}
 		}

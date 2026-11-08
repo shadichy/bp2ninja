@@ -192,7 +192,11 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 			if len(parts) >= 3 {
 				modName := parts[1]
 				outs := parts[3:]
-				info.ModuleOutputs[modName] = outs
+				var rebasedOuts []string
+				for _, o := range outs {
+					rebasedOuts = append(rebasedOuts, rebaseToken(o))
+				}
+				info.ModuleOutputs[modName] = rebasedOuts
 			}
 			outLines = append(outLines, line)
 			continue
@@ -236,13 +240,22 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 			} else {
 				targetList = strings.Fields(targetPart)
 			}
+			var rebasedTargets, rebasedImplicitTargets []string
 			for _, t := range targetList {
-				info.AllTargets = append(info.AllTargets, t)
+				rebased := rebaseToken(t)
+				rebasedTargets = append(rebasedTargets, rebased)
+				info.AllTargets = append(info.AllTargets, rebased)
 				// Infer module names and tagged outputs from canonical build targets if not explicitly set
-				inferModuleOutput(info, t, ruleName, inputsPart)
+				inferModuleOutput(info, rebased, ruleName, inputsPart)
 			}
 			for _, t := range implicitTargetList {
-				info.AllTargets = append(info.AllTargets, t)
+				rebased := rebaseToken(t)
+				rebasedImplicitTargets = append(rebasedImplicitTargets, rebased)
+				info.AllTargets = append(info.AllTargets, rebased)
+			}
+			rebasedTargetPart := strings.Join(rebasedTargets, " ")
+			if len(rebasedImplicitTargets) > 0 {
+				rebasedTargetPart += " | " + strings.Join(rebasedImplicitTargets, " ")
 			}
 
 			// Rebase inputs, implicit dependencies, and order-only dependencies
@@ -269,7 +282,7 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 				orderTokens = append(orderTokens, rebaseToken(tok))
 			}
 
-			rebasedBuild := fmt.Sprintf("build %s: %s %s", targetPart, ruleName, strings.Join(inTokens, " "))
+			rebasedBuild := fmt.Sprintf("build %s: %s %s", rebasedTargetPart, ruleName, strings.Join(inTokens, " "))
 			if len(implicitTokens) > 0 {
 				rebasedBuild += " | " + strings.Join(implicitTokens, " ")
 			}
@@ -304,6 +317,68 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 				rebased = append(rebased, rebaseImportFlag(f))
 			}
 			outLines = append(outLines, "  imports = "+strings.Join(rebased, " "))
+			continue
+		}
+
+		if strings.HasPrefix(line, "  includes = ") {
+			flags := strings.Fields(line[13:])
+			var rebased []string
+			for _, f := range flags {
+				rebased = append(rebased, rebaseImportFlag(f))
+			}
+			outLines = append(outLines, "  includes = "+strings.Join(rebased, " "))
+			continue
+		}
+
+		if strings.HasPrefix(line, "  ldflags = ") {
+			flags := strings.Fields(line[12:])
+			var rebased []string
+			for _, f := range flags {
+				if strings.HasPrefix(f, "-L") {
+					rebased = append(rebased, "-L"+rebaseToken(f[2:]))
+				} else if strings.HasPrefix(f, "-B") {
+					rebased = append(rebased, "-B"+rebaseToken(f[2:]))
+				} else if strings.HasPrefix(f, "-Wl,--version-script=") {
+					rebased = append(rebased, "-Wl,--version-script="+rebaseToken(f[22:]))
+				} else {
+					rebased = append(rebased, f)
+				}
+			}
+			outLines = append(outLines, "  ldflags = "+strings.Join(rebased, " "))
+			continue
+		}
+
+		if strings.HasPrefix(line, "  cflags = ") {
+			flags := strings.Fields(line[11:])
+			var rebased []string
+			for _, f := range flags {
+				if strings.HasPrefix(f, "-I") {
+					rebased = append(rebased, rebaseImportFlag(f))
+				} else {
+					rebased = append(rebased, f)
+				}
+			}
+			outLines = append(outLines, "  cflags = "+strings.Join(rebased, " "))
+			continue
+		}
+
+		if strings.HasPrefix(line, "  protoc_args = ") {
+			args := strings.Fields(line[16:])
+			var rebased []string
+			for _, arg := range args {
+				if strings.HasPrefix(arg, "--cpp_out=") {
+					rebased = append(rebased, "--cpp_out="+rebaseToken(arg[10:]))
+				} else if strings.HasPrefix(arg, "--java_out=") {
+					rebased = append(rebased, "--java_out="+rebaseToken(arg[11:]))
+				} else if strings.HasPrefix(arg, "--python_out=") {
+					rebased = append(rebased, "--python_out="+rebaseToken(arg[13:]))
+				} else if strings.HasPrefix(arg, "-I") {
+					rebased = append(rebased, rebaseImportFlag(arg))
+				} else {
+					rebased = append(rebased, rebaseToken(arg))
+				}
+			}
+			outLines = append(outLines, "  protoc_args = "+strings.Join(rebased, " "))
 			continue
 		}
 

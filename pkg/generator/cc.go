@@ -520,7 +520,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	cppflags = append(cppflags, archFlags...)
 	cflags = append(cflags, "-fPIC")
 	if g.opts.AllowMissingDeps {
-		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion", "-Wno-error=deprecated-declarations")
+		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion", "-Wno-error=deprecated-declarations", "-Wno-error=c99-designator", "-Wno-c99-designator")
 	}
 
 	// Apply C / C++ standard properties (c_std, cpp_std)

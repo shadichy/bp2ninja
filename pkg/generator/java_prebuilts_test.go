@@ -698,8 +698,8 @@ func TestJavaPluginAndAnnotationProcessing(t *testing.T) {
 	if !strings.Contains(ninjaContent, "dagger.internal.codegen.ComponentProcessor") {
 		t.Errorf("Expected ComponentProcessor in kapt command, got:\n%s", ninjaContent)
 	}
-	if !strings.Contains(ninjaContent, "-proc:only") {
-		t.Errorf("Expected javac -proc:only step, got:\n%s", ninjaContent)
+	if !strings.Contains(ninjaContent, "$turbine") || !strings.Contains(ninjaContent, "--gensrc_output") {
+		t.Errorf("Expected turbine APT step with --gensrc_output, got:\n%s", ninjaContent)
 	}
 	if !strings.Contains(ninjaContent, "-proc:none") {
 		t.Errorf("Expected javac -proc:none final compilation step, got:\n%s", ninjaContent)

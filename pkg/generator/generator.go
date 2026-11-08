@@ -842,6 +842,15 @@ func (g *Generator) emitHeader() error {
 		turbinePath = g.findPrebuiltHostTool("turbine")
 	}
 	if turbinePath == "" {
+		cand := "prebuilts/build-tools/common/framework/turbine.jar"
+		if g.opts.TopDir != "" {
+			cand = filepath.Join(g.opts.TopDir, cand)
+		}
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			turbinePath = "java -jar " + cand
+		}
+	}
+	if turbinePath == "" {
 		turbinePath = "turbine"
 	}
 	g.nw.Variable("turbine", turbinePath)

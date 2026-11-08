@@ -1261,6 +1261,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if kaptJar != "" {
 				rule = "kotlin_java_kapt_compile"
 				cpDeps = append(cpDeps, kaptJar)
+				cpDeps = append(cpDeps, procDeps...)
 
 				rawCp := strings.TrimPrefix(cpFlag, "-cp ")
 				javacCp := classOutDir
@@ -1299,43 +1300,89 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 					kaptProcessorArgs = append(kaptProcessorArgs, "-P plugin:org.jetbrains.kotlin.kapt3:processors="+p)
 				}
 
-				javacProcArg := ""
-				if len(procClasses) > 0 {
-					javacProcArg = "-processor " + strings.Join(procClasses, ",") + " "
+				var turbineBootCpArgs []string
+				var bootCpEntries []string
+				if len(g.opts.BootClasspath) > 0 {
+					bootCpEntries = append(bootCpEntries, g.opts.BootClasspath...)
+				}
+				if len(bootCpEntries) == 0 && g.opts.TopDir != "" {
+					artLegacyJar := filepath.Join(g.opts.TopDir, "prebuilts/sdk/current/public/art-coreplatform-legacy.jar")
+					if fi, err := os.Stat(artLegacyJar); err == nil && !fi.IsDir() {
+						bootCpEntries = append(bootCpEntries, artLegacyJar)
+					}
+				}
+				if len(bootCpEntries) == 0 {
+					if cj := g.resolveCurrentAndroidJar(); cj != "" {
+						bootCpEntries = append(bootCpEntries, cj)
+					}
+				}
+				if len(bootCpEntries) > 0 {
+					turbineBootCpArgs = append(turbineBootCpArgs, "--bootclasspath", strings.Join(bootCpEntries, " "))
 				}
 
-				procClasspathStr := strings.Join(procClasspath, ":")
+				var turbineCpArgs []string
+				if rawCp != "" {
+					var rawParts []string
+					for _, p := range strings.Split(rawCp, ":") {
+						if p != "" {
+							rawParts = append(rawParts, p)
+						}
+					}
+					if len(rawParts) > 0 {
+						turbineCpArgs = append(turbineCpArgs, "--classpath", strings.Join(rawParts, " "))
+					}
+				}
+
+				var turbineProcCpArgs []string
+				if len(procClasspath) > 0 {
+					turbineProcCpArgs = append(turbineProcCpArgs, "--processorpath", strings.Join(procClasspath, " "))
+				}
+
+				var turbineProcArgs []string
+				if len(procClasses) > 0 {
+					turbineProcArgs = append(turbineProcArgs, "--processors", strings.Join(procClasses, " "))
+				}
+
+				turbineStubsJar := filepath.Join(kaptDir, "turbine_stubs.jar")
+				turbineGenSrcJar := filepath.Join(kaptDir, "kapt_gen.srcjar")
+				turbineCmd := "$turbine --output " + turbineStubsJar + " --gensrc_output " + turbineGenSrcJar + " " +
+					strings.Join(turbineBootCpArgs, " ") + " --sources @" + aptSourcesList + " " +
+					strings.Join(turbineCpArgs, " ") + " " +
+					strings.Join(turbineProcArgs, " ") + " " +
+					strings.Join(turbineProcCpArgs, " ")
 
 				cmd = envPrefix + "rm -rf " + classOutDir + " " + kaptDir + " && " +
 					"mkdir -p " + classOutDir + " " + classesDir + " " + kaptStubsDir + " " + kaptSourcesDir + " " + kaptClassesDir + " " + kaptGenDir + " && " +
 					aidlGenCmd + srcjarExtractCmd + protoGenCmd +
-					"printf '<modules>\\n  <module name=\"%s\" type=\"java-production\" outputDir=\"%s\">\\n' " + mod.Name + " " + kaptClassesDir + " > " + buildXml + " && " +
-					"for cp in $$(echo \"" + rawCp + "\" | tr ':' ' '); do printf '    <classpath path=\"%s\"/>\\n' \"$$cp\" >> " + buildXml + "; done && " +
+					"printf '<modules>\\n  <module name=\"%s\" type=\"java-production\" outputDir=\"$$PWD/%s\">\\n' " + mod.Name + " " + kaptClassesDir + " > " + buildXml + " && " +
+					"for cp in $$(echo \"" + rawCp + "\" | tr ':' ' '); do case \"$$cp\" in /*) printf '    <classpath path=\"%s\"/>\\n' \"$$cp\" ;; *) printf '    <classpath path=\"$$PWD/%s\"/>\\n' \"$$cp\" ;; esac; done >> " + buildXml + " && " +
 					"for s in $$(cat " + rspFile + "); do " +
+					"case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$PWD/$$s\" ;; esac; " +
 					"case \"$$s\" in " +
-					"*.kt) printf '    <sources path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + " ;; " +
-					"*.java) printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + " ;; " +
+					"*.kt) printf '    <sources path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + " ;; " +
+					"*.java) printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + " ;; " +
 					"esac; " +
 					"done && " +
 					"for listf in " + filepath.Join(classesDir, "aidl.list") + " " + filepath.Join(classesDir, "proto.list") + " " + filepath.Join(classesDir, "srcjar.list") + "; do " +
-					"if [ -f \"$$listf\" ]; then for s in $$(cat \"$$listf\"); do printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$s\" >> " + buildXml + "; done; fi; " +
+					"if [ -f \"$$listf\" ]; then for s in $$(cat \"$$listf\"); do case \"$$s\" in /*) p=\"$$s\" ;; *) p=\"$$PWD/$$s\" ;; esac; printf '    <javaSourceRoots path=\"%s\"/>\\n' \"$$p\" >> " + buildXml + "; done; fi; " +
 					"done && " +
 					"printf '  </module>\\n</modules>\\n' >> " + buildXml + " && " +
 					"$kotlinc " + kaptJvmFlags + " -Xplugin=" + kaptJar + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:sources=" + kaptSourcesDir + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:classes=" + kaptClassesDir + " " +
-					"-P plugin:org.jetbrains.kotlin.kapt3:stubs=" + kaptStubsDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:sources=$$PWD/" + kaptSourcesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:classes=$$PWD/" + kaptClassesDir + " " +
+					"-P plugin:org.jetbrains.kotlin.kapt3:stubs=$$PWD/" + kaptStubsDir + " " +
 					"-P plugin:org.jetbrains.kotlin.kapt3:correctErrorTypes=true " +
 					"-P plugin:org.jetbrains.kotlin.kapt3:aptMode=stubs " +
 					strings.Join(kaptApClasspathArgs, " ") + " " +
 					strings.Join(kaptProcessorArgs, " ") + " " +
 					"-Xbuild-file=" + buildXml + " && " +
 					"find " + kaptStubsDir + " -name \"*.java\" > " + aptSourcesList + " && " +
-					"tr ' ' '\\n' < " + rspFile + " | grep '\\.java$$' >> " + aptSourcesList + " || true && " +
+					"for s in $$(cat " + rspFile + "); do case \"$$s\" in *.java) echo \"$$s\" >> " + aptSourcesList + " ;; esac; done && " +
 					"for listf in " + filepath.Join(classesDir, "aidl.list") + " " + filepath.Join(classesDir, "proto.list") + " " + filepath.Join(classesDir, "srcjar.list") + "; do " +
 					"if [ -f \"$$listf\" ]; then cat \"$$listf\" >> " + aptSourcesList + "; fi; " +
 					"done && " +
-					"$javac -encoding " + encoding + " -source 17 -target 17 -Xlint:-options " + sysModulesArg + patchModuleArg + "-cp " + rawCp + " -processorpath " + procClasspathStr + " " + javacProcArg + "-proc:only -s " + kaptGenDir + " @" + aptSourcesList + " && " +
+					turbineCmd + " && " +
+					"unzip -qo -d " + kaptGenDir + " " + turbineGenSrcJar + " 2>/dev/null || true && " +
 					"find " + kaptGenDir + " -name \"*.java\" > " + genList + " && " +
 					"$kotlinc " + ktFlagsArg + "-d " + classOutDir + " " + cpArg + ktFiles + extraKtSources + " @" + genList + " && " +
 					"cat " + aptSourcesList + " " + genList + " | sort -u | grep -v " + kaptStubsDir + " > " + javacList + " || true && " +

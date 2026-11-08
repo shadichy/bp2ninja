@@ -664,7 +664,7 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 			targets, err = g.generateJavaLibrary(mod)
 		case "java_sdk_library":
 			targets, err = g.generateJavaSdkLibrary(mod)
-		case "java_import", "android_library_import":
+		case "java_import", "java_import_host", "android_library_import":
 			targets, err = g.generateJavaImport(mod)
 		case "java_sdk_library_import":
 			targets, err = g.generateJavaSdkLibraryImport(mod)

@@ -1272,11 +1272,11 @@ func (g *Generator) emitStandardRules() error {
 	if hostSyspropCpp := g.findPrebuiltHostTool("sysprop_cpp"); hostSyspropCpp != "" {
 		syspropCppCmd = hostSyspropCpp
 	}
-	syspropCommand := "mkdir -p $$(dirname $out) && " +
+	syspropCommand := "outdir=$$(dirname $${out%% *}) && mkdir -p $$outdir && " +
 		"if command -v " + syspropCppCmd + " >/dev/null 2>&1; then " +
-		syspropCppCmd + " --header-dir $$(dirname $out) --public-header-dir $$(dirname $out) --source-dir $$(dirname $out) --include-name $$(basename $in).h $in && " +
-		"if [ ! -f $$(dirname $out)/$$(basename $in .sysprop).h ]; then ln -sf $$(basename $in).h $$(dirname $out)/$$(basename $in .sysprop).h; fi; " +
-		"else $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$(dirname $out); fi"
+		syspropCppCmd + " --header-dir $$outdir --public-header-dir $$outdir --source-dir $$outdir --include-name $$(basename $in).h $in && " +
+		"if [ ! -f $$outdir/$$(basename $in .sysprop).h ]; then ln -sf $$(basename $in).h $$outdir/$$(basename $in .sysprop).h; fi; " +
+		"else $${SYSPROP_CLI:-sysprop-cli} --cpp $in $$outdir; fi"
 	if err := g.nw.Rule(ninja.Rule{
 		Name:            "sysprop_cpp",
 		Command:         syspropCommand,

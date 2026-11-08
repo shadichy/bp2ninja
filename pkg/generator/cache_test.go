@@ -139,7 +139,8 @@ rule link_shared
   description = LINK $out
 
 build out/obj/sub_lib.o: cxx_compile src/lib.cpp
-build out/lib64/sub_lib.so: link_shared out/obj/sub_lib.o
+build out/obj/sub_order.o: cxx_compile src/lib.cpp | src/implicit.h || out/order.h
+build out/lib64/sub_lib.so: link_shared out/obj/sub_lib.o out/obj/sub_order.o
 
 build out/lib64/missing_dep.so: phony
 
@@ -177,6 +178,11 @@ default out/lib64/sub_lib.so
 	// Check that relative source was rebased to subproject/src/lib.cpp
 	if !strings.Contains(rebasedText, "build out/obj/sub_lib.o: cxx_compile subproject/src/lib.cpp") {
 		t.Errorf("Expected rebased source path 'subproject/src/lib.cpp', got:\n%s", rebasedText)
+	}
+
+	// Check that implicit and order-only dependencies are preserved cleanly without corruption
+	if !strings.Contains(rebasedText, "build out/obj/sub_order.o: cxx_compile subproject/src/lib.cpp | subproject/src/implicit.h || out/order.h") {
+		t.Errorf("Expected rebased implicit & order-only dependencies, got:\n%s", rebasedText)
 	}
 
 	// Check that empty fallback phony was stripped

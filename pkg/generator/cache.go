@@ -138,7 +138,7 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 
 	rebaseToken := func(p string) string {
 		p = strings.TrimSpace(p)
-		if p == "" || strings.HasPrefix(p, "$") || strings.HasPrefix(p, "-") || filepath.IsAbs(p) {
+		if p == "" || p == "|" || p == "||" || strings.HasPrefix(p, "$") || strings.HasPrefix(p, "-") || filepath.IsAbs(p) {
 			return p
 		}
 		if p == outDir || strings.HasPrefix(p, outDir+"/") {
@@ -245,26 +245,36 @@ func ParseAndRebaseCachedNinja(rootDir, subDir, outDir string) (*CachedNinjaInfo
 				info.AllTargets = append(info.AllTargets, t)
 			}
 
-			// Rebase inputs and order-only dependencies
-			var inTokens, orderTokens []string
+			// Rebase inputs, implicit dependencies, and order-only dependencies
+			var explicitPart, implicitPart, orderOnlyPart string
+			if dbarIdx := strings.Index(inputsPart, "||"); dbarIdx != -1 {
+				orderOnlyPart = strings.TrimSpace(inputsPart[dbarIdx+2:])
+				inputsPart = strings.TrimSpace(inputsPart[:dbarIdx])
+			}
 			if barIdx := strings.Index(inputsPart, "|"); barIdx != -1 {
-				inStr := strings.TrimSpace(inputsPart[:barIdx])
-				orderStr := strings.TrimSpace(inputsPart[barIdx+1:])
-				for _, tok := range strings.Fields(inStr) {
-					inTokens = append(inTokens, rebaseToken(tok))
-				}
-				for _, tok := range strings.Fields(orderStr) {
-					orderTokens = append(orderTokens, rebaseToken(tok))
-				}
+				implicitPart = strings.TrimSpace(inputsPart[barIdx+1:])
+				explicitPart = strings.TrimSpace(inputsPart[:barIdx])
 			} else {
-				for _, tok := range strings.Fields(inputsPart) {
-					inTokens = append(inTokens, rebaseToken(tok))
-				}
+				explicitPart = strings.TrimSpace(inputsPart)
+			}
+
+			var inTokens, implicitTokens, orderTokens []string
+			for _, tok := range strings.Fields(explicitPart) {
+				inTokens = append(inTokens, rebaseToken(tok))
+			}
+			for _, tok := range strings.Fields(implicitPart) {
+				implicitTokens = append(implicitTokens, rebaseToken(tok))
+			}
+			for _, tok := range strings.Fields(orderOnlyPart) {
+				orderTokens = append(orderTokens, rebaseToken(tok))
 			}
 
 			rebasedBuild := fmt.Sprintf("build %s: %s %s", targetPart, ruleName, strings.Join(inTokens, " "))
+			if len(implicitTokens) > 0 {
+				rebasedBuild += " | " + strings.Join(implicitTokens, " ")
+			}
 			if len(orderTokens) > 0 {
-				rebasedBuild += " | " + strings.Join(orderTokens, " ")
+				rebasedBuild += " || " + strings.Join(orderTokens, " ")
 			}
 			outLines = append(outLines, rebasedBuild)
 			continue

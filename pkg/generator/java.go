@@ -742,7 +742,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 	patchModuleArg := ""
 	sdkVer := mod.GetString("sdk_version")
 	patchModProp := mod.GetString("patch_module")
-	if patchModProp != "" || sdkVer == "" || sdkVer == "core_platform" || sdkVer == "platform_current" {
+	if !g.isHostModule(mod) && (patchModProp != "" || sdkVer == "" || sdkVer == "core_platform" || sdkVer == "platform_current") {
 		targetApi := g.opts.APILevel
 		if targetApi <= 0 {
 			targetApi = 34

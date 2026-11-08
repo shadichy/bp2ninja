@@ -46,7 +46,11 @@ func (g *Generator) generateRustBindgen(mod *eval.EvaluatedModule) ([]string, er
 		"cflags": shellJoin(cflags),
 	}
 	if len(bindgenFlags) > 0 {
-		vars["bindgen_flags"] = shellJoin(bindgenFlags)
+		escaped := make([]string, 0, len(bindgenFlags))
+		for _, f := range bindgenFlags {
+			escaped = append(escaped, strings.ReplaceAll(f, "$", "$$"))
+		}
+		vars["bindgen_flags"] = shellJoin(escaped)
 	}
 
 	var inputs []string

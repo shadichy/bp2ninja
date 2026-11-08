@@ -315,6 +315,16 @@ func (g *Generator) resolvePlugins(mod *eval.EvaluatedModule) ([]string, []strin
 			}
 		}
 
+		// Known processor class fallback if module was prebuilt/imported without in-tree Blueprint
+		switch pName {
+		case "dagger2-compiler":
+			procClasses = append(procClasses, "dagger.internal.codegen.ComponentProcessor")
+		case "androidx.room_room-compiler-plugin":
+			procClasses = append(procClasses, "androidx.room.RoomProcessor")
+		case "auto_service_plugin":
+			procClasses = append(procClasses, "com.google.auto.service.processor.AutoServiceProcessor")
+		}
+
 		// Known processor requirements (e.g. Dagger 2.51 runtime dependencies)
 		if pName == "dagger2-compiler" || strings.Contains(strings.Join(procClasses, " "), "ComponentProcessor") {
 			for _, req := range []string{

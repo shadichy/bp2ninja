@@ -295,19 +295,27 @@ func (g *Generator) generateJavaAconfigLibrary(mod *eval.EvaluatedModule) ([]str
 	var cpEntries []string
 	var cpDeps []string
 
-	// aconfig annotations
-	annJar := filepath.Join(g.libDir(), "aconfig-annotations-lib.jar")
-	if g.opts.AllowMissingDeps {
-		g.emitPhonyIfNeeded(annJar)
+	resolveOrPhony := func(depName string) string {
+		targets := g.resolveJarTargets(depName)
+		for _, t := range targets {
+			if !g.emittedPhonies[t] {
+				return t
+			}
+		}
+		jar := filepath.Join(g.libDir(), depName+".jar")
+		if g.opts.AllowMissingDeps {
+			g.emitPhonyIfNeeded(jar)
+		}
+		return jar
 	}
+
+	// aconfig annotations
+	annJar := resolveOrPhony("aconfig-annotations-lib")
 	cpEntries = append(cpEntries, annJar)
 	cpDeps = append(cpDeps, annJar)
 
 	// unsupportedappusage
-	unsuppJar := filepath.Join(g.libDir(), "unsupportedappusage.jar")
-	if g.opts.AllowMissingDeps {
-		g.emitPhonyIfNeeded(unsuppJar)
-	}
+	unsuppJar := resolveOrPhony("unsupportedappusage")
 	cpEntries = append(cpEntries, unsuppJar)
 	cpDeps = append(cpDeps, unsuppJar)
 

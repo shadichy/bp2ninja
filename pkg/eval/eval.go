@@ -808,7 +808,7 @@ func (m *EvaluatedModule) IsHostOnly() bool {
 	if m == nil {
 		return false
 	}
-	if strings.HasSuffix(m.Type, "_host") || strings.Contains(m.Type, "_host_") || strings.HasPrefix(m.Type, "host_") {
+	if strings.HasSuffix(m.Type, "_host") || strings.Contains(m.Type, "_host_") || strings.HasPrefix(m.Type, "host_") || m.Type == "java_plugin" {
 		return true
 	}
 	return !m.IsDeviceSupported() && m.IsHostSupported()

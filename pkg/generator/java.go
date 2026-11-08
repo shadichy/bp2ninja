@@ -204,6 +204,8 @@ func (g *Generator) resolveStaticLibsJars(mod *eval.EvaluatedModule) []string {
 				protoLib = "libprotobuf-java-lite"
 			case "micro":
 				protoLib = "libprotobuf-java-micro"
+			default:
+				protoLib = "libprotobuf-java-full"
 			}
 			if protoLib != "" && !visited[protoLib] {
 				visited[protoLib] = true
@@ -442,6 +444,8 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 				protoLib = "libprotobuf-java-lite"
 			case "micro":
 				protoLib = "libprotobuf-java-micro"
+			default:
+				protoLib = "libprotobuf-java-full"
 			}
 			if protoLib != "" && !visited[protoLib] {
 				visited[protoLib] = true
@@ -486,7 +490,7 @@ func (g *Generator) buildClasspath(mod *eval.EvaluatedModule) (cpFlag string, cp
 	// =========================================================================
 	// Tier 3: Android SDK android.jar and Platform Classpath (sdk_version aware)
 	// =========================================================================
-	if !g.opts.IsHost {
+	if !g.isHostModule(mod) {
 		sdkVer := mod.GetString("sdk_version")
 		if sdkVer == "" {
 			// SdkPrivate / Platform build:
@@ -1073,6 +1077,16 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 				paramPrefix = strings.Join(outputParams, ",") + ":"
 			}
 			outFlag = "--java_out=" + paramPrefix + protoDir
+			if fullJar := g.resolvePhysicalJar("libprotobuf-java-full"); fullJar != "" {
+				cpDeps = append(cpDeps, fullJar)
+				var currentCp []string
+				if cpFlag != "" {
+					currentCp = strings.Split(strings.TrimPrefix(cpFlag, "-cp "), ":")
+				}
+				currentCp = append(currentCp, fullJar)
+				currentCp = dedup(currentCp)
+				cpFlag = "-cp " + strings.Join(currentCp, ":")
+			}
 		}
 
 		protoGenCmd = "mkdir -p " + protoDir + " && " + protoc + " " + strings.Join(protoIncludes, " ") + " " + outFlag + " " + strings.Join(protoSrcs, " ") + " && find " + protoDir + " -name '*.java' > " + classesDir + "/proto.list && "

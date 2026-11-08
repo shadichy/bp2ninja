@@ -2172,6 +2172,8 @@ func (g *Generator) IsTransitiveInputOf(candidate, rootModuleName string, visite
 	deps = append(deps, rootMod.GetStringList("defaults")...)
 	deps = append(deps, rootMod.GetStringList("static_libs")...)
 	deps = append(deps, rootMod.GetStringList("libs")...)
+	deps = append(deps, rootMod.GetStringList("plugins")...)
+	deps = append(deps, rootMod.GetStringList("exported_plugins")...)
 	for _, src := range rootMod.GetStringList("srcs") {
 		if strings.HasPrefix(src, ":") {
 			deps = append(deps, strings.TrimPrefix(src, ":"))

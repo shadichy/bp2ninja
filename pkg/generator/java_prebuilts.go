@@ -72,6 +72,8 @@ var soongPrebuiltJarAliases = map[string][]string{
 	"tagsoup":                 {"tagsoup.jar"},
 	"rappor":                  {"rappor.jar"},
 	"libphonenumber-platform": {"libphonenumber-platform.jar", "libphonenumber.jar"},
+	"libprotobuf-java-full":   {"protobuf-java-3.25.3.jar", "libprotobuf-java-full.jar"},
+	"host-libprotobuf-java-full": {"protobuf-java-3.25.3.jar", "libprotobuf-java-full.jar"},
 	"libprotobuf-java-nano":   {"protobuf-java-3.25.3.jar", "libprotobuf-java-nano.jar"},
 	"libprotobuf-java-lite":   {"protobuf-javalite-3.25.3.jar", "libprotobuf-java-lite.jar"},
 

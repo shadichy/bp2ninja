@@ -235,8 +235,6 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		cleanCppName := strings.TrimPrefix(cppModName, "lib")
 		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "cpp")
 		hdrDir := filepath.Join(genDir, "include")
-		genCpp := filepath.Join(genDir, mod.Name+".cpp")
-		genHdr := filepath.Join(hdrDir, mod.Name+".h")
 
 		vars := map[string]string{
 			"header_dir": hdrDir,
@@ -247,19 +245,29 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 			vars["optional_flags"] = shellJoin(optFlags)
 		}
 
+		var genCpps []string
+		var objs []string
+		objDir := g.objDir(cppModName)
+		for _, f := range aidlFiles {
+			rel := strings.TrimSuffix(f, ".aidl")
+			genCpps = append(genCpps, filepath.Join(genDir, rel+".cpp"))
+			objs = append(objs, filepath.Join(objDir, filepath.Base(rel)+".o"))
+		}
+		if len(genCpps) == 0 {
+			genCpps = []string{filepath.Join(genDir, mod.Name+".cpp")}
+			objs = []string{filepath.Join(objDir, mod.Name+".o")}
+		}
+
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:         []string{genCpp},
-			ImplicitOutputs: []string{genHdr},
-			Rule:            "aidl_cpp",
-			Inputs:          aidlFiles,
-			Variables:       vars,
+			Outputs:   genCpps,
+			Rule:      "aidl_cpp",
+			Inputs:    aidlFiles,
+			Variables: vars,
 		}); err != nil {
 			return nil, err
 		}
 
 		// Compile generated C++
-		objDir := g.objDir(cppModName)
-		obj := filepath.Join(objDir, mod.Name+".o")
 		includes := dedup(append(g.resolveIncludeDirs(mod), "-I"+hdrDir, "-I"+genDir))
 		compileVars := map[string]string{
 			"includes": shellJoin(includes),
@@ -268,13 +276,15 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 			compileVars["cflags"] = shellJoin(cflags)
 		}
 
-		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{obj},
-			Rule:      "cc_compile",
-			Inputs:    []string{genCpp},
-			Variables: compileVars,
-		}); err != nil {
-			return nil, err
+		for i, cpp := range genCpps {
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs:   []string{objs[i]},
+				Rule:      "cxx_compile",
+				Inputs:    []string{cpp},
+				Variables: compileVars,
+			}); err != nil {
+				return nil, err
+			}
 		}
 
 		staticTarget := filepath.Join(g.libDir(), "lib"+cleanCppName+".a")
@@ -283,14 +293,14 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		_ = g.nw.Build(ninja.BuildEdge{
 			Outputs: []string{staticTarget},
 			Rule:    "archive_static",
-			Inputs:  []string{obj},
+			Inputs:  objs,
 		})
 
 		cppLibs := []string{"-lbinder", "-lutils"}
 		_ = g.nw.Build(ninja.BuildEdge{
 			Outputs: []string{sharedTarget},
 			Rule:    "link_shared",
-			Inputs:  []string{obj},
+			Inputs:  objs,
 			Variables: map[string]string{
 				"ldflags": shellJoin(ldflags),
 				"libs":    shellJoin(cppLibs),
@@ -314,8 +324,6 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		cleanNdkName := strings.TrimPrefix(ndkModName, "lib")
 		genDir := filepath.Join(g.opts.OutDir, "gen", mod.Name, "ndk")
 		hdrDir := filepath.Join(genDir, "include")
-		genCpp := filepath.Join(genDir, mod.Name+".cpp")
-		genHdr := filepath.Join(hdrDir, mod.Name+".h")
 
 		vars := map[string]string{
 			"header_dir": hdrDir,
@@ -326,19 +334,29 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 			vars["optional_flags"] = shellJoin(optFlags)
 		}
 
+		var genCpps []string
+		var objs []string
+		objDir := g.objDir(ndkModName)
+		for _, f := range aidlFiles {
+			rel := strings.TrimSuffix(f, ".aidl")
+			genCpps = append(genCpps, filepath.Join(genDir, rel+".cpp"))
+			objs = append(objs, filepath.Join(objDir, filepath.Base(rel)+".o"))
+		}
+		if len(genCpps) == 0 {
+			genCpps = []string{filepath.Join(genDir, mod.Name+".cpp")}
+			objs = []string{filepath.Join(objDir, mod.Name+".o")}
+		}
+
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:         []string{genCpp},
-			ImplicitOutputs: []string{genHdr},
-			Rule:            "aidl_ndk",
-			Inputs:          aidlFiles,
-			Variables:       vars,
+			Outputs:   genCpps,
+			Rule:      "aidl_ndk",
+			Inputs:    aidlFiles,
+			Variables: vars,
 		}); err != nil {
 			return nil, err
 		}
 
 		// Compile generated NDK C++
-		objDir := g.objDir(ndkModName)
-		obj := filepath.Join(objDir, mod.Name+".o")
 		includes := dedup(append(g.resolveIncludeDirs(mod), "-I"+hdrDir, "-I"+genDir))
 		compileVars := map[string]string{
 			"includes": shellJoin(includes),
@@ -347,13 +365,15 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 			compileVars["cflags"] = shellJoin(cflags)
 		}
 
-		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{obj},
-			Rule:      "cc_compile",
-			Inputs:    []string{genCpp},
-			Variables: compileVars,
-		}); err != nil {
-			return nil, err
+		for i, cpp := range genCpps {
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs:   []string{objs[i]},
+				Rule:      "cxx_compile",
+				Inputs:    []string{cpp},
+				Variables: compileVars,
+			}); err != nil {
+				return nil, err
+			}
 		}
 
 		staticTarget := filepath.Join(g.libDir(), "lib"+cleanNdkName+".a")
@@ -362,14 +382,14 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		_ = g.nw.Build(ninja.BuildEdge{
 			Outputs: []string{staticTarget},
 			Rule:    "archive_static",
-			Inputs:  []string{obj},
+			Inputs:  objs,
 		})
 
 		ndkLibs := []string{"-lbinder_ndk"}
 		_ = g.nw.Build(ninja.BuildEdge{
 			Outputs: []string{sharedTarget},
 			Rule:    "link_shared",
-			Inputs:  []string{obj},
+			Inputs:  objs,
 			Variables: map[string]string{
 				"ldflags": shellJoin(ldflags),
 				"libs":    shellJoin(ndkLibs),
@@ -530,21 +550,53 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		vPrefix := mod.Name + "-V" + v
 		if len(cppTargets) > 0 {
 			vCpp := vPrefix + "-cpp"
-			g.moduleOutputs[vCpp] = cppTargets
+			vClean := strings.TrimPrefix(vCpp, "lib")
+			vStaticTarget := filepath.Join(g.libDir(), "lib"+vClean+".a")
+			vSharedTarget := filepath.Join(g.libDir(), "lib"+vClean+".so")
+
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vStaticTarget},
+				Rule:    "copy",
+				Inputs:  []string{cppTargets[1]},
+			})
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vSharedTarget},
+				Rule:    "copy",
+				Inputs:  []string{cppTargets[0]},
+			})
+			vCppTargets := []string{vSharedTarget, vStaticTarget}
+			g.moduleOutputs[vCpp] = vCppTargets
 			_ = g.nw.Build(ninja.BuildEdge{
 				Outputs: []string{vCpp},
 				Rule:    "phony",
-				Inputs:  cppTargets,
+				Inputs:  vCppTargets,
 			})
+			allTargets = append(allTargets, vCppTargets...)
 		}
 		if len(ndkTargets) > 0 {
 			vNdk := vPrefix + "-ndk"
-			g.moduleOutputs[vNdk] = ndkTargets
+			vClean := strings.TrimPrefix(vNdk, "lib")
+			vStaticTarget := filepath.Join(g.libDir(), "lib"+vClean+".a")
+			vSharedTarget := filepath.Join(g.libDir(), "lib"+vClean+".so")
+
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vStaticTarget},
+				Rule:    "copy",
+				Inputs:  []string{ndkTargets[1]},
+			})
+			_ = g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{vSharedTarget},
+				Rule:    "copy",
+				Inputs:  []string{ndkTargets[0]},
+			})
+			vNdkTargets := []string{vSharedTarget, vStaticTarget}
+			g.moduleOutputs[vNdk] = vNdkTargets
 			_ = g.nw.Build(ninja.BuildEdge{
 				Outputs: []string{vNdk},
 				Rule:    "phony",
-				Inputs:  ndkTargets,
+				Inputs:  vNdkTargets,
 			})
+			allTargets = append(allTargets, vNdkTargets...)
 		}
 		if len(javaTargets) > 0 {
 			vJava := vPrefix + "-java"

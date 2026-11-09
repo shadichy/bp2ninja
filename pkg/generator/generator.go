@@ -1482,9 +1482,7 @@ func (g *Generator) emitStandardRules() error {
 	// AIDL C++ codegen
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "aidl_cpp",
-		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=cpp $optional_flags --ninja -d $out.d -h $header_dir -o $out_dir $imports $in",
-		DepFile:       "$out.d",
-		Deps:          "gcc",
+		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=cpp $optional_flags -h $header_dir -o $out_dir $imports $in",
 		Description:   "AIDL_CPP $out",
 		RestatContent: g.opts.Siso,
 	}); err != nil {
@@ -1494,9 +1492,7 @@ func (g *Generator) emitStandardRules() error {
 	// AIDL NDK codegen
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "aidl_ndk",
-		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=ndk $optional_flags --ninja -d $out.d -h $header_dir -o $out_dir $imports $in",
-		DepFile:       "$out.d",
-		Deps:          "gcc",
+		Command:       "mkdir -p $header_dir $out_dir && $aidl --lang=ndk $optional_flags -h $header_dir -o $out_dir $imports $in",
 		Description:   "AIDL_NDK $out",
 		RestatContent: g.opts.Siso,
 	}); err != nil {

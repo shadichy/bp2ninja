@@ -327,10 +327,11 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		}
 
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{genCpp, genHdr},
-			Rule:      "aidl_ndk",
-			Inputs:    aidlFiles,
-			Variables: vars,
+			Outputs:         []string{genCpp},
+			ImplicitOutputs: []string{genHdr},
+			Rule:            "aidl_ndk",
+			Inputs:          aidlFiles,
+			Variables:       vars,
 		}); err != nil {
 			return nil, err
 		}

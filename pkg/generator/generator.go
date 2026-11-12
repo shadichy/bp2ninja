@@ -894,6 +894,22 @@ func (g *Generator) emitHeader() error {
 		stripPath = "$ndk" + strings.TrimPrefix(stripPath, g.opts.NDKDir)
 	}
 	g.nw.Variable("strip", stripPath)
+
+	objcopyPath := "llvm-objcopy"
+	if g.opts.ClangCxxPath != "" {
+		cand := filepath.Join(filepath.Dir(g.opts.ClangCxxPath), "llvm-objcopy")
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			objcopyPath = cand
+		}
+	}
+	if g.opts.NDKDir != "" {
+		ndkObjcopy := filepath.Join(g.opts.NDKDir, "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy")
+		if fi, err := os.Stat(ndkObjcopy); err == nil && !fi.IsDir() {
+			objcopyPath = "$ndk" + strings.TrimPrefix(ndkObjcopy, g.opts.NDKDir)
+		}
+	}
+	g.nw.Variable("objcopy", objcopyPath)
+
 	g.nw.Variable("aapt2", g.opts.Aapt2Path)
 	kotlincPath := g.opts.KotlincPath
 	if kotlincPath == "" || kotlincPath == "kotlinc" {
@@ -1089,6 +1105,15 @@ func (g *Generator) emitStandardRules() error {
 		Name:        "link_binary",
 		Command:     "$cxx -o $out $in $ldflags $${LDFLAGS} $libs",
 		Description: "LINK_BINARY $out",
+	}); err != nil {
+		return err
+	}
+
+	// Prefix symbols in binary or object (e.g. __dl_ for linker64)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:        "prefix_symbols",
+		Command:     "$objcopy --prefix-symbols=$prefix $in $out",
+		Description: "PREFIX_SYMBOLS $out",
 	}); err != nil {
 		return err
 	}

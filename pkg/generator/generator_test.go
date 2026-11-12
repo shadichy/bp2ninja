@@ -2041,6 +2041,98 @@ cc_binary {
 	}
 }
 
+func TestAuthenticStaticPieLinker64(t *testing.T) {
+	bp := `
+cc_binary {
+    name: "linker",
+    srcs: ["linker_main.cpp"],
+    multilib: {
+        lib64: {
+            suffix: "64",
+        },
+    },
+    static_executable: true,
+    nocrt: true,
+    prefix_symbols: "__dl_",
+    ldflags: [
+        "-shared",
+        "-Wl,-Bsymbolic",
+        "-Wl,--exclude-libs,ALL",
+        "-Wl,-soname,ld-android.so",
+    ],
+    static_libs: ["libc_nomalloc"],
+}
+`
+	ctx := eval.NewContext(nil, "x86_64")
+	ast, errs := parser.Parse("Android.bp", strings.NewReader(bp), parser.NewScope(nil))
+	if len(errs) > 0 {
+		t.Fatalf("Parse error: %v", errs)
+	}
+	if err := ctx.EvalFileInDir(ast, ""); err != nil {
+		t.Fatalf("EvalFileInDir failed: %v", err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	opts.APILevel = 34
+	gen := New(opts, nw, nil)
+	if err := gen.Generate(ctx.Modules); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Multilib lib64 suffix -> linker64
+	expectedUnprefixed := filepath.Join("out", "obj", "linker64.unprefixed")
+	expectedFinalTarget := filepath.Join("out", "bin", "linker64")
+
+	if !strings.Contains(content, "build "+expectedUnprefixed+": link_binary") {
+		t.Errorf("Expected link_binary for unprefixed target %s, got:\n%s", expectedUnprefixed, content)
+	}
+
+	// 2. prefix_symbols objcopy step
+	if !strings.Contains(content, "build "+expectedFinalTarget+": prefix_symbols "+expectedUnprefixed) {
+		t.Errorf("Expected prefix_symbols rule from %s to %s, got:\n%s", expectedUnprefixed, expectedFinalTarget, content)
+	}
+	if !strings.Contains(content, "prefix = __dl_") {
+		t.Errorf("Expected prefix = __dl_ in prefix_symbols edge, got:\n%s", content)
+	}
+
+	// 3. Static-PIE gating: -shared must be present, but -static must be suppressed
+	if !strings.Contains(content, "-shared") {
+		t.Errorf("Expected -shared in ldflags, got:\n%s", content)
+	}
+	// Check that -static alone as a token is not in ldflags
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "ldflags =") {
+			tokens := strings.Fields(line)
+			for _, tok := range tokens {
+				if tok == "-static" {
+					t.Errorf("Found forbidden -static in static-pie ldflags: %s", line)
+				}
+			}
+		}
+	}
+
+	// 4. nocrt: true -> -nostdlib -nostartfiles
+	if !strings.Contains(content, "-nostartfiles") || !strings.Contains(content, "-nostdlib") {
+		t.Errorf("Expected -nostdlib and -nostartfiles in ldflags, got:\n%s", content)
+	}
+
+	// 5. Relocation packing for API >= 30
+	if !strings.Contains(content, "-Wl,--pack-dyn-relocs=android+relr") {
+		t.Errorf("Expected -Wl,--pack-dyn-relocs=android+relr in ldflags, got:\n%s", content)
+	}
+
+	// 6. Symlink alias "linker" -> "linker64"
+	expectedSymlink := filepath.Join("out", "bin", "linker")
+	if !strings.Contains(content, "build "+expectedSymlink+": symlink "+expectedFinalTarget) {
+		t.Errorf("Expected symlink alias %s -> %s, got:\n%s", expectedSymlink, expectedFinalTarget, content)
+	}
+}
+
 func TestNdkLibraryVersionScript(t *testing.T) {
 	bp := `
 ndk_library {

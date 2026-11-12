@@ -79,15 +79,25 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 	if binName == "" {
 		binName = mod.Name
 	}
+	// Append multilib/architecture suffix (e.g. "64" from multilib.lib64.suffix for linker64)
+	if suffix := mod.GetString("suffix"); suffix != "" && !strings.HasSuffix(binName, suffix) {
+		binName += suffix
+	}
 	target := filepath.Join(g.binDir(), binName)
 	ldflags, libs := g.resolveLinkerArgs(mod)
 
 	// Bare-metal / self-relocating binary support (e.g. linker64)
 	if mod.GetBool("nocrt") || mod.GetBool("no_default_compiler_flags") {
-		ldflags = append(ldflags, "-nostartfiles")
+		ldflags = append(ldflags, "-nostdlib", "-nostartfiles")
 	}
 	if mod.GetBool("static_executable") || mod.GetBool("force_static_executable") {
-		ldflags = append(ldflags, "-static")
+		// Static-PIE / loader support:
+		// Clang driver needs -static to create static executable.
+		// However, bionic/linker uses -shared to overwrite (self-relocating PIE).
+		// If -shared is in ldflags, do not pass -static as LLD/Clang will error.
+		if !hasSharedFlag(ldflags) {
+			ldflags = append(ldflags, "-static")
+		}
 	}
 	ldflags = dedup(ldflags)
 
@@ -101,8 +111,14 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 
 	implicits := g.collectLinkImplicits(mod)
 
+	linkTarget := target
+	prefix := mod.GetString("prefix_symbols")
+	if prefix != "" {
+		linkTarget = filepath.Join(g.opts.OutDir, "obj", binName+".unprefixed")
+	}
+
 	err = g.nw.Build(ninja.BuildEdge{
-		Outputs:   []string{target},
+		Outputs:   []string{linkTarget},
 		Rule:      "link_binary",
 		Inputs:    objs,
 		Implicits: implicits,
@@ -111,6 +127,21 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 	if err != nil {
 		return nil, err
 	}
+
+	if prefix != "" {
+		err = g.nw.Build(ninja.BuildEdge{
+			Outputs:   []string{target},
+			Rule:      "prefix_symbols",
+			Inputs:    []string{linkTarget},
+			Variables: map[string]string{
+				"prefix": prefix,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	targets := []string{target}
 
 	if binName != mod.Name {
@@ -1399,6 +1430,15 @@ func stripIncludeFlags(flags []string) []string {
 	return clean
 }
 
+func hasSharedFlag(flags []string) bool {
+	for _, f := range flags {
+		if f == "-shared" || f == "-Wl,-shared" || f == "-Wl,--shared" {
+			return true
+		}
+	}
+	return false
+}
+
 var compoundFlags = map[string]bool{
 	"-isystem":           true,
 	"-idirafter":         true,
@@ -1566,14 +1606,41 @@ func (g *Generator) collectLinkImplicits(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	// Version scripts from ldflags
+	// Version scripts and linker scripts from ldflags
 	for _, f := range mod.GetStringList("ldflags") {
 		if strings.HasPrefix(f, "-Wl,--version-script=") {
 			target := strings.TrimPrefix(f, "-Wl,--version-script=")
 			if strings.HasPrefix(target, ":") {
 				implicits = append(implicits, g.resolveReference(target)...)
 			} else {
+				if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(target) {
+					target = filepath.Clean(filepath.Join(mod.Dir, target))
+				}
 				implicits = append(implicits, target)
+			}
+		} else if strings.HasPrefix(f, "-Wl,--script=") || strings.HasPrefix(f, "-Wl,--script,") {
+			target := strings.TrimPrefix(f, "-Wl,--script=")
+			target = strings.TrimPrefix(target, "-Wl,--script,")
+			if strings.HasPrefix(target, ":") {
+				implicits = append(implicits, g.resolveReference(target)...)
+			} else {
+				if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(target) {
+					target = filepath.Clean(filepath.Join(mod.Dir, target))
+				}
+				implicits = append(implicits, target)
+			}
+		} else if strings.HasPrefix(f, "-Wl,-T,") || strings.HasPrefix(f, "-T") {
+			target := strings.TrimPrefix(f, "-Wl,-T,")
+			target = strings.TrimPrefix(target, "-T")
+			if target != "" {
+				if strings.HasPrefix(target, ":") {
+					implicits = append(implicits, g.resolveReference(target)...)
+				} else {
+					if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(target) {
+						target = filepath.Clean(filepath.Join(mod.Dir, target))
+					}
+					implicits = append(implicits, target)
+				}
 			}
 		}
 	}
@@ -1711,6 +1778,35 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 	if !g.isHostModule(mod) {
 		ldflags = append(ldflags, g.archCodegenFlags()...)
 		ldflags = append(ldflags, g.crossTargetFlags()...)
+
+		// Global Android relocation packing for API >= 30 (SHT_RELR) or API >= 28 (ANDROID_RELR)
+		isPureStatic := (mod.Type == "cc_binary" || mod.Type == "cc_binary_host") &&
+			(mod.GetBool("static_executable") || mod.GetBool("force_static_executable")) &&
+			!hasSharedFlag(ldflags)
+
+		if !isPureStatic {
+			hasPackRelocs := false
+			for _, f := range ldflags {
+				if strings.HasPrefix(f, "-Wl,--pack-dyn-relocs=") {
+					hasPackRelocs = true
+					break
+				}
+			}
+			if !hasPackRelocs {
+				packProp := mod.GetString("pack_relocations")
+				if packProp != "none" && packProp != "false" {
+					targetApi := g.opts.APILevel
+					if targetApi <= 0 {
+						targetApi = 34
+					}
+					if targetApi >= 30 {
+						ldflags = append(ldflags, "-Wl,--pack-dyn-relocs=android+relr")
+					} else if targetApi >= 28 {
+						ldflags = append(ldflags, "-Wl,--pack-dyn-relocs=android")
+					}
+				}
+			}
+		}
 	} else if g.opts.ClangCxxPath != "" {
 		clangHostLib := filepath.Join(filepath.Dir(filepath.Dir(g.opts.ClangCxxPath)), "lib", "x86_64-unknown-linux-gnu")
 		if fi, err := os.Stat(clangHostLib); err == nil && fi.IsDir() {
@@ -1985,10 +2081,16 @@ func (g *Generator) generateCcObject(mod *eval.EvaluatedModule) ([]string, error
 		return nil, nil
 	}
 
+	prefix := mod.GetString("prefix_symbols")
+	objLinkTarget := target
+	if prefix != "" {
+		objLinkTarget = filepath.Join(g.objDir(mod.Name), stem+".unprefixed")
+	}
+
 	if len(allObjs) == 1 {
-		if allObjs[0] != target {
+		if allObjs[0] != objLinkTarget {
 			if err := g.nw.Build(ninja.BuildEdge{
-				Outputs: []string{target},
+				Outputs: []string{objLinkTarget},
 				Rule:    "copy",
 				Inputs:  []string{allObjs[0]},
 			}); err != nil {
@@ -2002,10 +2104,23 @@ func (g *Generator) generateCcObject(mod *eval.EvaluatedModule) ([]string, error
 			vars["ldflags"] = shellJoin(ldflags)
 		}
 		if err := g.nw.Build(ninja.BuildEdge{
-			Outputs:   []string{target},
+			Outputs:   []string{objLinkTarget},
 			Rule:      "partial_link",
 			Inputs:    allObjs,
 			Variables: vars,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	if prefix != "" {
+		if err := g.nw.Build(ninja.BuildEdge{
+			Outputs: []string{target},
+			Rule:    "prefix_symbols",
+			Inputs:  []string{objLinkTarget},
+			Variables: map[string]string{
+				"prefix": prefix,
+			},
 		}); err != nil {
 			return nil, err
 		}

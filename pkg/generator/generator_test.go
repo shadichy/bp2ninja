@@ -3520,3 +3520,100 @@ func TestMissingReferencedInputsPhonyUnderAllowMissingDeps(t *testing.T) {
 		t.Errorf("Expected phony line %q in ninja output, got:\n%s", expectedPhonyLine, ninjaContent)
 	}
 }
+
+func TestRootHeadersDoNotSuppressSubmodules(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	gen := New(opts, nw, nil)
+
+	rootHdrMod := &eval.EvaluatedModule{
+		Type: "cc_library_headers",
+		Name: "libmedia_headers",
+		Dir:  "",
+		Properties: map[string]interface{}{
+			"name":                "libmedia_headers",
+			"export_include_dirs": []interface{}{"include"},
+		},
+	}
+
+	childLibMod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libaudioutil",
+		Dir:  "libaudioutil",
+		Properties: map[string]interface{}{
+			"name": "libaudioutil",
+			"srcs": []interface{}{"util.cpp"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{rootHdrMod, childLibMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	hdrPhony := filepath.Join("out", "headers", "libmedia_headers")
+	childLib := filepath.Join("out", "lib64", "libaudioutil.so")
+
+	if strings.Contains(content, "default "+hdrPhony) {
+		t.Errorf("Root cc_library_headers phony %s must not become default target:\n%s", hdrPhony, content)
+	}
+	if !strings.Contains(content, "default "+childLib) {
+		t.Errorf("Expected child library %s to be included in default targets, got:\n%s", childLib, content)
+	}
+}
+
+func TestAndroidAppUsesModuleScopedAndroidJar(t *testing.T) {
+	tmpDir := t.TempDir()
+	sdkDir := filepath.Join(tmpDir, "prebuilts", "sdk", "34", "system")
+	pubDir := filepath.Join(tmpDir, "prebuilts", "sdk", "34", "public")
+	for _, d := range []string{sdkDir, pubDir, filepath.Join(tmpDir, "app", "res", "values")} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sysJar := filepath.Join(sdkDir, "android.jar")
+	pubJar := filepath.Join(pubDir, "android.jar")
+	manifest := filepath.Join(tmpDir, "app", "AndroidManifest.xml")
+	srcJava := filepath.Join(tmpDir, "app", "Main.java")
+	if err := os.WriteFile(sysJar, []byte("sys"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pubJar, []byte("pub"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(`<manifest package="com.example.sys"/>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcJava, []byte(`package com.example.sys; class Main {}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(tmpDir, "out")
+	opts.TopDir = tmpDir
+	opts.APILevel = 34
+	gen := New(opts, nw, nil)
+
+	appMod := &eval.EvaluatedModule{
+		Type: "android_app",
+		Name: "SysPrivApp",
+		Dir:  "app",
+		Properties: map[string]interface{}{
+			"name":        "SysPrivApp",
+			"sdk_version": "system_current",
+			"srcs":        []interface{}{"Main.java"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{appMod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	if !strings.Contains(content, sysJar) {
+		t.Errorf("Expected android_app with system_current to link against %s, got:\n%s", sysJar, content)
+	}
+}

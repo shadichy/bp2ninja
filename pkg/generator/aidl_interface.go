@@ -442,6 +442,22 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 		javaDepTargets = dedup(javaDepTargets)
 
 		var aidlCp []string
+		for _, bcp := range g.opts.BootClasspath {
+			if bcp != "" {
+				if fi, err := os.Stat(bcp); err == nil && !fi.IsDir() {
+					aidlCp = append(aidlCp, bcp)
+					javaDepTargets = append(javaDepTargets, bcp)
+				}
+			}
+		}
+		for _, ej := range g.opts.ExtraJars {
+			if ej != "" {
+				if fi, err := os.Stat(ej); err == nil && !fi.IsDir() {
+					aidlCp = append(aidlCp, ej)
+					javaDepTargets = append(javaDepTargets, ej)
+				}
+			}
+		}
 		if g.opts.TopDir != "" {
 			targetApi := g.opts.APILevel
 			if targetApi <= 0 {

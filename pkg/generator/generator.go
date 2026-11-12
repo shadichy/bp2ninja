@@ -774,13 +774,21 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		if len(targets) > 0 {
 			g.nw.Comment(fmt.Sprintf("bp2ninja_module: %s %s %s", mod.Name, mod.Type, strings.Join(targets, " ")))
 		}
-		if mod.Dir == "" || mod.Dir == "." {
-			anyRootTargets = append(anyRootTargets, targets...)
-		}
-		if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
-			allTargets = append(allTargets, targets...)
+		// Header-only and metadata modules produce phony/marker targets rather than
+		// build deliverables; keep them out of default root targets so a root-level
+		// cc_library_headers does not mask child binaries/libraries from Ninja.
+		isNonDeliverable := mod.Type == "cc_library_headers" || mod.Type == "java_system_modules" ||
+			mod.Type == "aconfig_declarations_group" || mod.Type == "platform_compat_config" ||
+			mod.Type == "aidl_library" || mod.Type == "android_app_certificate"
+		if !isNonDeliverable {
 			if mod.Dir == "" || mod.Dir == "." {
-				rootTargets = append(rootTargets, targets...)
+				anyRootTargets = append(anyRootTargets, targets...)
+			}
+			if !strings.Contains(mod.Type, "test") && !strings.Contains(mod.Type, "benchmark") {
+				allTargets = append(allTargets, targets...)
+				if mod.Dir == "" || mod.Dir == "." {
+					rootTargets = append(rootTargets, targets...)
+				}
 			}
 		}
 	}
@@ -1537,7 +1545,7 @@ func (g *Generator) emitStandardRules() error {
 	// AIDL Rust codegen
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "aidl_rust",
-		Command:       "mkdir -p $out_dir && $aidl --lang=rust $optional_flags --ninja -d $out.d -o $out_dir $imports $in",
+		Command:       "mkdir -p $out_dir && $aidl --lang=rust $optional_flags -a -o $out_dir $imports $in",
 		Description:   "AIDL_RUST $out",
 		RestatContent: g.opts.Siso,
 	}); err != nil {
@@ -2018,8 +2026,16 @@ func (g *Generator) ResolveSrcs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	excludeList := mod.GetStringList("exclude_srcs")
-	if len(excludeList) > 0 {
+	rawExcludes := mod.GetStringList("exclude_srcs")
+	if len(rawExcludes) > 0 {
+		var excludeList []string
+		for _, ex := range rawExcludes {
+			if strings.HasPrefix(ex, ":") || strings.HasPrefix(ex, "//") {
+				excludeList = append(excludeList, g.resolveReference(ex)...)
+			} else {
+				excludeList = append(excludeList, ex)
+			}
+		}
 		expanded = filterExcludeSrcs(expanded, excludeList, mod.Dir)
 	}
 

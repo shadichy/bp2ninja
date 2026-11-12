@@ -169,6 +169,15 @@ func (g *Generator) generateCcBinary(mod *eval.EvaluatedModule) ([]string, error
 	return targets, nil
 }
 
+func cppProtoOutArg(mod *eval.EvaluatedModule, protoGenDir string) string {
+	if protoProps := mod.GetMap("proto"); protoProps != nil {
+		if t, _ := protoProps["type"].(string); t == "lite" {
+			return "--cpp_out=lite:" + protoGenDir
+		}
+	}
+	return "--cpp_out=" + protoGenDir
+}
+
 func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, error) {
 	if mod.Type == "cc_library_headers" {
 		// Header-only library: emit phony target for dependency references
@@ -194,7 +203,7 @@ func (g *Generator) generateCcLibrary(mod *eval.EvaluatedModule) ([]string, erro
 				genDeps = append(genDeps, pbHdr)
 				g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
 
-				pbArgs := []string{"--cpp_out=" + protoGenDir, "-I."}
+				pbArgs := []string{cppProtoOutArg(mod, protoGenDir), "-I."}
 				if mod.Dir != "" && mod.Dir != "." {
 					pbArgs = append(pbArgs, "-I"+mod.Dir)
 				}
@@ -597,7 +606,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			modProtoHeaders = append(modProtoHeaders, pbHdr)
 			g.protoHeaders[mod.Name] = append(g.protoHeaders[mod.Name], pbHdr)
 
-			pbArgs := []string{"--cpp_out=" + protoGenDir, "-I."}
+			pbArgs := []string{cppProtoOutArg(mod, protoGenDir), "-I."}
 			if mod.Dir != "" && mod.Dir != "." {
 				pbArgs = append(pbArgs, "-I"+mod.Dir)
 			}
@@ -1797,6 +1806,34 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 			clean = "sqlite3"
 		}
 		libs = append(libs, "-Wl,--whole-archive", "-l"+clean, "-Wl,--no-whole-archive")
+	}
+
+	// Implicit C++ protobuf runtime when a module defines .proto sources with proto.type
+	if protoProps := mod.GetMap("proto"); protoProps != nil && len(g.protoHeaders[mod.Name]) > 0 {
+		protoType, _ := protoProps["type"].(string)
+		if protoType == "lite" || protoType == "full" {
+			targetProtoLib := "libprotobuf-cpp-" + protoType
+			alreadyLinked := false
+			for _, lib := range allLibs {
+				if lib == targetProtoLib || lib == "libprotobuf" || lib == "libprotobuf-lite" {
+					alreadyLinked = true
+					break
+				}
+			}
+			if !alreadyLinked {
+				if isStatic, _ := protoProps["static"].(bool); isStatic {
+					libs = append(libs, "-l:"+targetProtoLib+".a")
+				} else if g.isHostModule(mod) {
+					if protoType == "full" {
+						libs = append(libs, "-lprotobuf")
+					} else {
+						libs = append(libs, "-lprotobuf-lite")
+					}
+				} else {
+					libs = append(libs, "-lprotobuf-cpp-"+protoType)
+				}
+			}
+		}
 	}
 
 	// Version script support

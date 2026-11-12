@@ -1064,16 +1064,6 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 		}
 
 		var protoIncludes []string
-		if !canonicalPathFromRoot && mod.Dir != "" && mod.Dir != "." {
-			protoIncludes = append(protoIncludes, "-I"+mod.Dir)
-			if g.opts.TopDir != "" {
-				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir))
-			}
-		}
-		protoIncludes = append(protoIncludes, "-I.")
-		if g.opts.TopDir != "" {
-			protoIncludes = append(protoIncludes, "-I"+g.opts.TopDir)
-		}
 		for _, inc := range protoLocalIncludeDirs {
 			pDir := inc
 			if mod.Dir != "" && mod.Dir != "." && !filepath.IsAbs(inc) {
@@ -1089,6 +1079,16 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 			if g.opts.TopDir != "" && !filepath.IsAbs(inc) {
 				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, inc))
 			}
+		}
+		if !canonicalPathFromRoot && mod.Dir != "" && mod.Dir != "." {
+			protoIncludes = append(protoIncludes, "-I"+mod.Dir)
+			if g.opts.TopDir != "" {
+				protoIncludes = append(protoIncludes, "-I"+filepath.Join(g.opts.TopDir, mod.Dir))
+			}
+		}
+		protoIncludes = append(protoIncludes, "-I.")
+		if g.opts.TopDir != "" {
+			protoIncludes = append(protoIncludes, "-I"+g.opts.TopDir)
 		}
 		protoIncludes = dedup(protoIncludes)
 
@@ -1339,7 +1339,7 @@ func (g *Generator) compileJavaKotlin(mod *eval.EvaluatedModule, jarTarget strin
 					bootCpEntries = append(bootCpEntries, g.opts.BootClasspath...)
 				}
 				if len(bootCpEntries) == 0 {
-					if cj := g.resolveCurrentAndroidJar(); cj != "" {
+					if cj := g.resolveCurrentAndroidJarForModule(mod); cj != "" {
 						bootCpEntries = append(bootCpEntries, cj)
 					}
 				}
@@ -1742,7 +1742,7 @@ func (g *Generator) generateAndroidApp(mod *eval.EvaluatedModule) ([]string, err
 
 	androidJar := g.opts.AndroidJarPath
 	if androidJar == "" {
-		androidJar = g.resolveCurrentAndroidJar()
+		androidJar = g.resolveCurrentAndroidJarForModule(mod)
 	}
 	if androidJar != "" {
 		extraFlags = append(extraFlags, "-I "+androidJar)
@@ -1980,7 +1980,7 @@ func (g *Generator) generateAndroidLibrary(mod *eval.EvaluatedModule) ([]string,
 
 		androidJar := g.opts.AndroidJarPath
 		if androidJar == "" {
-			androidJar = g.resolveCurrentAndroidJar()
+			androidJar = g.resolveCurrentAndroidJarForModule(mod)
 		}
 		if androidJar != "" {
 			extraFlags = append(extraFlags, "-I "+androidJar)

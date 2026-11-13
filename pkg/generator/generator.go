@@ -76,6 +76,10 @@ type Options struct {
 	DisableSkipAbis bool   // Disable skipping base ABI libraries (force APEX resolution)
 	JavaEncoding   string // Default Java source encoding (default: UTF-8)
 
+	// Module filtering
+	Targets        []string // If non-empty, only generate these module names (positive filter)
+	ExcludeTargets []string // Module names to skip during code generation
+
 	// Java and Kotlin classpath and prebuilt options
 	BootClasspath     []string // Explicit bootclasspath JAR paths (prepended to all classpaths)
 	ExtraJars         []string // Explicit extra JAR files or directories to inject
@@ -602,12 +606,30 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		}
 	}
 
+	// Build target filter sets for O(1) lookup
+	targetSet := make(map[string]bool, len(g.opts.Targets))
+	for _, t := range g.opts.Targets {
+		targetSet[t] = true
+	}
+	excludeTargetSet := make(map[string]bool, len(g.opts.ExcludeTargets))
+	for _, t := range g.opts.ExcludeTargets {
+		excludeTargetSet[t] = true
+	}
+
 	var allTargets []string
 	var rootTargets []string
 	var anyRootTargets []string
 
 	for _, mod := range modules {
 		if mod.Name == "" || !mod.IsEnabled() {
+			continue
+		}
+
+		// Apply target filters: -target positive filter, -exclude-target negative filter
+		if len(targetSet) > 0 && !targetSet[mod.Name] {
+			continue
+		}
+		if excludeTargetSet[mod.Name] {
 			continue
 		}
 

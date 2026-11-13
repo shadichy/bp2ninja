@@ -388,6 +388,110 @@ func TestDiscoverBpFilesWithoutRootBp(t *testing.T) {
 	}
 }
 
+func TestDiscoverBpFilesExcludeDir(t *testing.T) {
+	tempDir := t.TempDir()
+
+	subA := filepath.Join(tempDir, "subA")
+	subB := filepath.Join(tempDir, "subB")
+	subC := filepath.Join(tempDir, "subA", "subC")
+
+	for _, d := range []string{subA, subB, subC} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("Failed to create dir %s: %v", d, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "Android.bp"), []byte("// test"), 0644); err != nil {
+			t.Fatalf("Failed to write bp file in %s: %v", d, err)
+		}
+	}
+
+	// Exclude subA by basename — should also exclude subA/subC (it's under subA)
+	discovered, _, err := DiscoverBpFilesWithCache(tempDir, false, "", []string{"subA"})
+	if err != nil {
+		t.Fatalf("DiscoverBpFilesWithCache failed: %v", err)
+	}
+	if len(discovered) != 1 {
+		t.Fatalf("Expected 1 discovered file (subB only), got %d: %+v", len(discovered), discovered)
+	}
+	if discovered[0].RelDir != "subB" {
+		t.Errorf("Expected RelDir %q, got %q", "subB", discovered[0].RelDir)
+	}
+
+	// Exclude by relative path — only exclude subA/subC, not subA itself
+	discovered2, _, err := DiscoverBpFilesWithCache(tempDir, false, "", []string{"subA/subC"})
+	if err != nil {
+		t.Fatalf("DiscoverBpFilesWithCache failed: %v", err)
+	}
+	if len(discovered2) != 2 {
+		t.Fatalf("Expected 2 discovered files (subA, subB), got %d: %+v", len(discovered2), discovered2)
+	}
+}
+
+func TestGenerateTargetFilter(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.Targets = []string{"wanted_lib"}
+	gen := New(opts, nw, nil)
+
+	wanted := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "wanted_lib",
+		Properties: map[string]interface{}{
+			"srcs": []string{"wanted.c"},
+		},
+	}
+	excluded := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "unwanted_lib",
+		Properties: map[string]interface{}{
+			"srcs": []string{"unwanted.c"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{wanted, excluded}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "wanted_lib") {
+		t.Error("Expected wanted_lib in output")
+	}
+	if strings.Contains(output, "unwanted_lib") {
+		t.Error("Did not expect unwanted_lib in output")
+	}
+}
+
+func TestGenerateExcludeTarget(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.ExcludeTargets = []string{"excluded_lib"}
+	gen := New(opts, nw, nil)
+
+	kept := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "kept_lib",
+		Properties: map[string]interface{}{
+			"srcs": []string{"kept.c"},
+		},
+	}
+	excluded := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "excluded_lib",
+		Properties: map[string]interface{}{
+			"srcs": []string{"excluded.c"},
+		},
+	}
+	if err := gen.Generate([]*eval.EvaluatedModule{kept, excluded}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "kept_lib") {
+		t.Error("Expected kept_lib in output")
+	}
+	if strings.Contains(output, "excluded_lib") {
+		t.Error("Did not expect excluded_lib in output")
+	}
+}
+
 func TestDependencyOrderedModuleEmission(t *testing.T) {
 	var buf bytes.Buffer
 	nw := ninja.NewWriter(&buf)

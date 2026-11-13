@@ -256,7 +256,10 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -subdirs, -r               Recursively discover nested Android.bp files across subdirectories (default: true)\n")
 	fmt.Fprintf(out, "  -cache                     Reuse valid cached build.ninja files in subdirectories (default: true)\n")
 	fmt.Fprintf(out, "  -no-cache                  Disable reusing cached build.ninja files in subdirectories\n")
-	fmt.Fprintf(out, "  -allow-missing-deps        Allow missing dependencies / inputs by generating phony rules (default: true)\n\n")
+	fmt.Fprintf(out, "  -allow-missing-deps        Allow missing dependencies / inputs by generating phony rules (default: true)\n")
+	fmt.Fprintf(out, "  -exclude-dir DIR           Exclude directory from recursive discovery (name or relative path; repeatable)\n")
+	fmt.Fprintf(out, "  -target NAME               Only generate these module names (positive filter; repeatable)\n")
+	fmt.Fprintf(out, "  -exclude-target NAME       Skip these module names during code generation (repeatable)\n\n")
 
 	fmt.Fprintf(out, "Target architecture and NDK options:\n")
 	fmt.Fprintf(out, "  -arch ARCH                 Target architecture: arm64 (default), arm, x86_64, x86, x32, riscv64\n")
@@ -429,6 +432,9 @@ func main() {
 		includeRoot         string
 		pluginPaths         stringListFlag
 		configVars          stringListFlag
+		excludeDirs         stringListFlag
+		targets             stringListFlag
+		excludeTargets      stringListFlag
 		convertPluginTarget string
 		genGoWork           bool
 		cleanGoWork         bool
@@ -463,6 +469,9 @@ func main() {
 	flag.BoolVar(&useCache, "cache", true, "Reuse valid cached build.ninja files in subdirectories")
 	flag.BoolVar(&noCache, "no-cache", false, "Disable reusing cached build.ninja files in subdirectories")
 	flag.BoolVar(&allowMissing, "allow-missing-deps", true, "Allow missing dependencies / inputs by generating phony rules")
+	flag.Var(&excludeDirs, "exclude-dir", "Directory name or relative path to exclude from recursive discovery (can be repeated)")
+	flag.Var(&targets, "target", "Module name to include (positive filter, can be repeated; if set, only these modules are generated)")
+	flag.Var(&excludeTargets, "exclude-target", "Module name to exclude from code generation (can be repeated)")
 
 	// 2. Target Architecture & NDK Options
 	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, x32, riscv64)")
@@ -922,7 +931,7 @@ func main() {
 			}
 		}
 		if traceSubdirs {
-			if dList, cList, err := generator.DiscoverBpFilesWithCache(subDirFullPath, useCache, outFile); err == nil {
+			if dList, cList, err := generator.DiscoverBpFilesWithCache(subDirFullPath, useCache, outFile, excludeDirs); err == nil {
 				for _, cDir := range cList {
 					tryRegisterCache(cDir)
 				}
@@ -946,7 +955,7 @@ func main() {
 	// If the folder does not have Android.bp, ALWAYS recursively find Android.bp in subfolders.
 	// If it does have Android.bp, recursively find if traceSubdirs is true.
 	if !hasRootBp || traceSubdirs {
-		discovered, cList, err := generator.DiscoverBpFilesWithCache(rootDir, useCache, outFile)
+		discovered, cList, err := generator.DiscoverBpFilesWithCache(rootDir, useCache, outFile, excludeDirs)
 		if err == nil {
 			for _, cDir := range cList {
 				tryRegisterCache(cDir)
@@ -1254,6 +1263,8 @@ func main() {
 
 	opts.SkipAbiLevel = skipAbiLevel
 	opts.DisableSkipAbis = disableSkipAbis
+	opts.Targets = targets
+	opts.ExcludeTargets = excludeTargets
 	opts.IncludeRoot = includeRoot
 	opts.AllowMissingDeps = allowMissing
 	opts.Siso = siso

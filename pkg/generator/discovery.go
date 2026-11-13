@@ -19,7 +19,7 @@ type DiscoveredBp struct {
 // Discovered files are sorted primarily by directory depth (shallower directories first)
 // and secondarily by relative directory name alphabetically.
 func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
-	bps, _, err := DiscoverBpFilesWithCache(rootDir, false, "")
+	bps, _, err := DiscoverBpFilesWithCache(rootDir, false, "", nil)
 	return bps, err
 }
 
@@ -27,7 +27,10 @@ func DiscoverBpFiles(rootDir string) ([]DiscoveredBp, error) {
 // If useCache is true, any subdirectory containing a valid and fresh bp2ninja build.ninja
 // (other than outNinja) is added to cachedSubdirs and skipped entirely from recursive
 // descent, bypassing redundant parsing of that directory and all of its descendants.
-func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string) ([]DiscoveredBp, []string, error) {
+// excludeDirs is an optional list of directory names or relative paths to skip during
+// recursive discovery. A plain name (no path separator) matches any directory with that
+// basename; a relative path is matched against the path relative to rootDir.
+func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string, excludeDirs []string) ([]DiscoveredBp, []string, error) {
 	var discovered []DiscoveredBp
 	var cachedSubdirs []string
 
@@ -35,6 +38,18 @@ func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string) ([
 	if outNinja != "" {
 		if abs, err := filepath.Abs(outNinja); err == nil {
 			absOutNinja = abs
+		}
+	}
+
+	// Build exclude sets: plain basenames vs relative path prefixes
+	excludeNames := make(map[string]bool)
+	var excludePaths []string
+	for _, ex := range excludeDirs {
+		ex = filepath.Clean(ex)
+		if strings.Contains(ex, string(filepath.Separator)) {
+			excludePaths = append(excludePaths, ex)
+		} else {
+			excludeNames[ex] = true
 		}
 	}
 
@@ -47,6 +62,19 @@ func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string) ([
 			if path != rootDir {
 				if strings.HasPrefix(name, ".") || name == "out" || name == "node_modules" {
 					return filepath.SkipDir
+				}
+				// Check user-specified exclude-dir by basename
+				if excludeNames[name] {
+					return filepath.SkipDir
+				}
+				// Check user-specified exclude-dir by relative path prefix
+				if len(excludePaths) > 0 {
+					rel, _ := filepath.Rel(rootDir, path)
+					for _, ep := range excludePaths {
+						if rel == ep || strings.HasPrefix(rel, ep+string(filepath.Separator)) {
+							return filepath.SkipDir
+						}
+					}
 				}
 				if useCache {
 					candNinja := filepath.Join(path, "build.ninja")

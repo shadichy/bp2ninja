@@ -1105,8 +1105,11 @@ func TestJavaPureCompilationWithClasspath(t *testing.T) {
 	if !strings.Contains(content, "out/lib64/some_api.jar") {
 		t.Errorf("Expected some_api.jar in classpath/implicits, got:\n%s", content)
 	}
-	if !strings.Contains(content, "$javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options -d") {
+	if !strings.Contains(content, "$javac -encoding UTF-8 -source 17 -target 17 -Xlint:-options") {
 		t.Errorf("javac invocations must pin -encoding UTF-8, got:\n%s", content)
+	}
+	if !strings.Contains(content, "-d out/classes/pure_java/classes") {
+		t.Errorf("javac invocations must specify output dir with -d, got:\n%s", content)
 	}
 }
 

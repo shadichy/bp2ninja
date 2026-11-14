@@ -210,11 +210,15 @@ func TestMavenRepositoryJarIndexingAndCopy(t *testing.T) {
 		t.Fatalf("Failed to mkdir: %v", err)
 	}
 	annotationJar := filepath.Join(m2Dir, "annotation-jvm-1.8.0-alpha01.jar")
-	if err := os.WriteFile(annotationJar, []byte("ANNOTATION_JAR"), 0644); err != nil {
+	annotationContent := make([]byte, 1024)
+	copy(annotationContent, "ANNOTATION_JAR")
+	if err := os.WriteFile(annotationJar, annotationContent, 0644); err != nil {
 		t.Fatalf("Failed to write mock jar: %v", err)
 	}
 	sourcesJar := filepath.Join(m2Dir, "annotation-jvm-1.8.0-alpha01-sources.jar")
-	if err := os.WriteFile(sourcesJar, []byte("SOURCES_JAR"), 0644); err != nil {
+	sourcesContent := make([]byte, 1024)
+	copy(sourcesContent, "SOURCES_JAR")
+	if err := os.WriteFile(sourcesJar, sourcesContent, 0644); err != nil {
 		t.Fatalf("Failed to write mock sources jar: %v", err)
 	}
 

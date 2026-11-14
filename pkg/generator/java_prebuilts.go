@@ -111,7 +111,7 @@ var soongPrebuiltJarAliases = map[string][]string{
 }
 
 // indexJar adds a physical jar path to the Generator's prebuilt jar lookup index.
-func (g *Generator) indexJar(path string) {
+func (g *Generator) indexJar(path string, isFallback bool) {
 	if fi, err := os.Stat(path); err != nil || fi.IsDir() || !strings.HasSuffix(path, ".jar") || strings.HasSuffix(path, "-sources.jar") || strings.HasSuffix(path, "-src.jar") {
 		return
 	}
@@ -134,6 +134,9 @@ func (g *Generator) indexJar(path string) {
 		}
 		insertOrUpdate := func(key string) {
 			if existing, exists := g.prebuiltJarIndex[key]; exists {
+				if isFallback {
+					return
+				}
 				// Prevent tiny dummy jars (< 500 bytes, e.g. public empty manifests)
 				// from overriding real implementation/stub jars (>= 500 bytes).
 				if exFi, err := os.Stat(existing); err == nil {
@@ -251,7 +254,7 @@ func (g *Generator) indexJar(path string) {
 }
 
 // scanDirForJars scans a directory recursively for .jar files and indexes them.
-func (g *Generator) scanDirForJars(dir string, maxDepth int) {
+func (g *Generator) scanDirForJars(dir string, maxDepth int, isFallback bool) {
 	fi, err := os.Stat(dir)
 	if err != nil || !fi.IsDir() {
 		return
@@ -275,7 +278,7 @@ func (g *Generator) scanDirForJars(dir string, maxDepth int) {
 			return nil
 		}
 		if strings.HasSuffix(info.Name(), ".jar") && !strings.HasSuffix(info.Name(), "-sources.jar") && !strings.HasSuffix(info.Name(), "-src.jar") {
-			g.indexJar(p)
+			g.indexJar(p, isFallback)
 		}
 		return nil
 	})
@@ -292,48 +295,41 @@ func (g *Generator) initPrebuiltJarIndex() {
 	// 1. Explicit CLI inputs (-bootclasspath, -extra-jars, -prebuilt-jars)
 	for _, p := range g.opts.BootClasspath {
 		if strings.HasSuffix(p, ".jar") {
-			g.indexJar(p)
+			g.indexJar(p, false)
 		} else {
-			g.scanDirForJars(p, 5)
+			g.scanDirForJars(p, 5, false)
 		}
 	}
 	for _, p := range g.opts.ExtraJars {
 		if strings.HasSuffix(p, ".jar") {
-			g.indexJar(p)
+			g.indexJar(p, false)
 		} else {
-			g.scanDirForJars(p, 5)
+			g.scanDirForJars(p, 5, false)
 		}
 	}
 	for _, p := range g.opts.PrebuiltJarDirs {
 		if strings.HasSuffix(p, ".jar") {
-			g.indexJar(p)
+			g.indexJar(p, false)
 		} else {
-			g.scanDirForJars(p, 5)
+			g.scanDirForJars(p, 5, false)
 		}
 	}
 
 	// 2. PrebuiltLibDir
 	if g.opts.PrebuiltLibDir != "" {
-		g.scanDirForJars(g.opts.PrebuiltLibDir, 2)
+		g.scanDirForJars(g.opts.PrebuiltLibDir, 2, false)
 	}
 
-	// 3. Extracted APEX directories in sysroot / host container (/apex/*/share, /apex/share)
-	for _, apexRoot := range []string{"/apex", filepath.Join(g.opts.SysrootDir, "share")} {
-		if fi, err := os.Stat(apexRoot); err == nil && fi.IsDir() {
-			g.scanDirForJars(apexRoot, 10)
-		}
-	}
-
-	// 4. In-tree extractive APEX prebuilts: ${TopDir}/prebuilts/target, host, external (authentic platform precedence)
+	// 3. In-tree extractive APEX prebuilts: ${TopDir}/prebuilts/target, host, external, misc (authentic platform precedence)
 	if g.opts.TopDir != "" {
 		for _, sub := range []string{"prebuilts/target", "prebuilts/host", "prebuilts/external", "prebuilts/misc"} {
 			shadowDir := filepath.Join(g.opts.TopDir, sub)
 			if fi, err := os.Stat(shadowDir); err == nil && fi.IsDir() {
-				g.scanDirForJars(shadowDir, 10)
+				g.scanDirForJars(shadowDir, 10, false)
 			}
 		}
 
-		// 5. In-tree SDK fallback stubs: ${TopDir}/prebuilts/sdk/<api>/...
+		// 4. In-tree SDK fallback stubs: ${TopDir}/prebuilts/sdk/<api>/...
 		targetApi := g.opts.APILevel
 		if targetApi <= 0 {
 			targetApi = 34
@@ -346,8 +342,15 @@ func (g *Generator) initPrebuiltJarIndex() {
 		} {
 			sdkDir := filepath.Join(g.opts.TopDir, sub)
 			if fi, err := os.Stat(sdkDir); err == nil && fi.IsDir() {
-				g.scanDirForJars(sdkDir, 10)
+				g.scanDirForJars(sdkDir, 10, false)
 			}
+		}
+	}
+
+	// 5. Extracted APEX directories in sysroot / host container (/apex/*/share, /apex/share) (fallback)
+	for _, apexRoot := range []string{"/apex", filepath.Join(g.opts.SysrootDir, "share")} {
+		if fi, err := os.Stat(apexRoot); err == nil && fi.IsDir() {
+			g.scanDirForJars(apexRoot, 10, true)
 		}
 	}
 }

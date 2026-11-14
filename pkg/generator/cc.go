@@ -545,16 +545,14 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	if !g.isHostModule(mod) {
 		archFlags = append(archFlags, g.crossTargetFlags()...)
 	}
-	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
-	cppflags := append(mod.GetStringList("cppflags"), g.opts.ExtraCppflags...)
+	cflags := stripIncludeFlags(mod.GetStringList("cflags"))
+	cppflags := stripIncludeFlags(mod.GetStringList("cppflags"))
 	if g.isHostModule(mod) && g.opts.ClangCxxPath != "" {
 		clangHostLib := filepath.Join(filepath.Dir(filepath.Dir(g.opts.ClangCxxPath)), "lib", "x86_64-unknown-linux-gnu")
 		if fi, err := os.Stat(clangHostLib); err == nil && fi.IsDir() {
 			cppflags = append(cppflags, "-stdlib=libc++")
 		}
 	}
-	cflags = stripIncludeFlags(cflags)
-	cppflags = stripIncludeFlags(cppflags)
 	conlyflags := dedup(mod.GetStringList("conlyflags"))
 	cflags = append(cflags, archFlags...)
 	cppflags = append(cppflags, archFlags...)
@@ -575,9 +573,19 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		}
 	}
 
-	asflags := append(mod.GetStringList("asflags"), g.opts.ExtraAsflags...)
+	// Prioritize user extra cflags / cppflags: append after Android.bp and auto-generated flags
+	cflags = append(cflags, stripIncludeFlags(g.opts.ExtraCflags)...)
+	cppflags = append(cppflags, stripIncludeFlags(g.opts.ExtraCppflags)...)
+
+	asflags := mod.GetStringList("asflags")
 	hasAssemblyDef := false
 	for _, f := range asflags {
+		if strings.HasPrefix(f, "-D__ASSEMBLY__") {
+			hasAssemblyDef = true
+			break
+		}
+	}
+	for _, f := range g.opts.ExtraAsflags {
 		if strings.HasPrefix(f, "-D__ASSEMBLY__") {
 			hasAssemblyDef = true
 			break
@@ -589,6 +597,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	asflags = append(asflags, archFlags...)
 	asflags = append(asflags, fmt.Sprintf("-DPLATFORM_SDK_VERSION=%d", g.opts.APILevel))
 	asflags = append(asflags, "-fPIC")
+	// Prioritize user extra asflags: append after auto-generated flags
+	asflags = append(asflags, g.opts.ExtraAsflags...)
 	asflags = dedup(asflags)
 
 	if g.opts.IncludeRoot != "" {
@@ -1237,6 +1247,21 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
+	// Classify user includes from ExtraCflags and ExtraCppflags into userTier1 and userTier2
+	var userTier1 []string
+	var userTier2 []string
+	for _, flag := range append(g.opts.ExtraCflags, g.opts.ExtraCppflags...) {
+		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
+			if strings.Contains(flag, "/apex/") {
+				userTier1 = append(userTier1, flag)
+			} else if strings.Contains(flag, "vndk") {
+				tier4 = append(tier4, flag)
+			} else {
+				userTier2 = append(userTier2, flag)
+			}
+		}
+	}
+
 	// Classify module includes, generated headers, and include_dirs into tiers
 	for _, inc := range incs {
 		if strings.Contains(inc, "/apex/") {
@@ -1248,7 +1273,7 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	for _, flag := range append(append(mod.GetStringList("cflags"), mod.GetStringList("cppflags")...), append(g.opts.ExtraCflags, g.opts.ExtraCppflags...)...) {
+	for _, flag := range append(mod.GetStringList("cflags"), mod.GetStringList("cppflags")...) {
 		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
 			if strings.Contains(flag, "/apex/") {
 				tier1 = append(tier1, flag)
@@ -1259,6 +1284,10 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			}
 		}
 	}
+
+	// User includes take precedence within Tier 1 and Tier 2 (searched before module includes)
+	tier1 = append(userTier1, tier1...)
+	tier2 = append(userTier2, tier2...)
 
 	// Auto-detect include dirs for referenced external dependencies from TopDir (ANDROID_BUILD_TOP)
 	topModules := g.GetTopDirModules()
@@ -1774,7 +1803,19 @@ func linkerSearchDirs(flags []string) []string {
 // resolveLinkerArgs implements the dependency-check bypass:
 // shared_libs and static_libs are mapped directly to -l flags and prebuilt paths.
 func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []string, libs []string) {
-	ldflags = append(mod.GetStringList("ldflags"), g.opts.ExtraLdflags...)
+	var userLdDirs []string
+	var userLdOther []string
+	for _, f := range g.opts.ExtraLdflags {
+		if strings.HasPrefix(f, "-L") {
+			userLdDirs = append(userLdDirs, f)
+		} else {
+			userLdOther = append(userLdOther, f)
+		}
+	}
+
+	ldflags = append([]string{}, mod.GetStringList("ldflags")...)
+	allLdflagsForCheck := append(append([]string{}, ldflags...), g.opts.ExtraLdflags...)
+
 	if !g.isHostModule(mod) {
 		ldflags = append(ldflags, g.archCodegenFlags()...)
 		ldflags = append(ldflags, g.crossTargetFlags()...)
@@ -1782,11 +1823,11 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 		// Global Android relocation packing for API >= 30 (SHT_RELR) or API >= 28 (ANDROID_RELR)
 		isPureStatic := (mod.Type == "cc_binary" || mod.Type == "cc_binary_host") &&
 			(mod.GetBool("static_executable") || mod.GetBool("force_static_executable")) &&
-			!hasSharedFlag(ldflags)
+			!hasSharedFlag(allLdflagsForCheck)
 
 		if !isPureStatic {
 			hasPackRelocs := false
-			for _, f := range ldflags {
+			for _, f := range allLdflagsForCheck {
 				if strings.HasPrefix(f, "-Wl,--pack-dyn-relocs=") {
 					hasPackRelocs = true
 					break
@@ -1813,6 +1854,9 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 			ldflags = append(ldflags, "-stdlib=libc++", "-L"+clangHostLib, "-Wl,-rpath,"+clangHostLib)
 		}
 	}
+
+	// User -L search directories go first so user libraries take search precedence
+	ldflags = append(ldflags, userLdDirs...)
 
 	if g.opts.PrebuiltLibDir != "" {
 		ldflags = append(ldflags, "-L"+g.opts.PrebuiltLibDir)
@@ -2003,6 +2047,9 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 			"-Wl,-rpath,$$ORIGIN/../"+g.prefixLibSub(),
 		)
 	}
+
+	// Prioritize user general linker flags: append at the end so user options override auto-generated flags
+	ldflags = append(ldflags, userLdOther...)
 
 	return dedup(ldflags), libs
 }

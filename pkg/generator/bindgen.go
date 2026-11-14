@@ -34,10 +34,11 @@ func (g *Generator) generateRustBindgen(mod *eval.EvaluatedModule) ([]string, er
 
 	// Collect includes and flags
 	includes := g.resolveIncludeDirs(mod)
-	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
+	cflags := append([]string{}, mod.GetStringList("cflags")...)
 	cflags = append(cflags, g.archCodegenFlags()...)
 	cflags = append(cflags, g.crossTargetFlags()...)
 	cflags = append(cflags, includes...)
+	cflags = append(cflags, g.opts.ExtraCflags...)
 	cflags = dedup(cflags)
 
 	bindgenFlags := mod.GetStringList("bindgen_flags")

@@ -3813,3 +3813,82 @@ func TestAndroidAppUsesModuleScopedAndroidJar(t *testing.T) {
 		t.Errorf("Expected android_app with system_current to link against %s, got:\n%s", sysJar, content)
 	}
 }
+
+func TestUserFlagsPrioritization(t *testing.T) {
+	var buf strings.Builder
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	opts.AllowMissingDeps = true
+	opts.ExtraCflags = []string{"-Werror", "-fno-PIC", "-I/user/include"}
+	opts.ExtraCppflags = []string{"-std=c++17"}
+	opts.ExtraLdflags = []string{"-L/user/lib", "-Wl,-z,now"}
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libtest_flags",
+		Properties: map[string]interface{}{
+			"name":               "libtest_flags",
+			"srcs":               []interface{}{"foo.cpp", "bar.c"},
+			"cflags":             []interface{}{"-O2"},
+			"cpp_std":            "experimental",
+			"local_include_dirs": []interface{}{"local_inc"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// 1. Verify user C++ flags (-std=c++17) appear AFTER auto-generated (-std=gnu++20)
+	idxGnu20 := strings.Index(content, "-std=gnu++20")
+	idxCpp17 := strings.Index(content, "-std=c++17")
+	if idxGnu20 < 0 || idxCpp17 < 0 {
+		t.Fatalf("Expected both -std=gnu++20 and -std=c++17 in output, got:\n%s", content)
+	}
+	if idxCpp17 < idxGnu20 {
+		t.Errorf("User -std=c++17 (pos %d) should appear AFTER auto-generated -std=gnu++20 (pos %d)", idxCpp17, idxGnu20)
+	}
+
+	// 2. Verify user C flags (-Werror, -fno-PIC) appear AFTER auto-generated (-fPIC, -Wno-error=...)
+	idxPic := strings.Index(content, "-fPIC")
+	idxNoPic := strings.Index(content, "-fno-PIC")
+	if idxPic < 0 || idxNoPic < 0 {
+		t.Fatalf("Expected both -fPIC and -fno-PIC in output, got:\n%s", content)
+	}
+	if idxNoPic < idxPic {
+		t.Errorf("User -fno-PIC (pos %d) should appear AFTER auto-generated -fPIC (pos %d)", idxNoPic, idxPic)
+	}
+
+	// 3. Verify user include (-I/user/include) appears BEFORE module includes (-Ilocal_inc)
+	idxUserInc := strings.Index(content, "-I/user/include")
+	idxModInc := strings.Index(content, "-Ilocal_inc")
+	if idxUserInc < 0 || idxModInc < 0 {
+		t.Fatalf("Expected both -I/user/include and -Ilocal_inc in output, got:\n%s", content)
+	}
+	if idxUserInc > idxModInc {
+		t.Errorf("User include -I/user/include (pos %d) should appear BEFORE module include -Ilocal_inc (pos %d)", idxUserInc, idxModInc)
+	}
+
+	// 4. Verify user -L (/user/lib) appears BEFORE auto-generated -Lout/lib
+	idxUserL := strings.Index(content, "-L/user/lib")
+	idxOutL := strings.Index(content, "-Lout/lib")
+	if idxUserL < 0 || idxOutL < 0 {
+		t.Fatalf("Expected both -L/user/lib and -Lout/lib in output, got:\n%s", content)
+	}
+	if idxUserL > idxOutL {
+		t.Errorf("User library dir -L/user/lib (pos %d) should appear BEFORE -Lout/lib (pos %d)", idxUserL, idxOutL)
+	}
+
+	// 5. Verify user linker option (-Wl,-z,now) appears AFTER auto-generated flags (e.g. -Wl,--pack-dyn-relocs)
+	idxReloc := strings.Index(content, "--pack-dyn-relocs")
+	idxZNow := strings.Index(content, "-Wl,-z,now")
+	if idxReloc < 0 || idxZNow < 0 {
+		t.Fatalf("Expected both --pack-dyn-relocs and -Wl,-z,now in output, got:\n%s", content)
+	}
+	if idxZNow < idxReloc {
+		t.Errorf("User linker option -Wl,-z,now (pos %d) should appear AFTER auto-generated --pack-dyn-relocs (pos %d)", idxZNow, idxReloc)
+	}
+}

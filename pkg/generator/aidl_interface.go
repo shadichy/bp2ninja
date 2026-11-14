@@ -220,11 +220,11 @@ func (g *Generator) generateAidlInterface(mod *eval.EvaluatedModule) ([]string, 
 	var javaTargets []string
 	var rustTargets []string
 
-	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
-	cflags = stripIncludeFlags(cflags)
+	cflags := stripIncludeFlags(mod.GetStringList("cflags"))
 	cflags = append(cflags, g.archCodegenFlags()...)
 	cflags = append(cflags, g.crossTargetFlags()...)
 	cflags = append(cflags, "-fPIC")
+	cflags = append(cflags, stripIncludeFlags(g.opts.ExtraCflags)...)
 	cflags = dedup(cflags)
 
 	ldflags, _ := g.resolveLinkerArgs(mod)

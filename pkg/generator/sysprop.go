@@ -142,11 +142,11 @@ func (g *Generator) emitSyspropJavaBuildEdge(mod *eval.EvaluatedModule, propFile
 // generated .cpp files with the module's cflags plus the gen dir on the
 // include path.
 func (g *Generator) compileSyspropSources(mod *eval.EvaluatedModule, propFiles []string, genDir string) ([]string, error) {
-	cflags := append(mod.GetStringList("cflags"), g.opts.ExtraCflags...)
-	cflags = stripIncludeFlags(cflags)
+	cflags := stripIncludeFlags(mod.GetStringList("cflags"))
 	cflags = append(cflags, g.archCodegenFlags()...)
 	cflags = append(cflags, g.crossTargetFlags()...)
 	cflags = append(cflags, "-fPIC")
+	cflags = append(cflags, stripIncludeFlags(g.opts.ExtraCflags)...)
 	cflags = dedup(cflags)
 
 	objDir := g.objDir(mod.Name + ".sysprop")

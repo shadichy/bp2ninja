@@ -134,11 +134,14 @@ func TestNormalizeArgs(t *testing.T) {
 	input := []string{
 		"--top", "/path/to/top",
 		"--arch=x86_64",
-		"-cflags", "-Wall",
+		"-cflags", "--target=x86_64-linux-android34 -nostdinc -Wall",
+		"--cppflags", "--target=x86_64-linux-android34 -std=gnu++20",
+		"--ldflags=--target=x86_64-linux-android34 -Wl,--gc-sections",
 		"--tree=/path/to/tree",
 		"--remote",
 		"-clean",
 		"--bp2ninja-dir=../bp2ninja",
+		"-target", "libc",
 		"--",
 		"--positional-flag-kept",
 		"Android.bp",
@@ -147,11 +150,14 @@ func TestNormalizeArgs(t *testing.T) {
 	expected := []string{
 		"-top", "/path/to/top",
 		"-arch=x86_64",
-		"-cflags", "-Wall",
+		"-cflags", "--target=x86_64-linux-android34 -nostdinc -Wall",
+		"-cppflags", "--target=x86_64-linux-android34 -std=gnu++20",
+		"-ldflags=--target=x86_64-linux-android34 -Wl,--gc-sections",
 		"-tree=/path/to/tree",
 		"-remote",
 		"-clean",
 		"-bp2ninja-dir=../bp2ninja",
+		"-target", "libc",
 		"--",
 		"--positional-flag-kept",
 		"Android.bp",
@@ -159,7 +165,7 @@ func TestNormalizeArgs(t *testing.T) {
 
 	got := normalizeArgs(input)
 	if len(got) != len(expected) {
-		t.Fatalf("normalizeArgs returned %d args, want %d", len(got), len(expected))
+		t.Fatalf("normalizeArgs returned %d args, want %d: %v", len(got), len(expected), got)
 	}
 	for i := range got {
 		if got[i] != expected[i] {

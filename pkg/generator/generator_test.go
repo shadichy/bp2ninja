@@ -2595,6 +2595,99 @@ func TestTargetTripleInjectionForPlainCompilers(t *testing.T) {
 	if !strings.Contains(out[linkIdx:], "--target=aarch64-linux-android") {
 		t.Errorf("Expected -target in link flags")
 	}
+
+	// Auto-injection with TargetArch="x86_64" and APILevel=34 when TargetTriple is empty:
+	out = genOutput(func(o *Options) {
+		o.TargetArch = "x86_64"
+		o.TargetTriple = ""
+		o.APILevel = 34
+	})
+	if !strings.Contains(out, "--target=x86_64-linux-android34") {
+		t.Errorf("Expected auto-injected --target=x86_64-linux-android34, got: %s", out)
+	}
+
+	// User ExtraCflags with -target= or --target= deduplicates and does not emit duplicate or single-dash -target=
+	out = genOutput(func(o *Options) {
+		o.TargetArch = "x86_64"
+		o.APILevel = 34
+		o.ExtraCflags = []string{"-target=x86_64-linux-android34", "-O2"}
+	})
+	if strings.Contains(out, " -target=") {
+		t.Errorf("Single-dash -target= must never be emitted; got: %s", out)
+	}
+	if strings.Count(out, "--target=x86_64-linux-android34") == 0 {
+		t.Errorf("Expected normalized --target=x86_64-linux-android34")
+	}
+	// User override: user specified a different target in ExtraCflags
+	out = genOutput(func(o *Options) {
+		o.TargetArch = "x86_64"
+		o.APILevel = 34
+		o.ExtraCflags = []string{"--target=x86_64-linux-android35"}
+	})
+	if strings.Contains(out, "--target=x86_64-linux-android34") {
+		t.Errorf("User flag override must supersede auto-injected target triple")
+	}
+	if !strings.Contains(out, "--target=x86_64-linux-android35") {
+		t.Errorf("User flag --target=x86_64-linux-android35 must be present")
+	}
+}
+
+func TestTargetDedupAndNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+	}{
+		{
+			name:     "single dash -target= normalized to --target=",
+			input:    []string{"-target=x86_64-linux-android34", "-O2"},
+			expected: []string{"--target=x86_64-linux-android34", "-O2"},
+		},
+		{
+			name:     "dedup auto-injected with user single-dash -target=",
+			input:    []string{"--target=x86_64-linux-android34", "-Wall", "-target=x86_64-linux-android34"},
+			expected: []string{"--target=x86_64-linux-android34", "-Wall"},
+		},
+		{
+			name:     "dedup auto-injected with user double-dash --target=",
+			input:    []string{"--target=x86_64-linux-android34", "-Wall", "--target=x86_64-linux-android34"},
+			expected: []string{"--target=x86_64-linux-android34", "-Wall"},
+		},
+		{
+			name:     "dedup compound -target <arg>",
+			input:    []string{"--target=x86_64-linux-android34", "-Wall", "-target", "x86_64-linux-android34"},
+			expected: []string{"--target=x86_64-linux-android34", "-Wall"},
+		},
+		{
+			name:     "user override target wins",
+			input:    []string{"--target=x86_64-linux-android34", "-Wall", "--target=x86_64-linux-android35"},
+			expected: []string{"--target=x86_64-linux-android35", "-Wall"},
+		},
+		{
+			name:     "sysroot normalization and dedup",
+			input:    []string{"--sysroot=/opt/sysroot", "-O2", "-sysroot=/opt/sysroot"},
+			expected: []string{"--sysroot=/opt/sysroot", "-O2"},
+		},
+		{
+			name:     "compound sysroot normalized",
+			input:    []string{"-sysroot", "/opt/sysroot", "-O2"},
+			expected: []string{"--sysroot=/opt/sysroot", "-O2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dedup(tc.input)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("dedup(%v) = %v (len %d), want %v (len %d)", tc.input, got, len(got), tc.expected, len(tc.expected))
+			}
+			for i := range got {
+				if got[i] != tc.expected[i] {
+					t.Errorf("dedup[%d] = %q, want %q", i, got[i], tc.expected[i])
+				}
+			}
+		})
+	}
 }
 
 func TestBpfModule(t *testing.T) {

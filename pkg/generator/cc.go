@@ -1603,20 +1603,115 @@ var compoundFlags = map[string]bool{
 	"-MF":                true,
 	"-MQ":                true,
 	"-MT":                true,
-	"-target":            true,
-	"--target":           true,
-	"--sysroot":          true,
-	"-sysroot":           true,
 	"-Xclang":            true,
 	"-Xlinker":           true,
 	"-Wl,-rpath":         true,
 	"-install_name":      true,
 }
 
+func parseTargetFlag(items []string, i int) (val string, consumed int, ok bool) {
+	item := items[i]
+	if item == "-target" || item == "--target" {
+		if i+1 < len(items) && items[i+1] != "" && !strings.HasPrefix(items[i+1], "-") {
+			return items[i+1], 2, true
+		}
+		return "", 1, false
+	}
+	if strings.HasPrefix(item, "--target=") {
+		v := strings.TrimPrefix(item, "--target=")
+		if v != "" {
+			return v, 1, true
+		}
+		return "", 1, false
+	}
+	if strings.HasPrefix(item, "-target=") {
+		v := strings.TrimPrefix(item, "-target=")
+		if v != "" {
+			return v, 1, true
+		}
+		return "", 1, false
+	}
+	return "", 0, false
+}
+
+func parseSysrootFlag(items []string, i int) (val string, consumed int, ok bool) {
+	item := items[i]
+	if item == "-sysroot" || item == "--sysroot" {
+		if i+1 < len(items) && items[i+1] != "" && !strings.HasPrefix(items[i+1], "-") {
+			return items[i+1], 2, true
+		}
+		return "", 1, false
+	}
+	if strings.HasPrefix(item, "--sysroot=") {
+		v := strings.TrimPrefix(item, "--sysroot=")
+		if v != "" {
+			return v, 1, true
+		}
+		return "", 1, false
+	}
+	if strings.HasPrefix(item, "-sysroot=") {
+		v := strings.TrimPrefix(item, "-sysroot=")
+		if v != "" {
+			return v, 1, true
+		}
+		return "", 1, false
+	}
+	return "", 0, false
+}
+
 func dedup(items []string) []string {
+	var lastTarget string
+	hasTarget := false
+	var lastSysroot string
+	hasSysroot := false
+
+	for i := 0; i < len(items); {
+		if val, consumed, ok := parseTargetFlag(items, i); ok {
+			lastTarget = val
+			hasTarget = true
+			i += consumed
+			continue
+		}
+		if val, consumed, ok := parseSysrootFlag(items, i); ok {
+			lastSysroot = val
+			hasSysroot = true
+			i += consumed
+			continue
+		}
+		if compoundFlags[items[i]] && i+1 < len(items) {
+			i += 2
+			continue
+		}
+		i++
+	}
+
 	seen := make(map[string]bool)
 	var res []string
-	for i := 0; i < len(items); i++ {
+	targetEmitted := false
+	sysrootEmitted := false
+
+	for i := 0; i < len(items); {
+		if _, consumed, ok := parseTargetFlag(items, i); ok {
+			if hasTarget && !targetEmitted {
+				targetFlag := "--target=" + lastTarget
+				res = append(res, targetFlag)
+				seen[targetFlag] = true
+				targetEmitted = true
+			}
+			i += consumed
+			continue
+		}
+		if _, consumed, ok := parseSysrootFlag(items, i); ok {
+			if hasSysroot && !sysrootEmitted {
+				sysrootFlag := "--sysroot=" + lastSysroot
+				res = append(res, sysrootFlag)
+				seen[sysrootFlag] = true
+				sysrootEmitted = true
+			}
+			i += consumed
+			continue
+		}
+
 		item := items[i]
 		if compoundFlags[item] && i+1 < len(items) {
 			pair := item + " " + items[i+1]
@@ -1624,12 +1719,13 @@ func dedup(items []string) []string {
 				seen[pair] = true
 				res = append(res, item, items[i+1])
 			}
-			i++
+			i += 2
 		} else {
 			if !seen[item] {
 				seen[item] = true
 				res = append(res, item)
 			}
+			i++
 		}
 	}
 	return res

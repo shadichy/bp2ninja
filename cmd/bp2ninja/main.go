@@ -56,29 +56,108 @@ func (p *pathListFlag) Set(val string) error {
 	return nil
 }
 
+var valueFlags = map[string]bool{
+	"bp":                       true,
+	"o":                        true,
+	"out":                      true,
+	"top":                      true,
+	"include-root":             true,
+	"prefix":                   true,
+	"exclude-dir":              true,
+	"target":                   true,
+	"exclude-target":           true,
+	"arch":                     true,
+	"api":                      true,
+	"ndk":                      true,
+	"ndk-version":              true,
+	"sysroot":                  true,
+	"prebuilt-libs":            true,
+	"vndk-dir":                 true,
+	"skip-abi-level":           true,
+	"cc":                       true,
+	"cxx":                      true,
+	"ld":                       true,
+	"cflags":                   true,
+	"ccflags":                  true,
+	"cppflags":                 true,
+	"cxxflags":                 true,
+	"ldflags":                  true,
+	"asflags":                  true,
+	"java-encoding":            true,
+	"art-target-codegen-archs": true,
+	"art-host-codegen-archs":   true,
+	"config":                   true,
+	"bootclasspath":            true,
+	"prebuilt-jars":            true,
+	"extra-jars":               true,
+	"platform-classpath":       true,
+	"platform-jars":            true,
+	"android-jar":              true,
+	"cargo-path":               true,
+	"cargo-out-dir":            true,
+	"bindgen-path":             true,
+	"aidl":                     true,
+	"metalava":                 true,
+	"hidl-gen":                 true,
+	"xsdc":                     true,
+	"conv-linker-config":       true,
+	"xmllint":                  true,
+	"mkbootimg":                true,
+	"avbtool":                  true,
+	"lpmake":                   true,
+	"compat-config":            true,
+	"a":                        true,
+	"add-plugin":               true,
+	"plugin":                   true,
+	"convert-plugin":           true,
+	"bp2ninja-dir":             true,
+	"tree":                     true,
+	"dir":                      true,
+	"in":                       true,
+	"output":                   true,
+}
+
 // normalizeArgs normalizes command-line arguments to a single '-' prefix.
-// Any flag starting with '--' (e.g. '--top', '--tree=foo') is rewritten to
-// use a single '-' prefix ('-top', '-tree=foo'). Standalone '--' is preserved
+// Any flag starting with '--' (e.g. '--top', '--arch=foo') is rewritten to
+// use a single '-' prefix ('-top', '-arch=foo'). Standalone '--' is preserved
 // as the standard separator indicating the end of flags, and all arguments
-// following it are left unmodified.
+// following it are left unmodified. Argument values (such as values following
+// -cflags, -cppflags, -ldflags) are preserved verbatim and never modified.
 func normalizeArgs(args []string) []string {
-	out := make([]string, len(args))
+	out := make([]string, 0, len(args))
 	sawTerminator := false
-	for i, a := range args {
+	expectValue := false
+	for _, a := range args {
 		if sawTerminator {
-			out[i] = a
+			out = append(out, a)
 			continue
 		}
 		if a == "--" {
 			sawTerminator = true
-			out[i] = a
+			out = append(out, a)
 			continue
 		}
-		if strings.HasPrefix(a, "--") {
-			out[i] = "-" + strings.TrimLeft(a, "-")
-		} else {
-			out[i] = a
+		if expectValue {
+			expectValue = false
+			out = append(out, a)
+			continue
 		}
+		if strings.HasPrefix(a, "-") {
+			if strings.Contains(a, "=") {
+				parts := strings.SplitN(a, "=", 2)
+				flagName := strings.TrimLeft(parts[0], "-")
+				out = append(out, "-"+flagName+"="+parts[1])
+				continue
+			}
+			flagName := strings.TrimLeft(a, "-")
+			normalized := "-" + flagName
+			out = append(out, normalized)
+			if valueFlags[flagName] {
+				expectValue = true
+			}
+			continue
+		}
+		out = append(out, a)
 	}
 	return out
 }

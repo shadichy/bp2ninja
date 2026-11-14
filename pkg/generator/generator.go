@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"bp2ninja/pkg/eval"
+	"bp2ninja/pkg/ndk"
 	"bp2ninja/pkg/ninja"
 	"bp2ninja/pkg/plugins"
 )
@@ -1709,6 +1710,9 @@ func (g *Generator) archCodegenFlags() []string {
 func (g *Generator) plainCompilerUsesDefaultTarget() bool {
 	cc := filepath.Base(g.opts.ClangPath)
 	triple := g.opts.TargetTriple
+	if triple == "" && g.opts.TargetArch != "" {
+		triple = ndk.ArchitectureToTriple(g.opts.TargetArch)
+	}
 	if triple == "" {
 		triple = "-linux-android"
 	}
@@ -1729,17 +1733,24 @@ func (g *Generator) plainCompilerUsesDefaultTarget() bool {
 // a device) cross-target Android correctly instead of compiling for the
 // build host.
 func (g *Generator) crossTargetFlags() []string {
-	if g.opts.IsHost || g.opts.TargetTriple == "" {
+	if g.opts.IsHost {
 		return nil
+	}
+	triple := g.opts.TargetTriple
+	if triple == "" && g.opts.TargetArch != "" {
+		triple = ndk.ArchitectureToTriple(g.opts.TargetArch)
+	}
+	if triple == "" {
+		triple = "aarch64-linux-android"
 	}
 	if !g.plainCompilerUsesDefaultTarget() {
 		return nil
 	}
 	// Single-token forms survive shellJoin's bare-flag-prefix filter and
 	// dedup as opaque strings; clang/gcc accept both --target= / --sysroot=.
-	triple := g.opts.TargetTriple
-	if g.opts.APILevel > 0 && !strings.HasSuffix(triple, fmt.Sprintf("%d", g.opts.APILevel)) {
-		triple = fmt.Sprintf("%s%d", triple, g.opts.APILevel)
+	baseTriple := strings.TrimRight(triple, "0123456789")
+	if g.opts.APILevel > 0 {
+		triple = fmt.Sprintf("%s%d", baseTriple, g.opts.APILevel)
 	}
 	flags := []string{"--target=" + triple}
 	if g.opts.SysrootDir != "" {

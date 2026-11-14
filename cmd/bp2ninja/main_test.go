@@ -197,4 +197,3 @@ func TestCliEnvFlagPrecedenceStructure(t *testing.T) {
 		t.Errorf("Expected env include after CLI flags, got %s", combined[2])
 	}
 }
-}

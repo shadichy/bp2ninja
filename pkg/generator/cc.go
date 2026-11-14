@@ -558,9 +558,6 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	cflags = append(cflags, archFlags...)
 	cppflags = append(cppflags, archFlags...)
 	cflags = append(cflags, "-fPIC")
-	if g.opts.AllowMissingDeps {
-		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion", "-Wno-error=deprecated-declarations", "-Wno-error=c99-designator", "-Wno-c99-designator", "-Wno-error=reorder-init-list", "-Wno-reorder-init-list", "-Wno-error=missing-designated-field-initializers", "-Wno-missing-designated-field-initializers", "-Wno-error=missing-declarations", "-Wno-missing-declarations")
-	}
 
 	// Apply C / C++ standard properties (c_std, cpp_std)
 	if cStd := mod.GetString("c_std"); cStd != "" {

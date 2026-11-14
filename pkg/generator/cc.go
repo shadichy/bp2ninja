@@ -989,6 +989,49 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	return objs, nil
 }
 
+func (g *Generator) resolveIncludeDir(dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	// 1. Direct relative to BpDir
+	if g.opts.BpDir != "" {
+		candBp := filepath.Join(g.opts.BpDir, dir)
+		if fi, err := os.Stat(candBp); err == nil && fi.IsDir() {
+			return candBp
+		}
+	}
+	// 2. Direct relative to TopDir
+	if g.opts.TopDir != "" && g.opts.TopDir != "." {
+		candTop := filepath.Join(g.opts.TopDir, dir)
+		if fi, err := os.Stat(candTop); err == nil && fi.IsDir() {
+			return candTop
+		}
+		// Check if TopDir matches first segment of dir (e.g. dir="bionic/libc", TopDir=".../bionic")
+		topBase := filepath.Base(g.opts.TopDir)
+		if idx := strings.Index(dir, "/"); idx != -1 && (dir[:idx] == topBase || strings.HasSuffix(g.opts.TopDir, "/"+dir[:idx])) {
+			candStrip := filepath.Join(g.opts.TopDir, dir[idx+1:])
+			if fi, err := os.Stat(candStrip); err == nil && fi.IsDir() {
+				return candStrip
+			}
+		}
+	}
+	// 3. Relative to IncludeRoot
+	if g.opts.IncludeRoot != "" {
+		candInc := filepath.Join(g.opts.IncludeRoot, dir)
+		if fi, err := os.Stat(candInc); err == nil && fi.IsDir() {
+			return candInc
+		}
+	}
+	// Fallback
+	if g.opts.TopDir != "" && g.opts.TopDir != "." {
+		return filepath.Join(g.opts.TopDir, dir)
+	}
+	if g.opts.IncludeRoot != "" {
+		return filepath.Join(g.opts.IncludeRoot, dir)
+	}
+	return dir
+}
+
 func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule, isCpp ...bool) []string {
 	cxxMode := false
 	if len(isCpp) > 0 && isCpp[0] {
@@ -1017,20 +1060,7 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule, isCpp ...bool)
 		incs = append(incs, "-I"+incPath)
 	}
 	for _, dir := range mod.GetAllStringList("include_dirs") {
-		incPath := dir
-		if !filepath.IsAbs(dir) {
-			if g.opts.IncludeRoot != "" {
-				candidate := filepath.Join(g.opts.IncludeRoot, dir)
-				if _, err := os.Stat(candidate); err == nil || g.opts.AllowMissingDeps {
-					incPath = candidate
-				} else if g.opts.TopDir != "" && g.opts.TopDir != "." {
-					incPath = filepath.Join(g.opts.TopDir, dir)
-				}
-			} else if g.opts.TopDir != "" && g.opts.TopDir != "." {
-				incPath = filepath.Join(g.opts.TopDir, dir)
-			}
-		}
-		incs = append(incs, "-I"+incPath)
+		incs = append(incs, "-I"+g.resolveIncludeDir(dir))
 	}
 
 	// Dependents of sysprop_library compile against its generated headers.

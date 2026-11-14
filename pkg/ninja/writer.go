@@ -335,8 +335,13 @@ func (n *Writer) Build(b BuildEdge) error {
 		return err
 	}
 
-	for k, v := range b.Variables {
-		if err := n.ScopedVariable(k, v); err != nil {
+	var varKeys []string
+	for k := range b.Variables {
+		varKeys = append(varKeys, k)
+	}
+	sort.Strings(varKeys)
+	for _, k := range varKeys {
+		if err := n.ScopedVariable(k, b.Variables[k]); err != nil {
 			return err
 		}
 	}

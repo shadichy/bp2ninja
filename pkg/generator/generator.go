@@ -176,6 +176,7 @@ type Generator struct {
 	aidlHeaders      map[string][]string
 	hidlPackageRoots map[string]string
 	prebuiltJarIndex map[string]string
+	cachedProcedures map[string]*CachedModuleProcedure
 
 	// MissingDeps records external dependencies not found in the parsed blueprint set.
 	MissingDeps []string
@@ -206,6 +207,7 @@ func New(opts Options, nw *ninja.Writer, reg *plugins.Registry) *Generator {
 		aconfigHeaders:   make(map[string][]string),
 		aidlHeaders:      make(map[string][]string),
 		hidlPackageRoots: make(map[string]string),
+		cachedProcedures: make(map[string]*CachedModuleProcedure),
 	}
 }
 
@@ -536,14 +538,55 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		g.testNw.BlankLine()
 	}
 
-	// Pre-register outputs from cached subninjas so downstream modules can resolve them
+	// Pre-register outputs and procedures from cached subninjas
 	for _, sub := range g.opts.CachedSubninjas {
+		// Register any custom rules defined in the cached subninja
+		for _, r := range sub.CustomRules {
+			if err := g.nw.Rule(r); err != nil {
+				return fmt.Errorf("failed to register cached rule %s: %w", r.Name, err)
+			}
+		}
+
+		for _, proc := range sub.Procedures {
+			g.cachedProcedures[proc.Name] = proc
+			g.moduleOutputs[proc.Name] = proc.Outputs
+
+			var depInterfaces []interface{}
+			for _, d := range proc.Dependencies {
+				depInterfaces = append(depInterfaces, d)
+			}
+			cachedMod := &eval.EvaluatedModule{
+				Name: proc.Name,
+				Type: "cached_procedure",
+				Dir:  proc.Dir,
+				Properties: map[string]interface{}{
+					"static_libs": depInterfaces,
+				},
+			}
+			g.moduleMap[proc.Name] = cachedMod
+
+			alreadyInModules := false
+			for _, m := range modules {
+				if m.Name == proc.Name {
+					alreadyInModules = true
+					break
+				}
+			}
+			if !alreadyInModules {
+				modules = append(modules, cachedMod)
+			}
+		}
+
 		for modName, outs := range sub.ModuleOutputs {
-			g.moduleOutputs[modName] = outs
-			g.moduleMap[modName] = &eval.EvaluatedModule{
-				Name: modName,
-				Type: "cached_subninja",
-				Dir:  sub.SubDir,
+			if _, ok := g.moduleOutputs[modName]; !ok {
+				g.moduleOutputs[modName] = outs
+			}
+			if _, ok := g.moduleMap[modName]; !ok {
+				g.moduleMap[modName] = &eval.EvaluatedModule{
+					Name: modName,
+					Type: "cached_procedure",
+					Dir:  sub.SubDir,
+				}
 			}
 		}
 		for tag, outs := range sub.TaggedOutputs {
@@ -552,22 +595,6 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		for _, t := range sub.AllTargets {
 			g.emittedPhonies[t] = true
 		}
-	}
-
-	// Emit subninja directives for cached subdirectories
-	if len(g.opts.CachedSubninjas) > 0 {
-		g.nw.BlankLine()
-		g.nw.Comment("Cached subninja inclusions")
-		for _, sub := range g.opts.CachedSubninjas {
-			relSubninja, err := filepath.Rel(g.opts.TopDir, sub.SubninjaPath)
-			if err != nil {
-				relSubninja = sub.SubninjaPath
-			}
-			if err := g.nw.Subninja(relSubninja); err != nil {
-				return fmt.Errorf("failed to write subninja directive for %s: %w", sub.SubninjaPath, err)
-			}
-		}
-		g.nw.BlankLine()
 	}
 
 	modules = g.expandHidlInterfaces(modules)
@@ -752,6 +779,11 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 		var err error
 
 		switch mod.Type {
+		case "cached_procedure":
+			proc := g.cachedProcedures[mod.Name]
+			if proc != nil {
+				targets, err = g.emitCachedProcedure(proc)
+			}
 		case "package", "license", "license_kind", "package_metadata",
 			"soong_namespace", "soong_config_module_type", "soong_config_string_variable",
 			"soong_config_bool_variable", "soong_config_module_type_import",
@@ -991,6 +1023,63 @@ func (g *Generator) Generate(modules []*eval.EvaluatedModule) error {
 	}
 
 	return g.nw.Flush()
+}
+
+func (g *Generator) resolveDepTarget(in string) string {
+	if in == "" || strings.HasPrefix(in, "$") {
+		return in
+	}
+	if outs, ok := g.moduleOutputs[in]; ok && len(outs) > 0 {
+		return outs[0]
+	}
+	base := filepath.Base(in)
+	stem := strings.TrimSuffix(strings.TrimSuffix(base, ".so"), ".a")
+	stemClean := strings.TrimPrefix(stem, "lib")
+
+	lookupKeys := []string{stem, stemClean, "lib" + stemClean}
+	for _, key := range lookupKeys {
+		if outs, ok := g.moduleOutputs[key]; ok && len(outs) > 0 {
+			// Prefer an exact basename match if present (e.g. parent_dep.a vs libparent_dep.a)
+			for _, o := range outs {
+				if filepath.Base(o) == base {
+					return o
+				}
+			}
+			return outs[0]
+		}
+	}
+	return in
+}
+
+func (g *Generator) emitCachedProcedure(proc *CachedModuleProcedure) ([]string, error) {
+	for _, edge := range proc.Edges {
+		rebasedInputs := make([]string, len(edge.Inputs))
+		for i, in := range edge.Inputs {
+			rebasedInputs[i] = g.resolveDepTarget(in)
+		}
+		rebasedImplicits := make([]string, len(edge.ImplicitInputs))
+		for i, in := range edge.ImplicitInputs {
+			rebasedImplicits[i] = g.resolveDepTarget(in)
+		}
+		rebasedOrderOnly := make([]string, len(edge.OrderOnlyInputs))
+		for i, in := range edge.OrderOnlyInputs {
+			rebasedOrderOnly[i] = g.resolveDepTarget(in)
+		}
+
+		b := ninja.BuildEdge{
+			Outputs:         edge.Outputs,
+			ImplicitOutputs: edge.ImplicitOutputs,
+			Rule:            edge.Rule,
+			Inputs:          rebasedInputs,
+			Implicits:       rebasedImplicits,
+			OrderOnly:       rebasedOrderOnly,
+			Variables:       edge.Variables,
+		}
+		if err := g.nw.Build(b); err != nil {
+			return nil, err
+		}
+	}
+	return proc.Outputs, nil
 }
 
 func (g *Generator) emitHeader() error {

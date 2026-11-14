@@ -63,6 +63,16 @@ func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string, ex
 				if strings.HasPrefix(name, ".") || name == "out" || name == "node_modules" {
 					return filepath.SkipDir
 				}
+				if useCache {
+					candNinja := filepath.Join(path, "build.ninja")
+					absCand, err := filepath.Abs(candNinja)
+					if err == nil && absCand != absOutNinja {
+						if fresh, _ := IsCachedNinjaFresh(path); fresh {
+							cachedSubdirs = append(cachedSubdirs, path)
+							return filepath.SkipDir
+						}
+					}
+				}
 				// Check user-specified exclude-dir by basename
 				if excludeNames[name] {
 					return filepath.SkipDir
@@ -72,16 +82,6 @@ func DiscoverBpFilesWithCache(rootDir string, useCache bool, outNinja string, ex
 					rel, _ := filepath.Rel(rootDir, path)
 					for _, ep := range excludePaths {
 						if rel == ep || strings.HasPrefix(rel, ep+string(filepath.Separator)) {
-							return filepath.SkipDir
-						}
-					}
-				}
-				if useCache {
-					candNinja := filepath.Join(path, "build.ninja")
-					absCand, err := filepath.Abs(candNinja)
-					if err == nil && absCand != absOutNinja {
-						if fresh, _ := IsCachedNinjaFresh(path); fresh {
-							cachedSubdirs = append(cachedSubdirs, path)
 							return filepath.SkipDir
 						}
 					}

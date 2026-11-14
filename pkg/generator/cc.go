@@ -1210,8 +1210,7 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	}
 
 	// Partition includes into strict tiered precedence buckets:
-	// Tier 1: Authentic APEX headers & Platform Sysroot (HIGHEST PRECEDENCE)
-	// Extractive APEX header paths must always precede VNDK snapshot paths.
+	// Precedence order: Tier 2 (Module & user includes) > Tier 3 (Tree dependencies) > Tier 4 (VNDK snapshots) > Tier 1 (Sysroot & APEX fallback)
 	var tier1 []string
 	var tier2 []string
 	var tier3 []string
@@ -1247,14 +1246,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	// Classify user includes from ExtraCflags and ExtraCppflags into userTier1 and userTier2
-	var userTier1 []string
+	// Classify user includes from ExtraCflags and ExtraCppflags into userTier2
 	var userTier2 []string
 	for _, flag := range append(g.opts.ExtraCflags, g.opts.ExtraCppflags...) {
 		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
-			if strings.Contains(flag, "/apex/") {
-				userTier1 = append(userTier1, flag)
-			} else if strings.Contains(flag, "vndk") {
+			if strings.Contains(flag, "vndk") {
 				tier4 = append(tier4, flag)
 			} else {
 				userTier2 = append(userTier2, flag)
@@ -1285,8 +1281,7 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	// User includes take precedence within Tier 1 and Tier 2 (searched before module includes)
-	tier1 = append(userTier1, tier1...)
+	// User includes take precedence in Tier 2 (searched before module includes)
 	tier2 = append(userTier2, tier2...)
 
 	// Auto-detect include dirs for referenced external dependencies from TopDir (ANDROID_BUILD_TOP)
@@ -1346,9 +1341,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	// Filter Tier 4 VNDK snapshot includes if APEX platform headers are present
+	// Filter Tier 4 VNDK snapshot includes if APEX platform headers are present in tier1 or tier2
 	hasApexHeaders := false
-	for _, inc := range tier1 {
+	for _, inc := range append(tier1, tier2...) {
 		if strings.Contains(inc, "/apex/") {
 			hasApexHeaders = true
 			break
@@ -1366,7 +1361,8 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		filteredTier4 = append(filteredTier4, inc)
 	}
 
-	combined := append(append(append(tier1, tier2...), tier3...), filteredTier4...)
+	// Include precedence hierarchy: Tier 2 > Tier 3 > Tier 4 > Tier 1
+	combined := append(append(append(tier2, tier3...), filteredTier4...), tier1...)
 
 	filtered := combined[:0]
 	for _, e := range combined {

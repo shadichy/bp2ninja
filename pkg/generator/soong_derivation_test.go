@@ -75,14 +75,17 @@ func TestIncludePrecedenceVNDKShadowing(t *testing.T) {
 		t.Fatalf("Expected cxx_compile edge")
 	}
 	section2 := out2[ccIdx2:]
+	// In the 2 > 3 > 4 > 1 precedence hierarchy:
+	// Tier 2 (local include) precedes Tier 4 (VNDK), which precedes Tier 1 (APEX/sysroot fallback)
+	localPos := strings.Index(section2, "-Iinclude/local")
 	apexPos := strings.Index(section2, "-I/apex/include")
 	vndkPos := strings.Index(section2, "-I/opt/android-sdk/vndk/v34/include")
 
-	if apexPos < 0 || vndkPos < 0 {
-		t.Fatalf("Expected both APEX and VNDK headers in output")
+	if localPos < 0 || vndkPos < 0 || apexPos < 0 {
+		t.Fatalf("Expected local, VNDK, and APEX headers in output")
 	}
-	if apexPos >= vndkPos {
-		t.Errorf("APEX header position (%d) must precede VNDK header position (%d)", apexPos, vndkPos)
+	if !(localPos < vndkPos && vndkPos < apexPos) {
+		t.Errorf("Expected 2 > 3 > 4 > 1 include order: local (%d) < VNDK (%d) < APEX (%d)", localPos, vndkPos, apexPos)
 	}
 }
 

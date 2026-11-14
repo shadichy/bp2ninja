@@ -540,7 +540,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		return nil, nil
 	}
 
-	includes := dedup(g.resolveIncludeDirs(mod))
+	cxxIncludes := dedup(g.resolveIncludeDirs(mod, true))
+	ccIncludes := dedup(g.resolveIncludeDirs(mod, false))
 	archFlags := g.archCodegenFlags()
 	if !g.isHostModule(mod) {
 		archFlags = append(archFlags, g.crossTargetFlags()...)
@@ -558,7 +559,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	cppflags = append(cppflags, archFlags...)
 	cflags = append(cflags, "-fPIC")
 	if g.opts.AllowMissingDeps {
-		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion", "-Wno-error=deprecated-declarations", "-Wno-error=c99-designator", "-Wno-c99-designator")
+		cflags = append(cflags, "-Wno-error=nontrivial-memcall", "-Wno-nontrivial-memcall", "-Wno-error=deprecated-anon-enum-enum-conversion", "-Wno-deprecated-anon-enum-enum-conversion", "-Wno-error=deprecated-declarations", "-Wno-error=c99-designator", "-Wno-c99-designator", "-Wno-error=reorder-init-list", "-Wno-reorder-init-list", "-Wno-error=missing-designated-field-initializers", "-Wno-missing-designated-field-initializers", "-Wno-error=missing-declarations", "-Wno-missing-declarations")
 	}
 
 	// Apply C / C++ standard properties (c_std, cpp_std)
@@ -677,7 +678,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 					}
 				}
 			}
-			for _, inc := range includes {
+			for _, inc := range cxxIncludes {
 				if len(inc) > 2 && inc[:2] == "-I" {
 					pbArgs = append(pbArgs, inc)
 				} else {
@@ -718,13 +719,14 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	}
 
 	if len(modProtoHeaders) > 0 {
-		includes = append(includes, "-I"+protoGenDir)
+		protoIncs := []string{"-I" + protoGenDir}
 		for _, hdr := range modProtoHeaders {
 			if dir := filepath.Dir(hdr); dir != protoGenDir {
-				includes = append(includes, "-I"+dir)
+				protoIncs = append(protoIncs, "-I"+dir)
 			}
 		}
-		includes = dedup(includes)
+		cxxIncludes = dedup(append(cxxIncludes, protoIncs...))
+		ccIncludes = dedup(append(ccIncludes, protoIncs...))
 		orderOnlyDeps = append(orderOnlyDeps, modProtoHeaders...)
 	}
 
@@ -861,8 +863,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 			g.aidlHeaders[mod.Name] = append(g.aidlHeaders[mod.Name], headerI, headerBn, headerBp)
 		}
 
-		includes = append(includes, "-I"+aidlGenDir)
-		includes = dedup(includes)
+		cxxIncludes = dedup(append(cxxIncludes, "-I"+aidlGenDir))
+		ccIncludes = dedup(append(ccIncludes, "-I"+aidlGenDir))
 		cflags = append(cflags, "-DLIBBINDER_EXPORTED=__attribute__((visibility(\"default\")))")
 		cflags = dedup(cflags)
 		orderOnlyDeps = append(orderOnlyDeps, modAidlHeaders...)
@@ -911,6 +913,28 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		}
 		flags = dedup(flags)
 
+		isPreprocess := false
+		for _, f := range flags {
+			if f == "-E" {
+				isPreprocess = true
+				break
+			}
+		}
+		if isPreprocess {
+			if rule == "cxx_compile" {
+				rule = "cxx_preprocess"
+			} else if rule == "cc_compile" {
+				rule = "cc_preprocess"
+			}
+			var nonCFlags []string
+			for _, f := range flags {
+				if f != "-c" {
+					nonCFlags = append(nonCFlags, f)
+				}
+			}
+			flags = nonCFlags
+		}
+
 		baseName := strings.TrimSuffix(src, ext)
 		// Generated sources (out/gen/<mod>/...) keep their layout relative
 		// to the module's gen dir instead of nesting out/obj/<mod>/out/gen/...
@@ -922,6 +946,11 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		objFile := filepath.Join(objDir, baseName+".o")
 		objs = append(objs, objFile)
 
+		srcIncludes := ccIncludes
+		if ext == ".cpp" || ext == ".cc" || ext == ".cxx" {
+			srcIncludes = cxxIncludes
+		}
+
 		vars := map[string]string{}
 		if rule == "as_compile" {
 			if len(flags) > 0 {
@@ -930,7 +959,7 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 		} else if rule == "asm_nasm" {
 			af := append([]string{}, mod.GetStringList("asflags")...)
 			af = append(af, "-I"+filepath.Dir(src))
-			for _, inc := range includes {
+			for _, inc := range ccIncludes {
 				if len(inc) > 2 && inc[:2] == "-I" {
 					af = append(af, inc)
 				} else {
@@ -945,8 +974,8 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 				vars["cflags"] = shellJoin(flags)
 			}
 		}
-		if len(includes) > 0 {
-			vars["includes"] = shellJoin(includes)
+		if len(srcIncludes) > 0 {
+			vars["includes"] = shellJoin(srcIncludes)
 		}
 
 		if err := g.nw.Build(ninja.BuildEdge{
@@ -963,7 +992,11 @@ func (g *Generator) compileCcSourcesWithSuffix(mod *eval.EvaluatedModule, suffix
 	return objs, nil
 }
 
-func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
+func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule, isCpp ...bool) []string {
+	cxxMode := false
+	if len(isCpp) > 0 && isCpp[0] {
+		cxxMode = true
+	}
 	var incs []string
 
 	// Always include the module root directory itself (Soong default for #include <local_header.h>)
@@ -1246,16 +1279,67 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		}
 	}
 
-	// Classify user includes from ExtraCflags and ExtraCppflags into userTier2
-	var userTier2 []string
-	for _, flag := range append(g.opts.ExtraCflags, g.opts.ExtraCppflags...) {
+	// Extract explicit CLI includes into Tier 0 (highest precedence)
+	cliCflags := g.opts.CliCflags
+	cliCppflags := g.opts.CliCppflags
+	if len(cliCflags) == 0 && len(cliCppflags) == 0 && len(g.opts.EnvCflags) == 0 && len(g.opts.EnvCppflags) == 0 {
+		cliCflags = g.opts.ExtraCflags
+		cliCppflags = g.opts.ExtraCppflags
+	}
+
+	var cliCppIncs []string
+	for _, flag := range cliCppflags {
 		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
-			if strings.Contains(flag, "vndk") {
+			cliCppIncs = append(cliCppIncs, flag)
+		}
+	}
+	var cliCIncs []string
+	for _, flag := range cliCflags {
+		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
+			cliCIncs = append(cliCIncs, flag)
+		}
+	}
+
+	// Tier 0: Explicit CLI user includes.
+	// For C++ compilation (cxx_compile), -cppflags includes precede -cflags includes.
+	// For C compilation (cc_compile), -cflags includes precede -cppflags includes.
+	var tier0 []string
+	if cxxMode {
+		tier0 = append(append([]string{}, cliCppIncs...), cliCIncs...)
+	} else {
+		tier0 = append(append([]string{}, cliCIncs...), cliCppIncs...)
+	}
+
+	// When called via Go API without explicit Cli/Env split, move any /apex/ flags to fallback (Tier 1)
+	if len(g.opts.CliCflags) == 0 && len(g.opts.CliCppflags) == 0 && len(g.opts.EnvCflags) == 0 && len(g.opts.EnvCppflags) == 0 {
+		var nonApexTier0 []string
+		for _, flag := range tier0 {
+			if strings.Contains(flag, "/apex/") {
+				tier1 = append(tier1, flag)
+			} else if strings.Contains(flag, "vndk") {
 				if g.opts.Vndk {
 					tier4 = append(tier4, flag)
 				}
 			} else {
-				userTier2 = append(userTier2, flag)
+				nonApexTier0 = append(nonApexTier0, flag)
+			}
+		}
+		tier0 = nonApexTier0
+	}
+
+	// Classify ambient environment includes from EnvCflags and EnvCppflags
+	for _, flag := range append(g.opts.EnvCflags, g.opts.EnvCppflags...) {
+		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
+			if strings.Contains(flag, "/apex/") {
+				// Any /apex/ path from ambient environment (e.g. CFLAGS/CXXFLAGS exported by makeapex)
+				// is strictly fallback (Tier 1) so it never shadows local source headers.
+				tier1 = append(tier1, flag)
+			} else if strings.Contains(flag, "vndk") {
+				if g.opts.Vndk {
+					tier4 = append(tier4, flag)
+				}
+			} else {
+				tier2 = append(tier2, flag)
 			}
 		}
 	}
@@ -1286,9 +1370,6 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			}
 		}
 	}
-
-	// User includes take precedence in Tier 2 (searched before module includes)
-	tier2 = append(userTier2, tier2...)
 
 	// Auto-detect include dirs for referenced external dependencies from TopDir (ANDROID_BUILD_TOP)
 	topModules := g.GetTopDirModules()
@@ -1376,8 +1457,8 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		filteredTier4 = append(filteredTier4, inc)
 	}
 
-	// Include precedence hierarchy: Tier 2 > Tier 3 > Tier 4 > Tier 1
-	combined := append(append(append(tier2, tier3...), filteredTier4...), tier1...)
+	// Include precedence hierarchy: Tier 0 (CLI user includes) > Tier 2 (Module & user includes) > Tier 3 (Tree dependencies) > Tier 4 (VNDK snapshots) > Tier 1 (Sysroot & APEX fallback)
+	combined := append(append(append(append(tier0, tier2...), tier3...), filteredTier4...), tier1...)
 
 	filtered := combined[:0]
 	for _, e := range combined {

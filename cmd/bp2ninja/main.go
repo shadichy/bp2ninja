@@ -1396,51 +1396,63 @@ func main() {
 	opts.Prefix = prefix
 	opts.CachedSubninjas = cachedSubninjas
 
-	// Merge environment variables and CLI extra flags (per-project configuration)
-	var combinedCflags []string
-	if envCflags := os.Getenv("CFLAGS"); envCflags != "" {
-		combinedCflags = append(combinedCflags, strings.Fields(envCflags)...)
-	}
-	if envCcflags := os.Getenv("CCFLAGS"); envCcflags != "" {
-		combinedCflags = append(combinedCflags, strings.Fields(envCcflags)...)
-	}
+	// Separate CLI flags and environment variables to enforce strict CLI search precedence
+	var cliCflags []string
 	if extraCflags != "" {
-		combinedCflags = append(combinedCflags, strings.Fields(extraCflags)...)
+		cliCflags = append(cliCflags, strings.Fields(extraCflags)...)
 	}
 	if extraCcflags != "" {
-		combinedCflags = append(combinedCflags, strings.Fields(extraCcflags)...)
+		cliCflags = append(cliCflags, strings.Fields(extraCcflags)...)
 	}
-	opts.ExtraCflags = combinedCflags
+	var envCflagsList []string
+	if envCflags := os.Getenv("CFLAGS"); envCflags != "" {
+		envCflagsList = append(envCflagsList, strings.Fields(envCflags)...)
+	}
+	if envCcflags := os.Getenv("CCFLAGS"); envCcflags != "" {
+		envCflagsList = append(envCflagsList, strings.Fields(envCcflags)...)
+	}
+	opts.CliCflags = cliCflags
+	opts.EnvCflags = envCflagsList
+	opts.ExtraCflags = append(append([]string{}, cliCflags...), envCflagsList...)
 
-	var combinedCppflags []string
+	var cliCppflags []string
+	if extraCppflags != "" {
+		cliCppflags = append(cliCppflags, strings.Fields(extraCppflags)...)
+	}
+	var envCppflagsList []string
 	if envCppflags := os.Getenv("CPPFLAGS"); envCppflags != "" {
-		combinedCppflags = append(combinedCppflags, strings.Fields(envCppflags)...)
+		envCppflagsList = append(envCppflagsList, strings.Fields(envCppflags)...)
 	}
 	if envCxxflags := os.Getenv("CXXFLAGS"); envCxxflags != "" {
-		combinedCppflags = append(combinedCppflags, strings.Fields(envCxxflags)...)
+		envCppflagsList = append(envCppflagsList, strings.Fields(envCxxflags)...)
 	}
-	if extraCppflags != "" {
-		combinedCppflags = append(combinedCppflags, strings.Fields(extraCppflags)...)
-	}
-	opts.ExtraCppflags = combinedCppflags
+	opts.CliCppflags = cliCppflags
+	opts.EnvCppflags = envCppflagsList
+	opts.ExtraCppflags = append(append([]string{}, cliCppflags...), envCppflagsList...)
 
-	var combinedLdflags []string
-	if envLdflags := os.Getenv("LDFLAGS"); envLdflags != "" {
-		combinedLdflags = append(combinedLdflags, strings.Fields(envLdflags)...)
-	}
+	var cliLdflags []string
 	if extraLdflags != "" {
-		combinedLdflags = append(combinedLdflags, strings.Fields(extraLdflags)...)
+		cliLdflags = append(cliLdflags, strings.Fields(extraLdflags)...)
 	}
-	opts.ExtraLdflags = combinedLdflags
+	var envLdflagsList []string
+	if envLdflags := os.Getenv("LDFLAGS"); envLdflags != "" {
+		envLdflagsList = append(envLdflagsList, strings.Fields(envLdflags)...)
+	}
+	opts.CliLdflags = cliLdflags
+	opts.EnvLdflags = envLdflagsList
+	opts.ExtraLdflags = append(append([]string{}, cliLdflags...), envLdflagsList...)
 
-	var combinedAsflags []string
-	if envAsflags := os.Getenv("ASFLAGS"); envAsflags != "" {
-		combinedAsflags = append(combinedAsflags, strings.Fields(envAsflags)...)
-	}
+	var cliAsflags []string
 	if extraAsflags != "" {
-		combinedAsflags = append(combinedAsflags, strings.Fields(extraAsflags)...)
+		cliAsflags = append(cliAsflags, strings.Fields(extraAsflags)...)
 	}
-	opts.ExtraAsflags = combinedAsflags
+	var envAsflagsList []string
+	if envAsflags := os.Getenv("ASFLAGS"); envAsflags != "" {
+		envAsflagsList = append(envAsflagsList, strings.Fields(envAsflags)...)
+	}
+	opts.CliAsflags = cliAsflags
+	opts.EnvAsflags = envAsflagsList
+	opts.ExtraAsflags = append(append([]string{}, cliAsflags...), envAsflagsList...)
 
 	opts.EnableTests = enableTests
 	if enableTests {

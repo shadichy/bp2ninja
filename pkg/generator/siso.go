@@ -48,7 +48,7 @@ func (g *Generator) WriteSisoConfig(w io.Writer) error {
 	b.WriteString("      # legitimately contain absolute paths to system headers.\n")
 	b.WriteString("      {\n")
 	b.WriteString("        \"name\": \"compile-abs-sysroot\",\n")
-	b.WriteString("        \"action\": \"^(cc_compile|cxx_compile|as_compile)$\",\n")
+	b.WriteString("        \"action\": \"^(cc_compile|cxx_compile|as_compile|cc_preprocess|cxx_preprocess)$\",\n")
 	b.WriteString("        \"input_root_absolute_path\": True,\n")
 	b.WriteString("      },\n")
 	b.WriteString("      # Link / archive steps consume prebuilt libraries outside the\n")

@@ -47,6 +47,14 @@ type Options struct {
 	ExtraCppflags       []string
 	ExtraLdflags        []string
 	ExtraAsflags        []string
+	CliCflags           []string
+	CliCppflags         []string
+	CliLdflags          []string
+	CliAsflags          []string
+	EnvCflags           []string
+	EnvCppflags         []string
+	EnvLdflags          []string
+	EnvAsflags          []string
 	LdPath              string
 	StripPath           string
 	IncludeRoot         string
@@ -1164,7 +1172,7 @@ func (g *Generator) emitStandardRules() error {
 	// CC Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "cc_compile",
-		Command:       "$cc -MD -MF $out.d $includes $cflags $${CFLAGS} $${CCFLAGS} -c $in -o $out",
+		Command:       "$cc -MD -MF $out.d $cflags $includes -c $in -o $out",
 		DepFile:       "$out.d",
 		Deps:          "gcc",
 		Description:   "CC $out",
@@ -1173,10 +1181,22 @@ func (g *Generator) emitStandardRules() error {
 		return err
 	}
 
+	// CC Preprocess (when -E is specified in flags)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "cc_preprocess",
+		Command:       "$cc -MD -MF $out.d $cflags $includes -o $out $in",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "CC_PREPROCESS $out",
+		RemoteEnabled: g.opts.SisoRemote,
+	}); err != nil {
+		return err
+	}
+
 	// AS Compile (Assembly pipeline using asflags without C headers)
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "as_compile",
-		Command:       "$cc -MD -MF $out.d $includes $asflags $${ASFLAGS} -c $in -o $out",
+		Command:       "$cc -MD -MF $out.d $asflags $includes -c $in -o $out",
 		DepFile:       "$out.d",
 		Deps:          "gcc",
 		Description:   "AS $out",
@@ -1219,10 +1239,22 @@ func (g *Generator) emitStandardRules() error {
 	// CXX Compile
 	if err := g.nw.Rule(ninja.Rule{
 		Name:          "cxx_compile",
-		Command:       "$cxx -MD -MF $out.d $includes $cflags $${CXXFLAGS} $${CPPFLAGS} -c $in -o $out",
+		Command:       "$cxx -MD -MF $out.d $cflags $includes -c $in -o $out",
 		DepFile:       "$out.d",
 		Deps:          "gcc",
 		Description:   "CXX $out",
+		RemoteEnabled: g.opts.SisoRemote,
+	}); err != nil {
+		return err
+	}
+
+	// CXX Preprocess (when -E is specified in flags)
+	if err := g.nw.Rule(ninja.Rule{
+		Name:          "cxx_preprocess",
+		Command:       "$cxx -MD -MF $out.d $cflags $includes -o $out $in",
+		DepFile:       "$out.d",
+		Deps:          "gcc",
+		Description:   "CXX_PREPROCESS $out",
 		RemoteEnabled: g.opts.SisoRemote,
 	}); err != nil {
 		return err

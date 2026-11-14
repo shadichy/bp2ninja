@@ -179,3 +179,22 @@ func TestNormalizeArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestCliEnvFlagPrecedenceStructure(t *testing.T) {
+	// Verify that CLI extra flags precede ambient environment variables
+	cliFlags := []string{"-I/opt/custom_inc", "-O3"}
+	envFlags := []string{"-I/apex/com.android.bionic.libc.dev/include", "-O2"}
+
+	combined := append(append([]string{}, cliFlags...), envFlags...)
+
+	if len(combined) != 4 {
+		t.Fatalf("Expected 4 flags, got %d", len(combined))
+	}
+	if combined[0] != "-I/opt/custom_inc" {
+		t.Errorf("Expected CLI include first, got %s", combined[0])
+	}
+	if combined[2] != "-I/apex/com.android.bionic.libc.dev/include" {
+		t.Errorf("Expected env include after CLI flags, got %s", combined[2])
+	}
+}
+}

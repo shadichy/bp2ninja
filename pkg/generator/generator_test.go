@@ -914,11 +914,23 @@ func TestEnvironmentFlagOverridesInRules(t *testing.T) {
 	}
 
 	content := buf.String()
-	if !strings.Contains(content, "${CFLAGS}") || !strings.Contains(content, "${CCFLAGS}") {
-		t.Errorf("Expected ${CFLAGS} and ${CCFLAGS} in cc_compile rule, got:\n%s", content)
+	if strings.Contains(content, "${CFLAGS}") || strings.Contains(content, "${CCFLAGS}") {
+		t.Errorf("Did not expect ${CFLAGS} or ${CCFLAGS} in cc_compile rule, got:\n%s", content)
 	}
-	if !strings.Contains(content, "${CXXFLAGS}") || !strings.Contains(content, "${CPPFLAGS}") {
-		t.Errorf("Expected ${CXXFLAGS} and ${CPPFLAGS} in cxx_compile rule, got:\n%s", content)
+	if strings.Contains(content, "${CXXFLAGS}") || strings.Contains(content, "${CPPFLAGS}") {
+		t.Errorf("Did not expect ${CXXFLAGS} or ${CPPFLAGS} in cxx_compile rule, got:\n%s", content)
+	}
+	if strings.Contains(content, "${ASFLAGS}") {
+		t.Errorf("Did not expect ${ASFLAGS} in as_compile rule, got:\n%s", content)
+	}
+	if !strings.Contains(content, "command = $cc -MD -MF $out.d $cflags $includes -c $in -o $out") {
+		t.Errorf("Expected cc_compile rule with $cflags before $includes without shell overrides, got:\n%s", content)
+	}
+	if !strings.Contains(content, "command = $cxx -MD -MF $out.d $cflags $includes -c $in -o $out") {
+		t.Errorf("Expected cxx_compile rule with $cflags before $includes without shell overrides, got:\n%s", content)
+	}
+	if !strings.Contains(content, "command = $cc -MD -MF $out.d $asflags $includes -c $in -o $out") {
+		t.Errorf("Expected as_compile rule with $asflags before $includes without shell overrides, got:\n%s", content)
 	}
 	if !strings.Contains(content, "${LDFLAGS}") {
 		t.Errorf("Expected ${LDFLAGS} in link rules, got:\n%s", content)
@@ -2516,7 +2528,7 @@ func TestWriteSisoConfig(t *testing.T) {
 		"handlers = {},",
 		"filegroups = {},",
 		`"action": "^(link_shared|link_binary|partial_link|archive_static|ar_mri)$"`,
-		`"action": "^(cc_compile|cxx_compile|as_compile)$"`,
+		`"action": "^(cc_compile|cxx_compile|as_compile|cc_preprocess|cxx_preprocess)$"`,
 		`"input_root_absolute_path": True,`,
 	} {
 		if !strings.Contains(content, fragment) {
@@ -4150,4 +4162,123 @@ func TestTestsDefaultOmittedAndSeparateEmission(t *testing.T) {
 		t.Errorf("Expected test.ninja to set default to test targets, got:\n%s", testNinja)
 	}
 }
+
+func TestPreprocessRuleEmissionWithE(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	modCpp := &eval.EvaluatedModule{
+		Type: "cc_object",
+		Name: "libseccomp_gen_syscall_nrs_x86",
+		Properties: map[string]interface{}{
+			"name":   "libseccomp_gen_syscall_nrs_x86",
+			"srcs":   []interface{}{"seccomp/gen_syscall_nrs_x86.cpp"},
+			"cflags": []interface{}{"-dD", "-E", "-Wall", "-Werror", "-nostdinc"},
+		},
+	}
+	modC := &eval.EvaluatedModule{
+		Type: "cc_object",
+		Name: "gen_c_preprocess",
+		Properties: map[string]interface{}{
+			"name":   "gen_c_preprocess",
+			"srcs":   []interface{}{"seccomp/gen_syscall_nrs.c"},
+			"cflags": []interface{}{"-dD", "-E", "-Wall", "-Werror"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{modCpp, modC}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+	// Check rule definitions
+	if !strings.Contains(content, "rule cxx_preprocess") {
+		t.Errorf("Expected rule cxx_preprocess in ninja output")
+	}
+	if !strings.Contains(content, "command = $cxx -MD -MF $out.d $cflags $includes -o $out $in") {
+		t.Errorf("Expected cxx_preprocess rule without -c, got:\n%s", content)
+	}
+	if !strings.Contains(content, "rule cc_preprocess") {
+		t.Errorf("Expected rule cc_preprocess in ninja output")
+	}
+	if !strings.Contains(content, "command = $cc -MD -MF $out.d $cflags $includes -o $out $in") {
+		t.Errorf("Expected cc_preprocess rule without -c, got:\n%s", content)
+	}
+
+	// Check build edges
+	if !strings.Contains(content, ": cxx_preprocess seccomp/gen_syscall_nrs_x86.cpp") {
+		t.Errorf("Expected cxx_preprocess build edge for libseccomp_gen_syscall_nrs_x86, got:\n%s", content)
+	}
+	if !strings.Contains(content, ": cc_preprocess seccomp/gen_syscall_nrs.c") {
+		t.Errorf("Expected cc_preprocess build edge for gen_c_preprocess, got:\n%s", content)
+	}
+}
+
+func TestCliIncludePrecedenceOverAmbientApex(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	// Simulate makeapex ambient CFLAGS/CXXFLAGS
+	opts.EnvCflags = []string{"-I/apex/com.android.bionic.libc.dev/include", "-I/apex/include"}
+	opts.EnvCppflags = []string{"-I/apex/com.android.bionic.libc.dev/include", "-I/apex/include"}
+	// User explicit CLI flags
+	opts.CliCflags = []string{"-Ilibc/include"}
+	opts.CliCppflags = []string{"-I/opt/custom/cxx_inc"}
+
+	gen := New(opts, nw, nil)
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libmytest",
+		Properties: map[string]interface{}{
+			"name":               "libmytest",
+			"srcs":               []interface{}{"main.cpp", "helper.c"},
+			"local_include_dirs": []interface{}{"local/inc"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Find the C++ compilation edge
+	cppIdx := strings.Index(content, "build out/obj/libmytest/main.o: cxx_compile")
+	if cppIdx == -1 {
+		t.Fatalf("Expected cxx_compile edge for main.cpp")
+	}
+	cIdx := strings.Index(content, "build out/obj/libmytest/helper.o: cc_compile")
+	if cIdx == -1 {
+		t.Fatalf("Expected cc_compile edge for helper.c")
+	}
+
+	cppSection := content[cppIdx:cIdx]
+	// In C++ edge:
+	// 1. -I/opt/custom/cxx_inc (from CliCppflags) MUST be before -Ilibc/include (from CliCflags)
+	// 2. Both MUST be before local/inc and before ambient /apex/
+	cxxIncPos := strings.Index(cppSection, "-I/opt/custom/cxx_inc")
+	cIncPos := strings.Index(cppSection, "-Ilibc/include")
+	apexIncPos := strings.Index(cppSection, "-I/apex/com.android.bionic.libc.dev/include")
+
+	if cxxIncPos == -1 {
+		t.Errorf("Expected -I/opt/custom/cxx_inc in C++ includes, got:\n%s", cppSection)
+	}
+	if cIncPos == -1 {
+		t.Errorf("Expected -Ilibc/include in C++ includes, got:\n%s", cppSection)
+	}
+	if apexIncPos == -1 {
+		t.Errorf("Expected -I/apex/com.android.bionic.libc.dev/include in C++ includes, got:\n%s", cppSection)
+	}
+
+	if cxxIncPos > cIncPos {
+		t.Errorf("Expected CliCppflags (-I/opt/custom/cxx_inc) before CliCflags (-Ilibc/include) for C++ TU")
+	}
+	if cIncPos > apexIncPos {
+		t.Errorf("Expected CLI flags before ambient /apex/ includes for C++ TU")
+	}
+}
+
 

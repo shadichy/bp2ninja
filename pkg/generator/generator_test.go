@@ -4044,3 +4044,110 @@ func TestVndkFlagsAndDiscovery(t *testing.T) {
 		t.Errorf("Expected auto-discovered VNDK lib dir -L%s in output, got:\n%s", vndkLib, outOn)
 	}
 }
+
+func TestTestsDefaultOmittedAndSeparateEmission(t *testing.T) {
+	prodMod := &eval.EvaluatedModule{
+		Type: "cc_library",
+		Name: "libproduction",
+		Dir:  "",
+		Properties: map[string]interface{}{
+			"name": "libproduction",
+			"srcs": []interface{}{"prod.cpp"},
+		},
+	}
+
+	testMod := &eval.EvaluatedModule{
+		Type: "cc_test",
+		Name: "my_unit_test",
+		Dir:  "",
+		Properties: map[string]interface{}{
+			"name":        "my_unit_test",
+			"srcs":        []interface{}{"unit_test.cpp"},
+			"shared_libs": []interface{}{"libproduction"},
+		},
+	}
+
+	benchMod := &eval.EvaluatedModule{
+		Type: "cc_benchmark",
+		Name: "my_perf_bench",
+		Dir:  "",
+		Properties: map[string]interface{}{
+			"name":        "my_perf_bench",
+			"srcs":        []interface{}{"bench.cpp"},
+			"shared_libs": []interface{}{"libproduction"},
+		},
+	}
+
+	modules := []*eval.EvaluatedModule{prodMod, testMod, benchMod}
+
+	// 1. By default (EnableTests: false), test & benchmark modules are completely omitted
+	var mainBufDefault bytes.Buffer
+	nwDefault := ninja.NewWriter(&mainBufDefault)
+	optsDefault := DefaultOptions(".", "out")
+	optsDefault.AllowMissingDeps = true
+	genDefault := New(optsDefault, nwDefault, nil)
+
+	if err := genDefault.Generate(modules); err != nil {
+		t.Fatalf("Generate default failed: %v", err)
+	}
+
+	mainNinjaDefault := mainBufDefault.String()
+	if !strings.Contains(mainNinjaDefault, "libproduction") {
+		t.Errorf("Expected libproduction in default build.ninja")
+	}
+	if strings.Contains(mainNinjaDefault, "my_unit_test") {
+		t.Errorf("Default build.ninja should not contain my_unit_test, got:\n%s", mainNinjaDefault)
+	}
+	if strings.Contains(mainNinjaDefault, "my_perf_bench") {
+		t.Errorf("Default build.ninja should not contain my_perf_bench, got:\n%s", mainNinjaDefault)
+	}
+
+	// 2. When EnableTests: true with SetTestWriter, tests are emitted strictly to test.ninja
+	var mainBuf bytes.Buffer
+	var testBuf bytes.Buffer
+	nwMain := ninja.NewWriter(&mainBuf)
+	nwTest := ninja.NewWriter(&testBuf)
+
+	optsTests := DefaultOptions(".", "out")
+	optsTests.AllowMissingDeps = true
+	optsTests.EnableTests = true
+	optsTests.MainNinjaFile = "out/build.ninja"
+	optsTests.TestOutFile = "out/test.ninja"
+
+	genTests := New(optsTests, nwMain, nil)
+	genTests.SetTestWriter(nwTest)
+
+	if err := genTests.Generate(modules); err != nil {
+		t.Fatalf("Generate with tests failed: %v", err)
+	}
+
+	mainNinja := mainBuf.String()
+	testNinja := testBuf.String()
+
+	// build.ninja must only contain production targets
+	if !strings.Contains(mainNinja, "libproduction") {
+		t.Errorf("Expected libproduction in build.ninja")
+	}
+	if strings.Contains(mainNinja, "my_unit_test") {
+		t.Errorf("build.ninja should not contain my_unit_test when tests are enabled, got:\n%s", mainNinja)
+	}
+	if strings.Contains(mainNinja, "my_perf_bench") {
+		t.Errorf("build.ninja should not contain my_perf_bench when tests are enabled, got:\n%s", mainNinja)
+	}
+
+	// test.ninja must include build.ninja, contain test rules, and set default
+	if !strings.Contains(testNinja, "include build.ninja") {
+		t.Errorf("Expected test.ninja to contain 'include build.ninja', got:\n%s", testNinja)
+	}
+	if !strings.Contains(testNinja, "out/tests/my_unit_test") {
+		t.Errorf("Expected test.ninja to define out/tests/my_unit_test, got:\n%s", testNinja)
+	}
+	if !strings.Contains(testNinja, "out/tests/my_perf_bench") {
+		t.Errorf("Expected test.ninja to define out/tests/my_perf_bench, got:\n%s", testNinja)
+	}
+	if !strings.Contains(testNinja, "default out/tests/my_unit_test out/tests/my_perf_bench") &&
+		!strings.Contains(testNinja, "default out/tests/my_perf_bench out/tests/my_unit_test") {
+		t.Errorf("Expected test.ninja to set default to test targets, got:\n%s", testNinja)
+	}
+}
+

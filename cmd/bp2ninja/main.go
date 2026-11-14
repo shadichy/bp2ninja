@@ -115,6 +115,7 @@ var valueFlags = map[string]bool{
 	"dir":                      true,
 	"in":                       true,
 	"output":                   true,
+	"test-o":                   true,
 }
 
 // normalizeArgs normalizes command-line arguments to a single '-' prefix.
@@ -338,7 +339,9 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -allow-missing-deps        Allow missing dependencies / inputs by generating phony rules (default: true)\n")
 	fmt.Fprintf(out, "  -exclude-dir DIR           Exclude directory from recursive discovery (name or relative path; repeatable)\n")
 	fmt.Fprintf(out, "  -target NAME               Only generate these module names (positive filter; repeatable)\n")
-	fmt.Fprintf(out, "  -exclude-target NAME       Skip these module names during code generation (repeatable)\n\n")
+	fmt.Fprintf(out, "  -exclude-target NAME       Skip these module names during code generation (repeatable)\n")
+	fmt.Fprintf(out, "  -tests                     Enable generation of test modules into test.ninja (default: false)\n")
+	fmt.Fprintf(out, "  -test-o FILE               Output Ninja build file path for tests (default: \"test.ninja\")\n\n")
 
 	fmt.Fprintf(out, "Target architecture and NDK options:\n")
 	fmt.Fprintf(out, "  -arch ARCH                 Target architecture: arm64 (default), arm, x86_64, x86, x32, riscv64\n")
@@ -555,6 +558,10 @@ func main() {
 	flag.Var(&excludeDirs, "exclude-dir", "Directory name or relative path to exclude from recursive discovery (can be repeated)")
 	flag.Var(&targets, "target", "Module name to include (positive filter, can be repeated; if set, only these modules are generated)")
 	flag.Var(&excludeTargets, "exclude-target", "Module name to exclude from code generation (can be repeated)")
+	var enableTests bool
+	var testOutFile string
+	flag.BoolVar(&enableTests, "tests", false, "Enable generation of test modules into test.ninja (default: false)")
+	flag.StringVar(&testOutFile, "test-o", "", "Output Ninja build file path for tests (default: \"test.ninja\")")
 
 	// 2. Target Architecture & NDK Options
 	flag.StringVar(&arch, "arch", "arm64", "Target architecture (arm64, arm, x86_64, x86, x32, riscv64)")
@@ -1435,6 +1442,15 @@ func main() {
 	}
 	opts.ExtraAsflags = combinedAsflags
 
+	opts.EnableTests = enableTests
+	if enableTests {
+		if testOutFile == "" {
+			testOutFile = filepath.Join(filepath.Dir(outFile), "test.ninja")
+		}
+		opts.TestOutFile = testOutFile
+		opts.MainNinjaFile = outFile
+	}
+
 	// 5. Open output file and generate Ninja rules
 	if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil && filepath.Dir(outFile) != "." {
 		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
@@ -1450,6 +1466,23 @@ func main() {
 
 	nw := ninja.NewWriter(outF)
 	gen := generator.New(opts, nw, plugins.GlobalRegistry)
+
+	if enableTests {
+		if err := os.MkdirAll(filepath.Dir(testOutFile), 0755); err != nil && filepath.Dir(testOutFile) != "." {
+			fmt.Fprintf(os.Stderr, "Error creating test output directory: %v\n", err)
+			os.Exit(1)
+		}
+
+		testOutF, err := os.Create(testOutFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", testOutFile, err)
+			os.Exit(1)
+		}
+		defer testOutF.Close()
+
+		testNw := ninja.NewWriter(testOutF)
+		gen.SetTestWriter(testNw)
+	}
 
 	if err := gen.Generate(evalCtx.Modules); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating Ninja: %v\n", err)
@@ -1479,5 +1512,8 @@ func main() {
 	} else {
 		fmt.Printf("[bp2ninja] Successfully converted %s -> %s (%d modules)\n",
 			bpFile, outFile, len(evalCtx.Modules))
+	}
+	if enableTests {
+		fmt.Printf("[bp2ninja] Wrote test suite %s (run: ninja -f %s)\n", opts.TestOutFile, opts.TestOutFile)
 	}
 }

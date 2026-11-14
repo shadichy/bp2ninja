@@ -65,6 +65,10 @@ If no path is specified, `bp2ninja` defaults to looking for an `Android.bp` file
   Recursively discovers and evaluates all nested `Android.bp` files found under subdirectories. This allows converting monorepos (e.g. `system/core`, `art`, `external/libchrome`) into a single consolidated `build.ninja`.
 - **`-allow-missing-deps`** *(default: `true`)*:
   When an internal module dependency cannot be located in the parsed Blueprint tree, `bp2ninja` emits a phony target and bypasses the check, preventing build generation aborts.
+- **`-tests`** *(default: `false`)*:
+  Enables generation of test and benchmark modules (`cc_test`, `cc_benchmark`, `art_cc_test`, `cc_test_library`, `python_test_host`, `rust_test`, etc.). When disabled (the default), all test targets are completely omitted from the generated `build.ninja`. When enabled, test build edges are emitted into a separate `test.ninja` file (or the path set by `-test-o`), leaving `build.ninja` clean of test clutter.
+- **`-test-o <path>`** *(default: `test.ninja`)*:
+  Specifies where to write the test Ninja manifest when `-tests` is enabled. `test.ninja` includes `build.ninja` (`include <main-ninja>`) and sets a `default` statement targeting the generated test binaries, allowing direct execution via `ninja -f test.ninja`.
 
 ---
 

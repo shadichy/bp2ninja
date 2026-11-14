@@ -73,6 +73,12 @@ With \-siso: additionally mark pure compile actions (cc_compile, cxx_compile, as
 .TP
 .B \-allow\-missing\-deps
 Generate phony targets for missing dependencies or inputs, permitting standalone compilation of isolated modules without requiring all prerequisite source repositories. Enabled by default.
+.TP
+.B \-tests
+Enable generation of test and benchmark modules (\fBcc_test\fR, \fBcc_benchmark\fR, \fBart_cc_test\fR, \fBcc_test_library\fR, etc.). Disabled by default. When enabled, test build edges are emitted into a separate \fBtest.ninja\fR manifest rather than mixing into the primary Ninja file.
+.TP
+.BI \-test\-o " FILE"
+Output Ninja build file path for tests when \fB\-tests\fR is enabled. Defaults to \fBtest.ninja\fR. The test manifest includes the primary build manifest (\fBinclude build.ninja\fR) and sets its default target to the test binaries.
 
 .SS Target Architecture & NDK Toolchain Options
 .TP

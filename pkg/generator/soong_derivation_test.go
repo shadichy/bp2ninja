@@ -15,6 +15,7 @@ func TestIncludePrecedenceVNDKShadowing(t *testing.T) {
 	opts := DefaultOptions(".", "out")
 	opts.SysrootDir = "/apex/com.android.runtime.dev"
 	opts.DisableSkipAbis = true
+	opts.Vndk = true
 	gen := New(opts, nw, nil)
 
 	mod := &eval.EvaluatedModule{
@@ -64,6 +65,7 @@ func TestIncludePrecedenceVNDKShadowing(t *testing.T) {
 	opts2.SysrootDir = "/apex/com.android.runtime.dev"
 	opts2.SkipAbiLevel = 3
 	opts2.DisableSkipAbis = false
+	opts2.Vndk = true
 	gen2 := New(opts2, nw2, nil)
 
 	if err := gen2.Generate([]*eval.EvaluatedModule{mod}); err != nil {

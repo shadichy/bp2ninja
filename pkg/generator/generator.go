@@ -76,6 +76,10 @@ type Options struct {
 	DisableSkipAbis bool   // Disable skipping base ABI libraries (force APEX resolution)
 	JavaEncoding   string // Default Java source encoding (default: UTF-8)
 
+	// VNDK options
+	Vndk    bool   // Enable VNDK snapshot headers and discovery (default: false)
+	VndkDir string // Base directory containing VNDK snapshots (<path>/v<api level>)
+
 	// Module filtering
 	Targets        []string // If non-empty, only generate these module names (positive filter)
 	ExcludeTargets []string // Module names to skip during code generation

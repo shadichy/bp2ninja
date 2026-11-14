@@ -269,6 +269,8 @@ func printUsage(out io.Writer, argv0 string) {
 	fmt.Fprintf(out, "  -ndk-info                  Display discovered Android NDK installations and exit\n")
 	fmt.Fprintf(out, "  -sysroot DIR               Path to target Android sysroot (auto-derived with -ndk)\n")
 	fmt.Fprintf(out, "  -prebuilt-libs DIR         Directory containing prebuilt .so / .a libraries for linker search path\n")
+	fmt.Fprintf(out, "  -vndk                      Enable VNDK snapshot headers and discovery (default: false)\n")
+	fmt.Fprintf(out, "  -vndk-dir PATH             Base directory containing VNDK snapshots (auto-discovers <path>/v<api level>)\n")
 	fmt.Fprintf(out, "  -skip-abi-level LEVEL      Base ABI level threshold for skipping platform libraries (default: 0)\n")
 	fmt.Fprintf(out, "  -disable-skip-abis         Disable skipping base ABI libraries (force APEX resolution)\n\n")
 
@@ -435,6 +437,8 @@ func main() {
 		excludeDirs         stringListFlag
 		targets             stringListFlag
 		excludeTargets      stringListFlag
+		vndk                bool
+		vndkDir             string
 		convertPluginTarget string
 		genGoWork           bool
 		cleanGoWork         bool
@@ -481,6 +485,8 @@ func main() {
 	flag.BoolVar(&ndkInfoFlag, "ndk-info", false, "Display discovered Android NDK installations and exit")
 	flag.StringVar(&sysrootDir, "sysroot", "", "Path to target Android sysroot (auto-derived with -ndk)")
 	flag.StringVar(&prebuiltLibs, "prebuilt-libs", "", "Directory containing prebuilt .so / .a libraries")
+	flag.BoolVar(&vndk, "vndk", false, "Enable VNDK snapshot headers and discovery (default: false)")
+	flag.StringVar(&vndkDir, "vndk-dir", "", "Base directory containing VNDK snapshots (auto-discovers <path>/v<api level>)")
 	var skipAbiLevel int
 	var disableSkipAbis bool
 	flag.IntVar(&skipAbiLevel, "skip-abi-level", 0, "Base ABI level threshold for skipping platform libraries")
@@ -1263,6 +1269,26 @@ func main() {
 
 	opts.SkipAbiLevel = skipAbiLevel
 	opts.DisableSkipAbis = disableSkipAbis
+	if vndkDir != "" {
+		vndk = true
+	} else if envVndkDir := os.Getenv("ANDROID_VNDK_DIR"); envVndkDir != "" {
+		vndkDir = envVndkDir
+	} else if envVndkDir2 := os.Getenv("VNDK_DIR"); envVndkDir2 != "" {
+		vndkDir = envVndkDir2
+	}
+	if vndk && vndkDir == "" {
+		for _, cand := range []string{
+			"/opt/android-sdk/vndk",
+			"/opt/android/vndk",
+		} {
+			if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+				vndkDir = cand
+				break
+			}
+		}
+	}
+	opts.Vndk = vndk
+	opts.VndkDir = vndkDir
 	opts.Targets = targets
 	opts.ExcludeTargets = excludeTargets
 	opts.IncludeRoot = includeRoot

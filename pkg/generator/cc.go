@@ -1251,7 +1251,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 	for _, flag := range append(g.opts.ExtraCflags, g.opts.ExtraCppflags...) {
 		if strings.HasPrefix(flag, "-I") || strings.HasPrefix(flag, "-isystem") {
 			if strings.Contains(flag, "vndk") {
-				tier4 = append(tier4, flag)
+				if g.opts.Vndk {
+					tier4 = append(tier4, flag)
+				}
 			} else {
 				userTier2 = append(userTier2, flag)
 			}
@@ -1263,7 +1265,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		if strings.Contains(inc, "/apex/") {
 			tier1 = append(tier1, inc)
 		} else if strings.Contains(inc, "vndk") {
-			tier4 = append(tier4, inc)
+			if g.opts.Vndk {
+				tier4 = append(tier4, inc)
+			}
 		} else {
 			tier2 = append(tier2, inc)
 		}
@@ -1274,7 +1278,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 			if strings.Contains(flag, "/apex/") {
 				tier1 = append(tier1, flag)
 			} else if strings.Contains(flag, "vndk") {
-				tier4 = append(tier4, flag)
+				if g.opts.Vndk {
+					tier4 = append(tier4, flag)
+				}
 			} else {
 				tier2 = append(tier2, flag)
 			}
@@ -1319,10 +1325,12 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 					tier3 = append(tier3, "-I"+candidate)
 				}
 			}
-			// VNDK snapshot headers go to Tier 4 (lowest precedence)
-			vndkCandidate := filepath.Join(dir, "include_vndk")
-			if fi, err := os.Stat(vndkCandidate); err == nil && fi.IsDir() {
-				tier4 = append(tier4, "-I"+vndkCandidate)
+			// VNDK snapshot headers go to Tier 4 (if enabled)
+			if g.opts.Vndk {
+				vndkCandidate := filepath.Join(dir, "include_vndk")
+				if fi, err := os.Stat(vndkCandidate); err == nil && fi.IsDir() {
+					tier4 = append(tier4, "-I"+vndkCandidate)
+				}
 			}
 			if entries, err := os.ReadDir(dir); err == nil {
 				for _, e := range entries {
@@ -1330,7 +1338,9 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 						subCandidate := filepath.Join(dir, e.Name(), "include")
 						if fi, err := os.Stat(subCandidate); err == nil && fi.IsDir() {
 							if strings.Contains(e.Name(), "vndk") {
-								tier4 = append(tier4, "-I"+subCandidate)
+								if g.opts.Vndk {
+									tier4 = append(tier4, "-I"+subCandidate)
+								}
 							} else {
 								tier3 = append(tier3, "-I"+subCandidate)
 							}
@@ -1339,6 +1349,11 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 				}
 			}
 		}
+	}
+
+	// Auto-discover configured VNDK snapshot headers into Tier 4 if enabled
+	if g.opts.Vndk {
+		tier4 = append(tier4, g.discoverVndkIncludes()...)
 	}
 
 	// Filter Tier 4 VNDK snapshot includes if APEX platform headers are present in tier1 or tier2
@@ -1390,6 +1405,118 @@ func (g *Generator) resolveIncludeDirs(mod *eval.EvaluatedModule) []string {
 		filtered = append(filtered, e)
 	}
 	return dedup(filtered)
+}
+
+func (g *Generator) discoverVndkIncludes() []string {
+	if !g.opts.Vndk || g.opts.VndkDir == "" {
+		return nil
+	}
+	api := g.opts.APILevel
+	if api <= 0 {
+		api = 34
+	}
+
+	// 1. Resolve versioned directory: <path>/v<api level>
+	vDir := filepath.Join(g.opts.VndkDir, fmt.Sprintf("v%d", api))
+	if fi, err := os.Stat(vDir); err != nil || !fi.IsDir() {
+		// Fallback if VndkDir is already the versioned directory
+		if fi2, err2 := os.Stat(g.opts.VndkDir); err2 == nil && fi2.IsDir() && strings.HasPrefix(filepath.Base(g.opts.VndkDir), "v") {
+			vDir = g.opts.VndkDir
+		} else {
+			return nil
+		}
+	}
+
+	var incs []string
+	arch := g.opts.TargetArch
+	if arch == "" {
+		arch = "arm64"
+	}
+	archCandidates := []string{arch}
+	if arch == "x32" {
+		archCandidates = append(archCandidates, "x86_64", "x86")
+	}
+
+	for _, a := range archCandidates {
+		archDir := filepath.Join(vDir, a)
+		archInc := filepath.Join(archDir, "include")
+		if fi, err := os.Stat(archInc); err == nil && fi.IsDir() {
+			incs = append(incs, "-I"+archInc)
+			_ = filepath.Walk(archInc, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+				if info.IsDir() {
+					name := info.Name()
+					// Skip internal libcxx/libcxxabi headers that conflict with authentic platform/sysroot libc++
+					if strings.Contains(path, "libcxx") || strings.Contains(path, "libcxxabi") {
+						return filepath.SkipDir
+					}
+					if name == "include" || name == "include_jni" || name == "kernel" {
+						incs = append(incs, "-I"+path)
+					}
+					rel, _ := filepath.Rel(archInc, path)
+					if strings.Count(rel, string(filepath.Separator)) > 3 {
+						return filepath.SkipDir
+					}
+				}
+				return nil
+			})
+			break
+		}
+	}
+
+	commonInc := filepath.Join(vDir, "common", "include")
+	if fi, err := os.Stat(commonInc); err == nil && fi.IsDir() {
+		incs = append(incs, "-I"+commonInc)
+	}
+
+	return dedup(incs)
+}
+
+func (g *Generator) discoverVndkLibDirs() []string {
+	if !g.opts.Vndk || g.opts.VndkDir == "" {
+		return nil
+	}
+	api := g.opts.APILevel
+	if api <= 0 {
+		api = 34
+	}
+
+	vDir := filepath.Join(g.opts.VndkDir, fmt.Sprintf("v%d", api))
+	if fi, err := os.Stat(vDir); err != nil || !fi.IsDir() {
+		if fi2, err2 := os.Stat(g.opts.VndkDir); err2 == nil && fi2.IsDir() && strings.HasPrefix(filepath.Base(g.opts.VndkDir), "v") {
+			vDir = g.opts.VndkDir
+		} else {
+			return nil
+		}
+	}
+
+	var libDirs []string
+	arch := g.opts.TargetArch
+	if arch == "" {
+		arch = "arm64"
+	}
+	archDir := filepath.Join(vDir, arch)
+	if entries, err := os.ReadDir(archDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "arch-") {
+				sharedDir := filepath.Join(archDir, e.Name(), "shared")
+				if fi, err := os.Stat(sharedDir); err == nil && fi.IsDir() {
+					libDirs = append(libDirs, "-L"+sharedDir)
+					if subEntries, err := os.ReadDir(sharedDir); err == nil {
+						for _, se := range subEntries {
+							if se.IsDir() {
+								subPath := filepath.Join(sharedDir, se.Name())
+								libDirs = append(libDirs, "-L"+subPath)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return dedup(libDirs)
 }
 
 func (g *Generator) fixupIncludePaths(flags []string) []string {
@@ -1873,6 +2000,11 @@ func (g *Generator) resolveLinkerArgs(mod *eval.EvaluatedModule) (ldflags []stri
 				ldflags = append(ldflags, "-L/apex/lib64", "-B/apex/lib64")
 			}
 		}
+	}
+
+	// VNDK shared library search paths (if enabled)
+	if g.opts.Vndk {
+		ldflags = append(ldflags, g.discoverVndkLibDirs()...)
 	}
 
 	// Auto-detect library paths for dependencies from TopDir (ANDROID_BUILD_TOP)

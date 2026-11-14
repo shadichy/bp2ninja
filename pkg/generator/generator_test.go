@@ -3892,3 +3892,62 @@ func TestUserFlagsPrioritization(t *testing.T) {
 		t.Errorf("User linker option -Wl,-z,now (pos %d) should appear AFTER auto-generated --pack-dyn-relocs (pos %d)", idxZNow, idxReloc)
 	}
 }
+
+func TestVndkFlagsAndDiscovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create mock VNDK tree: tmpDir/v34/x86_64/include/test_hdr and tmpDir/v34/x86_64/arch-x86_64/shared
+	vndkInc := filepath.Join(tmpDir, "v34", "x86_64", "include", "system", "core", "include")
+	vndkLib := filepath.Join(tmpDir, "v34", "x86_64", "arch-x86_64", "shared", "vndk-core")
+	if err := os.MkdirAll(vndkInc, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(vndkLib, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mod := &eval.EvaluatedModule{
+		Type: "cc_library_shared",
+		Name: "libclient",
+		Properties: map[string]interface{}{
+			"name":         "libclient",
+			"srcs":         []interface{}{"client.cpp"},
+			"include_dirs": []interface{}{"/opt/android-sdk/vndk/v34/include"},
+		},
+	}
+
+	// 1. By default (Vndk: false), VNDK includes are not injected
+	var bufOff strings.Builder
+	nwOff := ninja.NewWriter(&bufOff)
+	optsOff := DefaultOptions(".", "out")
+	optsOff.Vndk = false
+	optsOff.TargetArch = "x86_64"
+	optsOff.APILevel = 34
+	genOff := New(optsOff, nwOff, nil)
+	if err := genOff.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	outOff := bufOff.String()
+	if strings.Contains(outOff, "vndk") {
+		t.Errorf("Expected VNDK to be completely excluded when Vndk is false, got:\n%s", outOff)
+	}
+
+	// 2. When Vndk: true and VndkDir is set, auto-discovers <VndkDir>/v<api>/<arch>/include and shared lib paths
+	var bufOn strings.Builder
+	nwOn := ninja.NewWriter(&bufOn)
+	optsOn := DefaultOptions(".", "out")
+	optsOn.Vndk = true
+	optsOn.VndkDir = tmpDir
+	optsOn.TargetArch = "x86_64"
+	optsOn.APILevel = 34
+	genOn := New(optsOn, nwOn, nil)
+	if err := genOn.Generate([]*eval.EvaluatedModule{mod}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	outOn := bufOn.String()
+	if !strings.Contains(outOn, vndkInc) {
+		t.Errorf("Expected auto-discovered VNDK include dir %s in output, got:\n%s", vndkInc, outOn)
+	}
+	if !strings.Contains(outOn, "-L"+vndkLib) {
+		t.Errorf("Expected auto-discovered VNDK lib dir -L%s in output, got:\n%s", vndkLib, outOn)
+	}
+}

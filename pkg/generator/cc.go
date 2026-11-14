@@ -1863,7 +1863,17 @@ func (g *Generator) getModuleTargetOutputs(lib string, preferExt string) []strin
 			}
 			return []string{filepath.Join(g.libDir(), baseName+".so")}
 		case "cc_object":
-			return []string{filepath.Join(g.libDir(), baseName+".o")}
+			stem := libMod.GetString("stem")
+			if stem == "" {
+				stem = libMod.Name
+			}
+			if !strings.HasSuffix(stem, ".o") {
+				stem += ".o"
+			}
+			if strings.HasPrefix(libMod.Name, "crt") || strings.HasPrefix(stem, "crt") {
+				return []string{filepath.Join(g.libDir(), stem)}
+			}
+			return []string{filepath.Join(g.objDir(libMod.Name), stem)}
 		case "cc_library_headers":
 			return []string{filepath.Join(g.opts.OutDir, "headers", libMod.Name)}
 		case "genrule", "gensrcs":
@@ -2475,18 +2485,22 @@ func (g *Generator) generateCcObject(mod *eval.EvaluatedModule) ([]string, error
 		}
 	}
 
-	targets := []string{target}
-	libTarget := filepath.Join(g.libDir(), stem)
-	if libTarget != target {
-		_ = g.nw.Build(ninja.BuildEdge{
-			Outputs: []string{libTarget},
-			Rule:    "copy",
-			Inputs:  []string{target},
-		})
-		targets = append(targets, libTarget)
+	isCrt := strings.HasPrefix(mod.Name, "crt") || strings.HasPrefix(stem, "crt")
+	if isCrt {
+		libTarget := filepath.Join(g.libDir(), stem)
+		if libTarget != target {
+			if err := g.nw.Build(ninja.BuildEdge{
+				Outputs: []string{libTarget},
+				Rule:    "copy",
+				Inputs:  []string{target},
+			}); err != nil {
+				return nil, err
+			}
+		}
+		return []string{libTarget}, nil
 	}
 
-	return targets, nil
+	return []string{target}, nil
 }
 
 func (g *Generator) generateNdkLibrary(mod *eval.EvaluatedModule) ([]string, error) {

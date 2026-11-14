@@ -4284,4 +4284,72 @@ func TestCliIncludePrecedenceOverAmbientApex(t *testing.T) {
 	}
 }
 
+func TestCcObjectSingleOutputAndGenruleInputs(t *testing.T) {
+	var buf bytes.Buffer
+	nw := ninja.NewWriter(&buf)
+	opts := DefaultOptions(".", "out")
+	gen := New(opts, nw, nil)
+
+	// 1. Non-CRT cc_object (e.g. libseccomp_gen_syscall_nrs_x86)
+	modObj := &eval.EvaluatedModule{
+		Type: "cc_object",
+		Name: "libseccomp_gen_syscall_nrs_x86",
+		Properties: map[string]interface{}{
+			"name":   "libseccomp_gen_syscall_nrs_x86",
+			"srcs":   []interface{}{"seccomp/gen_syscall_nrs_x86.cpp"},
+			"cflags": []interface{}{"-dD", "-E"},
+		},
+	}
+
+	// 2. Genrule consuming the cc_object via srcs
+	modGen := &eval.EvaluatedModule{
+		Type: "genrule",
+		Name: "libseccomp_policy_x86",
+		Properties: map[string]interface{}{
+			"name": "libseccomp_policy_x86",
+			"srcs": []interface{}{
+				"SYSCALLS.TXT",
+				":libseccomp_gen_syscall_nrs_x86",
+			},
+			"out": []interface{}{"x86_policy.cpp"},
+			"cmd": "genseccomp --out-dir=$(genDir) $(in)",
+		},
+	}
+
+	// 3. CRT cc_object (e.g. crtbegin_so)
+	modCrt := &eval.EvaluatedModule{
+		Type: "cc_object",
+		Name: "crtbegin_so",
+		Properties: map[string]interface{}{
+			"name": "crtbegin_so",
+			"srcs": []interface{}{"crtbegin.c"},
+		},
+	}
+
+	if err := gen.Generate([]*eval.EvaluatedModule{modObj, modGen, modCrt}); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	content := buf.String()
+
+	// Verify libseccomp_gen_syscall_nrs_x86 is NOT copied to lib64
+	if strings.Contains(content, "out/lib64/libseccomp_gen_syscall_nrs_x86.o") {
+		t.Errorf("Did not expect non-CRT object to be copied to out/lib64/libseccomp_gen_syscall_nrs_x86.o, got:\n%s", content)
+	}
+
+	// Verify genrule receives exactly ONE input for :libseccomp_gen_syscall_nrs_x86
+	expectedObj := filepath.Join("out", "obj", "libseccomp_gen_syscall_nrs_x86", "libseccomp_gen_syscall_nrs_x86.o")
+	expectedEdge := "build out/gen/libseccomp_policy_x86/x86_policy.cpp: genrule_cmd SYSCALLS.TXT " + expectedObj + "\n"
+	if !strings.Contains(content, expectedEdge) {
+		t.Errorf("Expected genrule edge %q in ninja file, got:\n%s", expectedEdge, content)
+	}
+
+	// Verify crtbegin_so is copied to lib64
+	expectedCrt := filepath.Join("out", "lib64", "crtbegin_so.o")
+	if !strings.Contains(content, "build "+expectedCrt+": copy") {
+		t.Errorf("Expected CRT object to be copied to %s, got:\n%s", expectedCrt, content)
+	}
+}
+
+
 
